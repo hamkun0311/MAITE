@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "prepare:cad": "node scripts/prepare-cad.mjs",
     "postinstall": "npm run prepare:cad",
-    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts",
+    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -20,6 +20,7 @@
     "react-dom": "^19.2.0",
     "replicad": "1.2.1",
     "replicad-opencascadejs": "1.2.1",
+    "sharp": "^0.35.5",
     "three": "^0.183.0",
     "zod": "^4.3.6"
   },

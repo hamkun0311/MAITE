@@ -1,135 +1,78 @@
-# MAITE — Text to CAD
+# MAITE — 모양 / 이상형
 
-## 현재 제품: 채팅 → OpenAI → 브라우저 CAD
-
-루트 `/`는 채팅 기반 스튜디오입니다. 자연어 설명과 후속 수정을 OpenAI가 해석하고, 생성용 프롬프트를 정리한 다음 Structured Outputs로 형상 명세를 만듭니다. Worker가 동일 명세에서 미리보기와 STEP을 생성합니다. Meshy 등 추가 AI는 사용하지 않습니다.
-
-### 설정
-
-`.env.example`을 `.env.local`로 복사하고 `OPENAI_API_KEY`를 입력하세요. `OPENAI_MODEL` 기본값은 `gpt-4.1`입니다. 변경 후 개발 서버를 재시작하세요. 키는 브라우저에 전달되지 않습니다.
-
-사업성 검토용 MVP이므로 **로그인·회원가입·서비스 접근 코드 없이** 접속 즉시 사용합니다. 개발·운영 모두 같습니다. `APP_ACCESS_TOKEN`과 `NEXT_PUBLIC_SUPABASE_*`는 현재 사용하지 않으며 기존 `.env.local`에 남아 있어도 필요 없습니다. 사용자 환경파일은 자동 수정하지 않습니다.
-
-현재 서버 인스턴스 전체에서 분당 5회 요청을 허용합니다. 두 검토자가 이 한도를 공유합니다. 요청당 AI 호출 2회, 출력 토큰 1,400 + 10,000, 대화 24KB, 최대 40개 부품 제한을 유지합니다. 이는 인스턴스 내 제한이며 분산 환경의 전역 제한은 아닙니다.
-
-### 지원과 검증 범위
-
-- box / ellipsoid / cylinder / 삼각 기둥 roof, XYZ 회전·이동, 기존 부품 절삭. 단위 mm.
-- 여러 솔리드의 조립체이며 단일 융합 솔리드나 즉시 3D 프린팅 가능한 결과를 보장하지 않습니다. 상세 얼굴·털·휘어진 전통 지붕·텍스처는 표현에 제한이 있습니다.
-- 프롬프트와 JSON을 확인하고 JSON을 다운로드할 수 있습니다. CAD 실패 시 같은 명세로 재생성하거나 대화로 수정할 수 있습니다.
-- 생성 취소는 fetch와 Worker를 중단합니다. 이미 서버에서 처리된 AI 요청의 비용이 취소되지는 않을 수 있습니다.
-- 대화·결과는 현재 탭 메모리에서 유지됩니다. Supabase 저장은 아직 연결하지 않았습니다.
-- 채팅 E2E는 유료 AI 응답 경계만 고정하며 실제 Worker/OCCT/STEP 생성·재읽기를 실행합니다. 실제 OpenAI 키가 없어 **라이브 API 및 강아지·광화문 외형 품질은 미검증**입니다.
-- 입력/명세 단위 테스트 7개, 브라우저 테스트 4개로 로그인 없는 화면·API 접근과 CAD 생성·취소·다운로드를 검증합니다. 채팅 테스트 형상은 독립 OCP 리더에서도 유효한 5개 솔리드로 확인했습니다. 이 형상은 실제 AI 생성 품질의 증거가 아닙니다.
-- 기존 판재 화면과 검증은 `/technical/plate`로 이동했습니다.
-
-아래는 기존 판재 PoC의 실행·기술 검증 기록입니다. ‘API 키 불필요’, ‘자연어 AI 미구현’ 등은 판재 검증 화면에 한정되며 현재 채팅 서비스에는 해당하지 않습니다.
-
-`text-to-cad-plan.md`의 **Phase 0 우선 검증** 지시에 따라 실제 STEP 생성·다운로드를 먼저 구현한 한국어 CAD 워크스페이스입니다.
+로그인 없이 채팅으로 3D CAD와 2D 애니메이션 캐릭터를 만드는 사업성 검토용 MVP입니다. Next.js/Vercel에서 실행하며 별도 CAD/GPU 서버는 운영하지 않습니다.
 
 ## 실행
 
-Node.js 22.18+ 또는 24 LTS 권장. 최초 설치에는 인터넷 연결이 필요합니다.
+Node.js 22.18+ 또는 24 LTS를 사용합니다. `npm ci` 후 `.env.example`을 `.env.local`로 복사해 서버 환경변수를 설정하고 `npm run dev`를 실행합니다.
 
-```sh
-npm ci
-npm run dev
+```env
+OPENAI_API_KEY=OpenAI_서버_키
+OPENAI_MODEL=gpt-6.1-sol
+OPENAI_IMAGE_MODEL=gpt-image-2.5-sunburst
+OPENAI_IMAGE_QUALITY=low
 ```
 
-http://localhost:3000 에서 실행됩니다. API 키나 Supabase 계정 없이 사용할 수 있습니다.
+Vercel에도 같은 환경변수를 등록하고 재배포합니다. 키는 서버 전용이며 `NEXT_PUBLIC_*`에 넣지 않습니다. Cloudflare 설정, 접근 코드, Supabase 설정은 필요 없습니다. Supabase는 향후 저장 기능이 필요할 때 연결합니다. 대화와 결과는 현재 탭 메모리에 유지되며 새로고침·메뉴 이동 시 초기화됩니다.
 
-```sh
-npm run build
-npm start
-```
+## 모양 — `/`
 
-Vercel에서는 Next.js 프레임워크, `npm ci`, `npm run build`, 기본 출력 디렉터리를 사용합니다. `postinstall`이 엔진을 `public/wasm/`에 복사합니다. 해당 디렉터리는 Git에서 제외하며, install scripts를 끈 경우 `npm run prepare:cad`를 실행하세요. 실제 Vercel 배포는 아직 하지 않았습니다.
+채팅 → OpenAI 프롬프트 정리 및 제한된 CAD 명세 → 브라우저 Worker의 OpenCascade.js → Three.js 미리보기 → STEP/JSON 다운로드.
 
-## 구현 범위
+- box / ellipsoid / cylinder / roof, 이동·회전·절삭, 최대 40개 부품을 지원합니다.
+- 브라우저에서 실제 B-Rep을 만들고 STEP을 다시 읽어 유효성·치수를 검사합니다.
+- STEP은 여러 솔리드의 조립체일 수 있습니다. 실사 피규어, 정밀 복제, 단일 융합 솔리드·즉시 출력 가능한 형상을 보장하지 않습니다.
+- `/technical/plate`는 기존 판재 검증 화면입니다. 과거 구현 기록은 `docs/previous-implementation-notes.md`에 있습니다.
+- WASM 약 23MB는 `postinstall`에서 준비합니다. 필요하면 `npm run prepare:cad`를 실행합니다.
 
-- Next.js App Router + TypeScript + Tailwind CSS 반응형 워크스페이스
-- 판재 가로·세로·두께, 구멍 지름·간격 편집 및 프리셋 3개
-- Web Worker의 OpenCascade.js WASM에서 실제 B-Rep 및 Boolean cut
-- 실제 테셀레이션의 Three.js 미리보기, 회전·확대·이동, 투시·평면·정면, 그리드·와이어프레임
-- 진행 상태, 오류 안내, 120초 타임아웃, 즉시 취소·재생성
-- 실제 STEP AP214 및 CAD JSON 다운로드
-- 내보낸 STEP 재읽기, B-Rep 유효성·단일 솔리드·치수·체적 확인 후 다운로드 허용
-- 최근 8개 작업의 **치수만** localStorage에 저장, 불러와 재생성
-- 모바일 레이아웃, 키보드 포커스와 모달 Escape/포커스 제한
+## 이상형 — `/ideal`
 
-**미구현:** 자연어 AI, Supabase 로그인·DB·파일 저장, 캐릭터 생성. 기획서의 순서에 따라 후속 단계로 남겼고 UI에도 준비 중으로 표시합니다. 로컬 이력은 클라우드에 동기화되지 않으며 STEP 바이너리는 새로고침 후 복구되지 않습니다.
+채팅 → OpenAI 콘텐츠 검사 및 캐릭터 설명 정리 → **GPT Image 2.5 Sunburst** → **세로형 9:16, 720×1280 JPG 다운로드**.
 
-## CAD 엔진과 좌표
+남녀 캐릭터의 톤앤매너를 `lib/characters/schema.ts`의 `CHARACTER_STYLES.female` / `CHARACTER_STYLES.male`에 각각 저장합니다. OpenAI가 대화의 요청 대상에 맞게 `styleProfile`을 선택하며 최신 성별 변경 요청을 우선합니다. 일반 수정은 이전 프로필을 이어갑니다. 성별 미지정·비인간 대상은 공통 스타일, 남녀가 함께 등장하면 혼합 스타일을 사용합니다. 머리 길이나 옷차림만으로 성별을 단정하지 않습니다.
 
-`replicad@1.2.1` + `replicad-opencascadejs@1.2.1` 고정. 후자는 **OpenCascade.js의 RepliCAD용 커스텀 WASM 배포판**입니다. 별도 CAD 서버나 Docker 빌드는 사용하지 않습니다.
+- **여자 스타일:** 기존 모험가 샘플의 선명한 윤곽선, 풍부하고 따뜻한 채색, 셀 그림자와 부드러운 하이라이트, 장식의 정교한 마감을 참고합니다.
+- **남자 스타일:** 새 첨부 샘플을 분석한 가늘고 섬세한 선화, 정제된 각진 얼굴 묘사, 저채도 회색·보랏빛 명암, 부드러운 셀 채색과 절제된 광택, 차분한 분위기를 참고합니다. 검은 머리·보라색 눈·귀걸이·초커·손짓을 자동으로 복제하지 않습니다.
 
-설치된 타입·소스에서 `makeBox`, `makeCylinder`, `cut`, `mesh`, `exportSTEP`, `importSTEP`, `measureVolume`, OCCT `STEPCAFControl_Writer`, `BRepCheck_Analyzer`, `TopExp_Explorer` 지원을 확인했습니다. `exportSTEP`은 실제 OCCT STEP writer를 사용합니다.
+‘그림체 참고’에서 여자/남자 스타일 설명을 전환할 수 있습니다. 이 선택은 참고 열람용이며 실제 생성 스타일은 채팅 내용에 따라 정합니다. ‘생성 프롬프트’는 생성 전 두 프로필, 생성 후 실제 선택된 스타일과 전달 문장을 보여줍니다.
 
-Emscripten 로더는 Worker 안에서 동일 출처 `/wasm/replicad_single.js`로 동적 로딩하여 Node 전용 코드를 브라우저 번들에서 제외합니다. 첫 실행에 약 23 MB WASM을 받습니다. 단일 스레드 빌드라 SharedArrayBuffer/COOP/COEP는 요구하지 않습니다.
+인물·나이·성별·체형·의상·색상·표정·포즈·동반 생물·배경은 채팅 내용에 따라 정합니다. 샘플의 모험가·드래곤·의상을 자동으로 복제하지 않으며, 여성의 글래머러스함이나 남성의 섹시함도 자동 추가하지 않습니다. 2D 애니메이션 표현을 유지하고 모든 인물을 성인으로 고정하지 않습니다. 어린 캐릭터는 나이에 맞는 비성적인 디자인으로 표현합니다.
 
-- mm, 오른손 좌표계, Z-up, 판재 중심 원점
-- 판재 X/Y 20–300 mm, Z 1–30 mm
-- 구멍 지름 1–40 mm, 모서리 간격 2–100 mm
-- 구멍 중심 `±(width/2 - edgeOffset), ±(height/2 - edgeOffset)`
-- 절삭 원통은 판재 아래 1 mm부터 위 1 mm까지 연장해 Z축 관통
-- 구멍이 외곽·서로 겹치지 않도록 폼과 Worker 양쪽에서 Zod 검증
-- 판재+선택적 구멍 4개로 제한. 임의 코드·AI 코드 실행은 없음
+공통 스타일과 프롬프트 조립은 `lib/characters/schema.ts`에 있습니다. 대화로부터 최대 800자의 ASCII 영문 subject를 정리해 스타일 지시와 결합합니다. ‘생성 프롬프트’ 탭에서 실제 이미지 API에 보낸 문장을 확인할 수 있습니다.
 
-참고: [통합 가이드](https://replicad.pages.dev/docs/use-as-a-library/), [RepliCAD 소스](https://github.com/sgenoud/replicad), [OpenCascade.js](https://ocjs.org/).
+- 여자 스타일은 기존 샘플 PNG를 그림체 참고로 전달합니다. 남자·공통·혼합 스타일에는 여자 샘플 파일을 보내지 않습니다. 남자 스타일은 첨부 이미지를 분석한 저장 프롬프트로 적용합니다. 참고 파일이나 이전 결과가 없으면 Images generations, 있으면 Images edits를 사용합니다. 수정 시 직전 결과를 입력해 정체성과 변경하지 않은 디테일의 유지를 요청하며 완벽한 동일인 유지를 보장하지는 않습니다.
+- API에 720×1280 생성 크기를 요청하고 세로형 9:16 구도를 지시합니다. sharp로 최종 720×1280 JPEG를 보장하며, 다른 비율의 응답에는 여백을 넣어 피사체를 자르지 않습니다. GPT Image에는 FLUX의 ‘4단계’ 옵션이 없습니다.
+- 품질은 기존 저비용 선호에 따라 `low`가 기본이며 `OPENAI_IMAGE_QUALITY`로 변경할 수 있습니다. 프롬프트 정리와 이미지 생성에는 OpenAI 요금이 적용됩니다.
+- multipart 요청 최대 약 2.65MB, 직전 JPEG 최대 2.5MB, 최대 13개 메시지, 인스턴스 전체 분당 3회로 제한합니다. 이는 분산 환경의 전역 비용 제한이 아닙니다.
+- 결과는 binary JPEG로 반환합니다. 실패/취소 시 새 결과 다운로드를 비활성화하고, 취소한 입력은 복원합니다. 새 대화는 이전 이미지 참조까지 삭제합니다.
+- 서버 요청은 최대 270초, Vercel 함수 설정은 300초이며 배포 플랜에서 허용해야 합니다. 참고 PNG를 함수에 포함하도록 파일 추적을 설정했습니다.
+
+## AI 실시간 대화
+
+이상형 화면의 이미지 생성 채팅 아래에 별도 AI 대화 영역이 있습니다. `gpt-5.4-mini`의 Responses API 스트리밍을 사용해 답변이 도착하는 대로 표시합니다. 이미지 생성 대화와 기록을 따로 관리하므로 AI 대화로 이미지가 자동 생성·수정되지는 않습니다.
+
+- 기존 `OPENAI_API_KEY`만 사용하며 별도 키나 모델 설정은 필요 없습니다. 이미지 생성 모델 설정과 독립적입니다. 대화에는 OpenAI 사용 요금이 적용됩니다.
+- Enter로 보내기, Shift+Enter 줄바꿈, 응답 중지, AI 대화 초기화를 지원합니다. 완료된 대화를 다음 요청의 문맥에 반영하며 중단된 답변은 문맥에서 제외합니다.
+- `/api/chat`은 `stream:true`, `store:false`로 호출합니다. 서버가 SSE를 해석해 답변 텍스트·완료·오류만 브라우저에 전달하고, 연결 종료 시 외부 생성 요청도 취소합니다. 키나 외부 오류 세부정보는 노출하지 않습니다.
+- 최근 최대 21개 메시지, 총 24,000자, 요청 100KB, 출력 최대 2,000토큰, 서버 타임아웃 150초, 인스턴스별 분당 15회로 제한합니다. 대화는 현재 탭 메모리에만 유지됩니다.
+- [GPT-5.4 mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini), [OpenAI 스트리밍 문서](https://developers.openai.com/api/docs/guides/streaming-responses).
 
 ## 검증
 
-2026-11-14, Windows / Node.js 24 / Chromium 기준.
-
-| 항목 | 결과 |
-| --- | --- |
-| TypeScript / 프로덕션 빌드 | 통과 |
-| 입력 검증 단위 테스트 | 4개 통과 |
-| 브라우저 E2E | Worker 생성·다운로드·취소·재생성, 입력 오류, 프리셋, 도움말, 모바일 가로 넘침 검사 |
-| 실제 STEP | ISO-10303-21, MANIFOLD_SOLID_BREP, 원통면 4개 |
-| 독립 CAD 리더 | CadQuery OCP / OCCT 7.9.3으로 재읽기 통과 |
-| 유효성 / 솔리드 | 유효한 B-Rep / 단일 솔리드 |
-| 치수 | 100 × 60 × 5 mm |
-| 체적 | 29,434.51332235383 mm³ (`30000 - 4π·3²·5`) |
-| 구멍 | 중심 (±40, ±20) mm / 지름 6 mm / 4개 |
-| FreeCAD GUI | **미실행** — 이 환경에 미설치 |
-| 다른 브라우저 / 실기기 모바일 / Vercel 배포 | 미검증 |
+변경 후 다음 명령을 순서대로 실행합니다.
 
 ```sh
 npm run typecheck
 npm test
-npx playwright install chromium
 npm run test:e2e
 npm run build
 ```
 
-E2E는 포트 3100과 `.next-test`에서 별도 개발 서버를 자동 실행·종료하며 실제 AI 키와 Supabase 설정을 비워 외부 호출을 방지합니다. 포트는 `PLAYWRIGHT_PORT`로 변경할 수 있습니다. Next.js가 생성하는 타입 파일은 공유하므로 build와 E2E는 **순차 실행**하세요. STEP과 스크린샷은 Git에서 제외한 `.verification/`에 생성됩니다.
+E2E는 Chromium이 필요합니다(`npx playwright install chromium`). 포트 3100과 `.next-test`를 사용하며 `PLAYWRIGHT_PORT`로 변경할 수 있습니다. Next.js 생성 타입 파일을 공유하므로 build와 동시에 실행하지 않습니다.
 
-독립 CAD 검증은 선택적인 로컬 테스트이며 제품의 Python 서버나 런타임 의존성이 아닙니다.
+- API 테스트는 외부 응답만 고정해 모델·생성 크기·품질·참고 이미지 순서, 이전 결과 전달, 입력 제한·콘텐츠 차단·요청 제한 및 실제 sharp 변환 결과의 720×1280 JPEG를 검증합니다.
+- 브라우저 테스트는 메뉴·그림체 참고·실제 프롬프트 표시·생성·수정·다운로드·취소·모바일과 기존 CAD Worker/STEP 흐름을 검증합니다.
+- AI 대화 테스트는 UTF-8/청크 경계 처리, 완료 전 텍스트 전달, 문맥 유지, 입력 제한, 외부 요청 취소, 중지·실패 후 재시도 및 이미지 생성과의 분리를 검증합니다. API 응답은 고정하며 실제 유료 모델 응답 품질·지연 시간은 별도 확인 대상입니다.
+- 실제 유료 이미지 생성, 최종 그림체·프롬프트 반영 품질, Vercel 배포, FreeCAD GUI 수동 검증은 별도 확인 대상입니다. 고정 응답 테스트를 실제 생성 품질의 증거로 기록하지 않습니다.
 
-```powershell
-python -m venv .venv
-./.venv/Scripts/python.exe -m pip install cadquery-ocp-novtk==7.9.3.1.1
-./.venv/Scripts/python.exe scripts/verify-step.py .verification/mounting-plate.step
-```
-
-### FreeCAD 수동 검증 게이트
-
-1. 기본 마운팅 플레이트를 생성해 STEP을 다운로드합니다.
-2. FreeCAD에서 열고 판재 100×60×5 mm, 구멍 지름 6 mm, 모서리 간격 10 mm를 측정합니다.
-3. Part 작업대의 Check geometry(BOPCheck 포함)에서 유효성·솔리드 1개·체적 약 29,434.5133 mm³를 확인합니다.
-4. 결과와 FreeCAD 버전을 기록합니다. 독립 리더 검증은 통과했지만 **FreeCAD GUI 검증까지 완료했다고 간주하지 않습니다.**
-
-## 다음 작업
-
-`agent.md`에 Codex 중요 작업과 원칙을 명시했습니다. `AGENTS.md`도 해당 파일을 참조해 자동 발견을 지원합니다.
-
-1. FreeCAD GUI와 브라우저별 WASM 검증
-2. OpenAI 서버 Route Handler + Structured Outputs + Zod CAD DSL (인증·사용량·비용 제한 포함)
-3. Supabase Auth, DB 마이그레이션, 사용자별 RLS, private Storage, signed URL·소유권 검증
-4. 저장된 작업 재시작, 단순 캐릭터 별도 스키마·출력 검증
-5. Vercel 배포 및 실제 환경 회귀 테스트
-
-브라우저 탭 종료 시 진행 중인 작업은 중단됩니다. 최신 데스크톱 Chrome/Edge를 권장하며 모바일·저사양 기기에서는 로딩과 메모리 비용이 늘어날 수 있습니다.
-
-의존성 라이선스와 원본은 `THIRD_PARTY_NOTICES.md`를 참조하세요. 엔진은 별도 교체 가능한 JS/WASM 파일로 제공합니다.
+참고: [GPT Image 2.5 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst), [Images edits API](https://developers.openai.com/api/reference/resources/images/methods/edit). 의존성 고지는 `THIRD_PARTY_NOTICES.md`, Codex 중요 작업은 `agent.md`를 참고하세요.

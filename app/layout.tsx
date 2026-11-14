@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MAITE — 아이디어를 형태로",
+  title: "MAITE — 모양과 이상형을 그리는 스튜디오",
   description:
-    "채팅으로 모양을 설명하면 OpenAI가 설계하고 브라우저에서 3D 미리보기와 STEP을 만드는 스튜디오",
+    "채팅으로 3D 모양을 설계하고 취향에 맞는 2D 애니메이션 캐릭터를 만드는 스튜디오",
 };
 
 export default function RootLayout({

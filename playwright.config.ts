@@ -17,6 +17,8 @@ export default defineConfig({
     env: {
       MAITE_TEST_MODE: "1",
       OPENAI_API_KEY: "",
+      CLOUDFLARE_ACCOUNT_ID: "",
+      CLOUDFLARE_API_TOKEN: "",
       NEXT_PUBLIC_SUPABASE_URL: "",
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "",
       NEXT_PUBLIC_SUPABASE_ANON_KEY: "",

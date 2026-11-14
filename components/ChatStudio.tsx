@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { validateScene, type Scene } from "@/lib/cad/scene";
 import type { CadResult, WorkerMessage } from "@/lib/cad/schema";
+import StudioNav from "./StudioNav";
 
 const Viewer = dynamic(() => import("./CadViewer"), { ssr: false });
 type Message = { role: "user" | "assistant"; content: string };
@@ -209,7 +210,7 @@ export default function ChatStudio() {
           <Cuboid size={26} />
           maite<span>.</span>
         </a>
-        <span className="chat-header-label">CHAT TO CAD STUDIO</span>
+        <StudioNav />
         <div>
           <button onClick={reset} aria-label="새 대화">
             <Plus size={16} />새 대화

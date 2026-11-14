@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   distDir: process.env.MAITE_TEST_MODE === "1" ? ".next-test" : ".next",
   devIndicators: false,
+  outputFileTracingIncludes: {
+    "/api/characters": ["./public/references/anime-style.png"],
+  },
   webpack(config) {
     config.resolve.fallback = {
       ...config.resolve.fallback,

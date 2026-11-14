@@ -1,5 +1,7 @@
 # Third-party notices
 
+Image post-processing uses [sharp](https://github.com/lovell/sharp) (Apache-2.0) and its bundled libvips dependencies (see installed package notices, including libvips LGPL-2.1-or-later). Image generation uses OpenAI's hosted API; no image model weights are distributed with this application.
+
 See each installed package for its complete license and notices.
 
 | Package | License | Source |
