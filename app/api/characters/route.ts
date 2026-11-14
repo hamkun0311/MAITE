@@ -2,9 +2,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
+import { characterProfileSchema } from "../../../lib/chat/character.ts";
+import { visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
   characterBrief,
+  illustrationBrief,
   CHARACTER_DIRECTION,
   MAX_CHARACTER_IMAGE,
   MAX_CHARACTER_REQUEST,
@@ -99,11 +102,15 @@ export async function POST(request: Request) {
     const messages = characterMessages.parse(
       JSON.parse(String(form.get("messages") || "null")),
     );
+    const profile = form.has("profile") ? characterProfileSchema.parse(JSON.parse(String(form.get("profile")))) : undefined;
+    const scene = form.has("scene") ? visualRequestSchema.parse(JSON.parse(String(form.get("scene")))) : undefined;
     if (messages.at(-1)?.role !== "user")
       throw new RequestError("캐릭터 설명을 입력해주세요.", 400);
     const priorProfile = form.get("previousStyle");
     const previousStyle = priorProfile === null ? null : characterStyleProfile.parse(priorProfile);
     const prior = form.get("image");
+    if (scene && (!profile || !(prior instanceof File)))
+      throw new RequestError("삽화와 의상 변경에는 캐릭터 설정과 원본 이미지가 필요합니다.", 400);
     if (prior !== null && !(prior instanceof File))
       throw new RequestError("이미지 형식이 올바르지 않습니다.", 400);
     if (prior instanceof File) {
@@ -134,9 +141,9 @@ export async function POST(request: Request) {
         signal,
         body: JSON.stringify({
           model: "omni-moderation-latest",
-          input: messages
+          input: [profile ? JSON.stringify(profile) : "", scene?.context || "", ...messages
             .filter((m) => m.role === "user")
-            .map((m) => m.content)
+            .map((m) => m.content)]
             .join("\n"),
         }),
       }),
@@ -155,6 +162,7 @@ export async function POST(request: Request) {
       prior instanceof File
         ? Buffer.from(await prior.arrayBuffer()).toString("base64")
         : null;
+    const briefSchema = scene?.kind === "illustration" ? illustrationBrief : characterBrief;
     const briefResponse = await checked(
       await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
@@ -171,12 +179,12 @@ export async function POST(request: Request) {
             CHARACTER_DIRECTION +
             " Reference style analysis: " +
             JSON.stringify(CHARACTER_STYLES) +
-            " Resolve the full revised subject from the conversation and any previous result. Do not add gender-based appearance defaults.",
+            " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults." + visualInstructions(scene),
           input: [
             {
               role: "user",
               content: [
-                { type: "input_text", text: JSON.stringify({ messages, previousStyle }) },
+                { type: "input_text", text: JSON.stringify({ messages, profile, previousStyle, scene }) },
                 ...(previousData
                   ? [
                       {
@@ -194,7 +202,7 @@ export async function POST(request: Request) {
               type: "json_schema",
               name: "character_brief",
               strict: true,
-              schema: z.toJSONSchema(characterBrief),
+              schema: z.toJSONSchema(briefSchema),
             },
           },
         }),
@@ -211,8 +219,8 @@ export async function POST(request: Request) {
           item.content || [],
       )
       .find((c: { type: string }) => c.type === "output_text")?.text;
-    const brief = characterBrief.parse(JSON.parse(output || "null"));
-    const prompt = buildCharacterPrompt(brief);
+    const brief = briefSchema.parse(JSON.parse(output || "null"));
+    const prompt = buildCharacterPrompt(brief, scene);
     const parameters = {
       model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       prompt, size: CHARACTER_SIZE,

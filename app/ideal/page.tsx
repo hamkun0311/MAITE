@@ -1,4 +1,4 @@
-import CharacterStudio from "@/components/CharacterStudio";
+import { CharacterCreationScreen } from "@/components/CharacterStudio";
 export default function IdealPage() {
-  return <CharacterStudio />;
+  return <CharacterCreationScreen />;
 }

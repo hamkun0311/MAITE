@@ -1,44 +1,114 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
+import CharacterImage from "./CharacterImage";
+import useCharacterGallery from "./useCharacterGallery";
+import { createChatSession, type ChatSession } from "@/lib/chat/session";
 import {
   ArrowDownToLine,
-  ArrowUp,
   Cuboid,
   ImagePlus,
   LoaderCircle,
+  MessageCircle,
+  BookOpen,
   Plus,
   Sparkles,
   X,
 } from "lucide-react";
 import StudioNav from "./StudioNav";
-import LiveChat from "./LiveChat";
+import CharacterExperience from "./CharacterExperience";
+import { characterProfileSchema, type CharacterProfile } from "@/lib/chat/character";
 import {
   MAX_CHARACTER_IMAGE,
   CHARACTER_WIDTH,
   CHARACTER_HEIGHT,
   CHARACTER_STYLES,
-  CHARACTER_STYLE_LABELS,
   characterStyleProfile,
 } from "@/lib/characters/schema";
 
 type Message = { role: "user" | "assistant"; content: string };
 type StyleProfile = keyof typeof CHARACTER_STYLES;
-type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile };
-export default function CharacterStudio() {
-  const [messages, setMessages] = useState<Message[]>([]),
-    [input, setInput] = useState("");
+type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile; description: string; profile: CharacterProfile };
+type StudioSession = {
+  creation: ReactNode;
+  art?: Artwork;
+  sessions: Record<"chat" | "story", ChatSession>;
+  openMenu: (mode: "image" | "chat" | "story") => void;
+  editProfile: () => void;
+  visuals: ReturnType<typeof useCharacterGallery>;
+};
+const StudioContext = createContext<StudioSession | null>(null);
+function useStudioSession() {
+  const value = useContext(StudioContext);
+  if (!value) throw new Error("Character studio layout is required");
+  return value;
+}
+export function CharacterCreationScreen() {
+  return useStudioSession().creation;
+}
+export function CharacterActivityScreen({ mode }: { mode: "chat" | "story" }) {
+  const { art, sessions, editProfile, openMenu, visuals } = useStudioSession();
+  if (!art) return <main className="character-missing"><h1>캐릭터를 먼저 만들어주세요.</h1><p>생성한 캐릭터로 대화와 이야기를 시작할 수 있습니다.</p><Link href="/ideal">캐릭터 생성으로 이동</Link></main>;
+  const background = visuals.images.find(image => image.id === visuals.backgrounds[mode]);
+  return <main className="character-screen"><CharacterExperience key={`${mode}-${art.url}`} mode={mode} imageUrl={background?.url || art.url} imageDescription={art.description} profile={art.profile} session={sessions[mode]} gallery={visuals.images} backgroundId={background?.id} onBackground={id => visuals.selectBackground(mode, id)} onGenerateVisual={(kind, context) => visuals.generate(mode, kind, context)} imageJob={visuals.job} imageError={visuals.error} onCancelImage={visuals.cancel} active onEdit={editProfile} onBack={() => openMenu("image")} /></main>;
+}
+export default function CharacterStudio({ children }: { children: ReactNode }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const sessions = useRef({ chat: createChatSession(), story: createChatSession() });
+  const pendingFocus = useRef<"result" | "profile" | null>(null);
+  const app = useRef<HTMLDivElement>(null);
+  const menu = pathname === "/ideal/chat" ? "chat" : pathname === "/ideal/story" ? "story" : "image";
+  useEffect(() => {
+    if (menu === "image") return;
+    const viewport = window.visualViewport;
+    const resize = () => app.current?.style.setProperty("--character-viewport-height", `${viewport?.height ?? window.innerHeight}px`);
+    resize();
+    viewport?.addEventListener("resize", resize);
+    window.addEventListener("resize", resize);
+    return () => { viewport?.removeEventListener("resize", resize); window.removeEventListener("resize", resize); };
+  }, [menu]);
+  const result = useRef<HTMLElement>(null);
+  const profileFields = useRef<HTMLFieldSetElement>(null);
+  const [draft, setDraft] = useState({ name: "", age: "", personality: "", concept: "" });
+  function focusCreation(target: "result" | "profile") {
+    requestAnimationFrame(() => {
+      if (target === "profile") {
+        profileFields.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        profileFields.current?.querySelector("input")?.focus({ preventScroll: true });
+      } else result.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+  function openMenu(next: "image" | "chat" | "story") {
+    if (next === "image") pendingFocus.current = "result";
+    router.push(next === "image" ? "/ideal" : `/ideal/${next}`, { scroll: false });
+    if (next === "image" && menu === "image") focusCreation("result");
+    else if (next !== "image") window.scrollTo({ top: 0, behavior: "instant" });
+  }
+  function editProfile() {
+    pendingFocus.current = "profile";
+    if (menu === "image") focusCreation("profile");
+    else router.push("/ideal", { scroll: false });
+  }
+  useEffect(() => {
+    if (menu !== "image") return;
+    const target = pendingFocus.current;
+    pendingFocus.current = null;
+    if (target) focusCreation(target);
+  }, [pathname]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [art, setArt] = useState<Artwork>(),
     [busy, setBusy] = useState(false),
     [error, setError] = useState("");
-  const [view, setView] = useState<"result" | "reference" | "prompt">("result"),
-    [status, setStatus] = useState("키워드를 보내면 나만의 캐릭터를 그립니다.");
-  const [referenceStyle, setReferenceStyle] = useState<"female" | "male">("female");
+  const [status, setStatus] = useState("캐릭터 특성과 컨셉을 입력하고 생성해주세요.");
   const previousStyle = useRef<StyleProfile | null>(null);
   const controller = useRef<AbortController | null>(null),
     generation = useRef(0),
     previous = useRef<Blob | null>(null),
     bottom = useRef<HTMLDivElement>(null);
-  const pending = useRef<{ messages: Message[]; input: string } | null>(null);
+  const pending = useRef<{ messages: Message[] } | null>(null);
+  const visuals = useCharacterGallery(art && previous.current ? { blob: previous.current, profile: art.profile, style: art.style, description: art.description } : undefined);
   useEffect(
     () => () => {
       controller.current?.abort();
@@ -51,48 +121,57 @@ export default function CharacterStudio() {
     };
   }, [art]);
   useEffect(() => {
+    if (art) {
+      result.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     if (messages.length)
       bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     else bottom.current?.parentElement?.scrollTo({ top: 0 });
-  }, [messages]);
+  }, [messages, art]);
   function cancel() {
     generation.current++;
     controller.current?.abort();
     controller.current = null;
     if (pending.current) {
       setMessages(pending.current.messages);
-      setInput(pending.current.input);
       pending.current = null;
     }
     setBusy(false);
-    setStatus("생성을 취소했습니다. 설명을 다시 보내주세요.");
+    setStatus("생성을 취소했습니다. 설정을 확인하고 다시 생성해주세요.");
   }
   function reset() {
     cancel();
+    visuals.clear();
     setMessages([]);
-    setInput("");
     setArt(undefined);
+    sessions.current = { chat: createChatSession(), story: createChatSession() };
+    pendingFocus.current = "profile";
+    router.replace("/ideal", { scroll: false });
+    if (menu === "image") focusCreation("profile");
+    setDraft({ name: "", age: "", personality: "", concept: "" });
     previous.current = null;
     previousStyle.current = null;
     setError("");
-    setView("result");
     setStatus("새로운 캐릭터의 분위기를 설명해주세요.");
   }
   async function submit() {
-    if (busy || !input.trim()) return;
-    const user: Message = { role: "user", content: input.trim() },
+    if (controller.current) return;
+    const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age) });
+    if (!parsedProfile.success) { setError("캐릭터 이름·나이·성격·컨셉을 입력해주세요."); return; }
+    const profile = parsedProfile.data;
+    const user: Message = { role: "user", content: profile.concept },
       history = [...messages, user];
     const id = ++generation.current;
-    pending.current = { messages, input: user.content };
-    controller.current?.abort();
+    pending.current = { messages };
     const abort = new AbortController();
     controller.current = abort;
     setMessages(history);
-    setInput("");
     setError("");
+    sessions.current = { chat: createChatSession(), story: createChatSession() };
     setArt(undefined);
+    visuals.clear();
     setBusy(true);
-    setView("result");
     setStatus(
       previous.current
         ? "이전 캐릭터를 참고해 요청한 부분을 수정하는 중…"
@@ -102,6 +181,7 @@ export default function CharacterStudio() {
     try {
       const body = new FormData();
       body.set("messages", JSON.stringify(history.slice(-13)));
+      body.set("profile", JSON.stringify(profile));
       if (previous.current)
         body.set("image", previous.current, "previous-character.jpg");
       if (previous.current && previousStyle.current)
@@ -135,12 +215,16 @@ export default function CharacterStudio() {
       const style = parsedStyle.success ? parsedStyle.data : "neutral";
       previousStyle.current = style;
       pending.current = null;
+      const url = URL.createObjectURL(blob);
+      visuals.registerOriginal(blob, url, title);
       setArt({
-        url: URL.createObjectURL(blob),
+        url,
         title,
         summary,
         prompt: response.headers.get("X-Character-Prompt") || "",
         style,
+        profile,
+        description: [history.find(m => m.role === "user")?.content.slice(0, 2000), history.filter(m => m.role === "user").slice(1).map(m => m.content).join("\n").slice(-1400), summary.slice(0, 1000), (response.headers.get("X-Character-Prompt") || "").slice(0, 1500)].filter(Boolean).join("\n").slice(0, 6000),
       });
       setMessages([...history, { role: "assistant", content: summary }]);
       setStatus("이미지 생성 완료 · JPG로 저장할 수 있습니다.");
@@ -156,7 +240,6 @@ export default function CharacterStudio() {
       );
       setStatus("요청을 완료하지 못했습니다.");
       setMessages(history.slice(0, -1));
-      setInput(user.content);
     } finally {
       clearTimeout(timeout);
       if (id === generation.current) {
@@ -165,20 +248,9 @@ export default function CharacterStudio() {
       }
     }
   }
-  return (
-    <div className="chat-app character-app">
-      <header className="chat-header">
-        <a href="/" className="chat-brand">
-          <Cuboid size={26} />
-          maite<span>.</span>
-        </a>
-        <StudioNav />
-        <div>
-          <button onClick={reset} aria-label="새 캐릭터 대화">
-            <Plus size={16} />새 대화
-          </button>
-        </div>
-      </header>
+  const creation = (
+      <div className="character-image-panel">
+      {art && <img className="character-backdrop" src={art.url} alt="" />}
       <main className="chat-layout">
         <div className="character-conversations">
         <section className="conversation">
@@ -187,45 +259,24 @@ export default function CharacterStudio() {
             <h1>어떤 이상형을 그릴까요?</h1>
             <p>취향을 이야기하면, 한 장의 애니메이션 일러스트로.</p>
           </div>
-          <div className="message-list" aria-live="polite">
-            {messages.length === 0 ? (
-              <div className="chat-welcome">
-                <span className="welcome-icon">
-                  <Sparkles size={25} />
-                </span>
-                <h2>단어 몇 개로 시작하는 나만의 캐릭터.</h2>
-                <p>
-                  헤어스타일, 의상, 표정, 분위기를 자유롭게 적어주세요.
-                  <br />
-                  선명한 선화와 풍부한 채색으로 그려드려요.
-                </p>
-                <div className="chat-examples">
-                  {[
-                    "긴 검은 머리와 푸른 눈, 흰 원피스를 입은 차분한 여성",
-                    "작은 드래곤을 안고 웃는 모험가, 초록 눈과 판타지 의상",
-                    "책을 읽는 학생 마법사, 마법학교 교복과 호기심 어린 표정",
-                  ].map((text) => (
-                    <button key={text} onClick={() => setInput(text)}>
-                      {text}
-                      <ArrowUp size={14} />
-                    </button>
-                  ))}
-                </div>
-                <small>
-                  2D 애니메이션 · 세로형 9:16 · {CHARACTER_WIDTH} ×{" "}
-                  {CHARACTER_HEIGHT} 저장
-                  <br />
-                  샘플은 그림체만 참고하며, 캐릭터는 채팅 내용을 따릅니다.
-                </small>
-              </div>
-            ) : (
-              messages.map((m, i) => (
+          <fieldset ref={profileFields} className="character-profile character-image-profile" disabled={busy}>
+            <legend>캐릭터 특성</legend>
+            <p>이름과 성격을 먼저 정해주세요. 이미지·대화·이야기에 함께 반영됩니다.</p>
+            <div className="character-profile-basics">
+              <label>캐릭터 이름<input form="character-generation" name="name" required pattern=".*\S.*" maxLength={80} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="이름" /></label>
+              <label>나이<input form="character-generation" name="age" type="number" required min={1} max={120} step={1} value={draft.age} onChange={event => setDraft({ ...draft, age: event.target.value })} placeholder="나이" /></label>
+            </div>
+            <label>성격<textarea aria-label="성격" form="character-generation" name="personality" required maxLength={1000} value={draft.personality} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, personality: event.target.value }); }} placeholder="캐릭터의 성격을 적어주세요" /></label>
+            <label>컨셉<textarea aria-label="컨셉" form="character-generation" name="concept" required maxLength={1000} value={draft.concept} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, concept: event.target.value }); }} placeholder="관계, 세계관, 배경 등 원하는 설정을 적어주세요" /></label>
+            {art && <small>수정한 특성은 이미지를 다시 생성하면 대화·이야기에 적용됩니다.</small>}
+          </fieldset>
+          <div className="message-list" aria-live="polite" hidden={!messages.length && !busy}>
+            {messages.map((m, i) => (
                 <article key={i} className={`chat-message ${m.role}`}>
                   <span>{m.role === "user" ? "나" : "MAITE"}</span>
                   <p>{m.content}</p>
                 </article>
-              ))
-            )}
+              ))}
             {busy && (
               <div className="thinking">
                 <LoaderCircle className="spin" size={15} />
@@ -241,130 +292,27 @@ export default function CharacterStudio() {
               </p>
             )}
             <form
-              className="chat-composer"
+              className="character-generation-actions"
+              id="character-generation"
               onSubmit={(e) => {
                 e.preventDefault();
                 submit();
               }}
             >
-              <textarea
-                aria-label="만들고 싶은 캐릭터"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                maxLength={2000}
-                disabled={busy}
-                placeholder={
-                  previous.current
-                    ? "머리는 은발로, 표정은 조금 더 다정하게 바꿔줘…"
-                    : "취향에 맞는 캐릭터의 키워드를 입력해주세요…"
-                }
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    submit();
-                  }
-                }}
-              />
-              <div>
-                <span>{input.length}/2000</span>
-                {busy ? (
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      cancel();
-                    }}
-                    aria-label="이미지 생성 취소"
-                  >
-                    <X size={17} />
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={!input.trim()}
-                    aria-label="캐릭터 생성"
-                  >
-                    <ArrowUp size={18} />
-                  </button>
-                )}
-              </div>
+              <button type="submit" disabled={busy}>
+                {busy ? <><LoaderCircle className="spin" size={18} /> 캐릭터 생성 중…</> : <><Sparkles size={18} /> 캐릭터 생성</>}
+              </button>
+              {busy && <button type="button" className="character-generation-cancel" onClick={cancel} aria-label="이미지 생성 취소"><X size={17} /> 생성 취소</button>}
             </form>
-            <p>Enter로 보내기 · Shift + Enter로 줄바꿈 · 로그인 없이 시작</p>
+            <p>입력한 컨셉으로 캐릭터를 생성합니다.</p>
           </div>
         </section>
-        <LiveChat />
         </div>
-        <section className="chat-output character-output">
-          <div className="chat-output-tabs">
-            <button
-              onClick={() => setView("result")}
-              className={view === "result" ? "active" : ""}
-            >
-              <ImagePlus size={15} />
-              캐릭터 이미지
-            </button>
-            <button
-              onClick={() => setView("reference")}
-              className={view === "reference" ? "active" : ""}
-            >
-              <Sparkles size={15} />
-              그림체 참고
-            </button>
-            <button
-              onClick={() => setView("prompt")}
-              className={view === "prompt" ? "active" : ""}
-            >
-              생성 프롬프트
-            </button>
-          </div>
-          {view === "prompt" ? (
-            <div className="chat-code">
-              <h3>
-                {art?.prompt
-                  ? "실제 생성에 사용한 프롬프트"
-                  : "첨부 샘플에서 분석한 공통 그림체"}
-              </h3>
-              {art?.prompt ? <><p>{CHARACTER_STYLE_LABELS[art.style]}</p><p>{art.prompt}</p></> : <>
-                <h4>여자 캐릭터 스타일</h4><p>{CHARACTER_STYLES.female}</p>
-                <h4>남자 캐릭터 스타일</h4><p>{CHARACTER_STYLES.male}</p>
-                <p>채팅에 요청한 캐릭터에 맞춰 스타일을 선택합니다. 성별이 불분명하면 공통 스타일을 사용합니다.</p>
-              </>}
-            </div>
-          ) : (
-            <div
-              className={`character-canvas ${art || view === "reference" ? "has-art" : ""}`}
-              aria-busy={busy}
-            >
-              {view === "reference" ? (
-                <>
-                  <div className="reference-style-picker" role="group" aria-label="캐릭터 참고 스타일">
-                    <button type="button" aria-pressed={referenceStyle === "female"} onClick={() => setReferenceStyle("female")}>여자 스타일</button>
-                    <button type="button" aria-pressed={referenceStyle === "male"} onClick={() => setReferenceStyle("male")}>남자 스타일</button>
-                  </div>
-                  {referenceStyle === "female" ? <>
-                  <img
-                    src="/references/anime-style.png"
-                    alt="그림체 참고 샘플: 작은 드래곤을 안고 웃는 주황색 머리의 모험가"
-                  />
-                  <span className="art-label">
-                    여자 캐릭터 샘플 · 선화와 채색 참고
-                  </span>
-                  </> : <div className="reference-style-description">
-                    <h3>남자 캐릭터 톤앤매너</h3>
-                    <p>섬세하고 가는 선화, 정제된 얼굴 묘사, 차분한 저채도 색감과 회색·보랏빛 명암, 부드러운 셀 채색.</p>
-                    <p>{CHARACTER_STYLES.male}</p>
-                    <small>첨부 샘플을 분석해 저장한 스타일 프롬프트입니다. 머리색·눈색·장신구·표정은 채팅 내용을 따릅니다.</small>
-                  </div>}
-                </>
-              ) : art ? (
-                <img
-                  src={art.url}
-                  alt={`${art.title} — 생성된 2D 캐릭터 일러스트`}
-                />
+        <section className="chat-output character-output" ref={result}>
+          <div className="character-output-heading"><ImagePlus size={16} aria-hidden="true" /><h2>캐릭터 이미지</h2></div>
+          <div className={`character-canvas ${art ? "has-art" : ""}`} aria-busy={busy}>
+            {art ? (
+                <CharacterImage src={art.url} title={art.title} />
               ) : busy ? (
                 <div className="character-loading">
                   <LoaderCircle className="spin" size={32} />
@@ -377,23 +325,19 @@ export default function CharacterStudio() {
                 </div>
               ) : (
                 <div className="character-empty">
-                  <div className="reference-thumbnail">
-                    <img
-                      src="/references/anime-style.png"
-                      alt="애니메이션 캐릭터 그림체 샘플"
-                    />
-                    <span>STYLE REFERENCE</span>
-                  </div>
                   <h2>상상 속 캐릭터를, 눈앞에.</h2>
                   <p>
-                    원하는 키워드를 채팅으로 보내보세요.
+                    캐릭터의 특성과 컨셉을 입력해보세요.
                     <br />
-                    이런 감도의 2D 일러스트로 완성해드릴게요.
+                    나만의 2D 일러스트로 완성해드릴게요.
                   </p>
                 </div>
               )}
             </div>
-          )}
+          {art && !busy && <div className="character-next" role="group" aria-label="캐릭터와 함께하기">
+            <button type="button" aria-label="대화하기" title="대화하기" onClick={() => openMenu("chat")}><MessageCircle size={30} aria-hidden="true" /></button>
+            <button type="button" aria-label="이야기 만들기" title="이야기 만들기" onClick={() => openMenu("story")}><BookOpen size={30} aria-hidden="true" /></button>
+          </div>}
           <div className="chat-progress" role="status">
             {busy ? (
               <LoaderCircle className="spin" size={14} />
@@ -429,10 +373,29 @@ export default function CharacterStudio() {
           </div>
         </section>
       </main>
+      </div>
+  );
+  return (
+    <StudioContext.Provider value={{ creation, art, sessions: sessions.current, openMenu, editProfile, visuals }}>
+    <div ref={app} className={`chat-app character-app ${menu !== "image" ? "is-character-reading" : ""} ${menu === "chat" ? "is-character-chat" : ""}`}>
+      <header className="chat-header">
+        <Link href="/ideal" className="chat-brand">
+          <Cuboid size={26} />
+          maite<span>.</span>
+        </Link>
+        <StudioNav />
+        <div>
+          <button onClick={reset} aria-label="새 캐릭터 대화">
+            <Plus size={16} />새 대화
+          </button>
+        </div>
+      </header>
+      {children}
       <footer className="chat-footer">
-        키워드에서 시작하는 나만의 애니메이션 캐릭터
+        컨셉에서 시작하는 나만의 애니메이션 캐릭터
         <span>결과는 이 탭에서 유지됩니다.</span>
       </footer>
     </div>
+    </StudioContext.Provider>
   );
 }

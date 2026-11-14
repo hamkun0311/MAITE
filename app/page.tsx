@@ -1,5 +1,5 @@
-import ChatStudio from "@/components/ChatStudio";
+import { redirect } from "next/navigation";
 
 export default function Home() {
-  return <ChatStudio />;
+  redirect("/ideal");
 }

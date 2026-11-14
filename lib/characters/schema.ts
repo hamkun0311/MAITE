@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { visualInstructions, type visualRequestSchema } from "./visual.ts";
 export const characterStyleProfile = z.enum(["female", "male", "neutral", "mixed"]);
 export const characterMessages = z
   .array(
@@ -23,6 +24,10 @@ export const characterBrief = z
     styleProfile: characterStyleProfile,
   })
   .strict();
+export const illustrationBrief = characterBrief.extend({
+  sceneLocation: z.string().trim().min(1).max(300).regex(/^[\x20-\x7E]+$/),
+  locationSource: z.enum(["narrative", "reference"]),
+}).strict();
 export const MAX_CHARACTER_IMAGE = 2_500_000;
 export const MAX_CHARACTER_REQUEST = 2_650_000;
 export const CHARACTER_WIDTH = 720;
@@ -39,11 +44,17 @@ export const CHARACTER_STYLE_LABELS = {
   female: "여자 캐릭터 스타일", male: "남자 캐릭터 스타일",
   neutral: "공통 애니메이션 스타일", mixed: "남녀 혼합 스타일",
 } as const;
-export function buildCharacterPrompt(brief: z.infer<typeof characterBrief>) {
-  const references = brief.styleProfile === "female"
+export function buildCharacterPrompt(brief: z.infer<typeof characterBrief> | z.infer<typeof illustrationBrief>, scene?: z.infer<typeof visualRequestSchema>) {
+  const references = scene?.kind === "illustration"
+    ? "The FIRST input image is IDENTITY ONLY: preserve the face, age, hair and eyes, but redraw the character's body pose, gesture, expression, clothing and composition for the story moment. The reference background is NOT locked. Do not preserve the original portrait's setting or staging when the narrative establishes another current location. Any LAST style sample is STYLE ONLY, never a source of identity, setting or pose."
+    : scene?.kind === "outfit"
+    ? "The FIRST input image is an IDENTITY reference: preserve the character's face, age, hair, eyes and body type. Clothing and background follow the latest established conversation scene. The reference background is NOT locked; a newly established current location overrides it. Any separate LAST style sample is STYLE ONLY, never a source of identity or setting."
+    : brief.styleProfile === "female"
     ? "The LAST input image is STYLE ONLY. If there are TWO input images, the FIRST is the previous result: preserve its identity and unchanged details while applying revisions."
     : "Any input image is the previous result, NOT a style reference. Preserve its identity and unchanged details while applying revisions and the selected rendering style.";
-  return `Create the character described below in a vertical 9:16 portrait composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Transfer rendering style only. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. Subject: ${brief.prompt}`
+  const location = scene?.kind === "illustration" ? illustrationBrief.parse(brief) : undefined;
+  const setting = location ? ` REQUIRED CURRENT SCENE LOCATION: ${JSON.stringify(location.sceneLocation)}. Location basis: ${location.locationSource}. Depict the character physically in this setting with recognizable environmental cues, not the reference room with just one new prop. For a cafe, establish a coffee-service counter, espresso equipment, pastry display or additional cafe seating when compatible with the narrative; a single cup in the old room is insufficient. Use framing wide enough to make the current location recognizable. This location takes precedence over any conflicting background in the reference image, original character concept or subject description. Keep the action, pose, clothing and props consistent with this current location. Do not depict an earlier location, recollection or future destination instead.` : "";
+  return `Create the character described below in a vertical 9:16 portrait composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Transfer rendering style only. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. Subject: ${brief.prompt}${visualInstructions(scene)}${setting}`
     .replace(/\s+/g, " ")
     .trim();
 }

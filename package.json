@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "prepare:cad": "node scripts/prepare-cad.mjs",
     "postinstall": "npm run prepare:cad",
-    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts",
+    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts tests/novel.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

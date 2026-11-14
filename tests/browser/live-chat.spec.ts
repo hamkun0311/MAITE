@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { generateCharacter, enterCharacterMode } from "./character-helpers";
 
 test("live chat shows partial output before completion, keeps context and stays separate from images", async ({ page }) => {
   await page.goto("/ideal");
+  await generateCharacter(page);
+  await enterCharacterMode(page);
   // Use a real browser ReadableStream: route.fulfill alone buffers the entire response.
   await page.evaluate(() => {
     const original = window.fetch.bind(window);
@@ -44,11 +47,23 @@ test("live chat shows partial output before completion, keeps context and stays 
   await expect(chat.getByText("다음 이야기", { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeVisible();
+  const log = chat.getByRole("log");
+  await expect.poll(async () => (await log.boundingBox())!.height / 844).toBeGreaterThan(0.65);
+  expect((await log.boundingBox())!.width).toBeGreaterThan(390 * 0.88);
+  for (const viewport of [{ width: 320, height: 568 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(async () => (await log.boundingBox())!.height / viewport.height).toBeGreaterThan(0.55);
+    expect((await log.boundingBox())!.width).toBeGreaterThan(viewport.width * 0.85);
+    await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeInViewport();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("live chat cancellation restores input and API errors allow retry", async ({ page }) => {
   await page.goto("/ideal");
+  await generateCharacter(page);
+  await enterCharacterMode(page);
   let calls = 0;
   await page.route("**/api/chat", async (route) => {
     calls++;

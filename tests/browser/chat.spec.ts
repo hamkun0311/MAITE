@@ -89,7 +89,7 @@ test("chat context to real scene Worker and STEP; cancel and retry", async ({
       },
     });
   });
-  await page.goto("/");
+  await page.goto("/technical/cad");
   await expect(page.getByLabel("서비스 접근 코드")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "로그인", exact: true }),
@@ -152,7 +152,7 @@ test("API failure remains an error and never enables STEP", async ({
       json: { error: "OpenAI API 키가 없습니다." },
     }),
   );
-  await page.goto("/");
+  await page.goto("/technical/cad");
   await page.getByLabel("만들고 싶은 모양").fill("광화문");
   await page.getByRole("button", { name: "보내기", exact: true }).click();
   await expect(

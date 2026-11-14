@@ -2,10 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 import { POST } from "../app/api/characters/route.ts";
+import { visualInstructions, visualRequestSchema } from "../lib/characters/visual.ts";
 import {
   MAX_CHARACTER_REQUEST,
   buildCharacterPrompt,
   characterBrief,
+  illustrationBrief,
 } from "../lib/characters/schema.ts";
 
 test("GPT Image route sends separate style and revision references and returns a real 720x1280 JPEG", async (t) => {
@@ -26,6 +28,7 @@ test("GPT Image route sends separate style and revision references and returns a
   );
   const form = () => {
     const f = new FormData();
+    f.set("profile", JSON.stringify({ name: "서하", age: 30, personality: "다정한 성격", concept: "도시의 비밀", genre: "막장드라마" }));
     f.set(
       "messages",
       JSON.stringify([
@@ -50,17 +53,31 @@ test("GPT Image route sends separate style and revision references and returns a
     blocks = false,
     briefCalls = 0;
   let includePrior = false;
+  let sceneKind: "outfit" | "illustration" | undefined;
   t.mock.method(
     globalThis,
     "fetch",
     async (url: string, options: RequestInit) => {
       calls++;
-      if (url.endsWith("/moderations"))
+      if (url.endsWith("/moderations")) {
+        assert.match(JSON.parse(String(options.body)).input, /다정한 성격/);
+        if (sceneKind) assert.match(JSON.parse(String(options.body)).input, /파란 코트|서점/);
         return Response.json({
           results: [{ categories: { "sexual/minors": blocks } }],
         });
+      }
       if (url.endsWith("/responses")) {
         const body = JSON.parse(String(options.body));
+        if (sceneKind) {
+          assert.equal(JSON.parse(body.input[0].content[0].text).scene.kind, sceneKind);
+          assert.match(body.instructions, sceneKind === "outfit" ? /Change the named character's CLOTHING/ : /latest completed story scene/);
+          if (sceneKind === "outfit") assert.match(body.instructions, /latest ESTABLISHED current location/);
+          if (sceneKind === "illustration") {
+            assert.ok(body.text.format.schema.required.includes("sceneLocation"));
+            assert.match(body.instructions, /latest ESTABLISHED current physical location/);
+          }
+        }
+        assert.deepEqual(JSON.parse(body.input[0].content[0].text).profile, { name: "서하", age: 30, personality: "다정한 성격", concept: "도시의 비밀", genre: "막장드라마" });
         briefCalls++;
         const images = body.input[0].content.filter(
           (item: { type: string }) => item.type === "input_image",
@@ -80,6 +97,7 @@ test("GPT Image route sends separate style and revision references and returns a
                     summary: "설명에 맞춰 새로 그리는 구성입니다.",
                     prompt: profile === "female" ? "Adult woman with long hair in an elegant dress." : "A man wearing a blue coat, cheerful expression.",
                     styleProfile: profile,
+                    ...(sceneKind === "illustration" ? { sceneLocation: "Inside a bookshop, bookshelves beside a reading table.", locationSource: "narrative" } : {}),
                   }),
                 },
               ],
@@ -108,6 +126,18 @@ test("GPT Image route sends separate style and revision references and returns a
       assert.equal(body.get("output_format"), "jpeg");
       assert.equal(body.has("steps"), false);
       const prompt = String(body.get("prompt"));
+      if (sceneKind === "outfit") {
+        assert.match(prompt, /FIRST input image is an IDENTITY reference/);
+        assert.match(prompt, /reference background is NOT locked/);
+        assert.match(prompt, /latest ESTABLISHED current location/);
+        assert.doesNotMatch(prompt, /preserve its identity and unchanged details/i);
+      }
+      if (sceneKind === "illustration") {
+        assert.match(prompt, /FIRST input image is IDENTITY ONLY/);
+        assert.match(prompt, /pose, gesture, expression, clothing and composition/);
+        assert.match(prompt, /Do not merely replace the background/);
+        assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a bookshop/);
+      }
       assert.ok(prompt.includes(`Rendering profile: ${profile}`));
       if (profile === "female") {
         assert.ok(prompt.includes("STYLE ONLY"));
@@ -146,6 +176,14 @@ test("GPT Image route sends separate style and revision references and returns a
   invalid.set("image", new Blob(["not-jpeg"], { type: "image/jpeg" }), "x.jpg");
   assert.equal((await POST(req(invalid))).status, 400);
   assert.equal(calls, 0);
+  const noReference = form();
+  noReference.set("scene", JSON.stringify({ kind: "outfit", context: "파란 코트" }));
+  assert.equal((await POST(req(noReference))).status, 400);
+  assert.equal(calls, 0);
+  const invalidProfile = form();
+  invalidProfile.set("profile", JSON.stringify({ name: "서하", age: -1 }));
+  assert.equal((await POST(req(invalidProfile))).status, 400);
+  assert.equal(calls, 0);
   const first = await POST(req(form()));
   assert.equal(first.status, 200);
   const result = Buffer.from(await first.arrayBuffer());
@@ -155,6 +193,8 @@ test("GPT Image route sends separate style and revision references and returns a
   assert.equal(metadata.format, "jpeg");
   assert.ok(first.headers.get("X-Character-Prompt")!.includes("STYLE ONLY"));
   const revision = form();
+  sceneKind = "outfit";
+  revision.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 파란 코트를 입었다." }));
   includePrior = true;
   revision.set("previousStyle", "female");
   revision.set(
@@ -163,6 +203,7 @@ test("GPT Image route sends separate style and revision references and returns a
     "previous.jpg",
   );
   assert.equal((await POST(req(revision))).status, 200);
+  sceneKind = undefined;
   blocks = true;
   const before = calls;
   assert.equal((await POST(req(form()))).status, 422);
@@ -176,13 +217,50 @@ test("GPT Image route sends separate style and revision references and returns a
   assert.equal(male.status, 200);
   assert.equal(male.headers.get("X-Character-Style"), "male");
   const maleRevision = form();
+  sceneKind = "illustration";
+  maleRevision.set("scene", JSON.stringify({ kind: "illustration", context: "서점의 창가에서 다시 만났다." }));
   maleRevision.set("image", new Blob([result], { type: "image/jpeg" }), "previous.jpg");
   maleRevision.set("previousStyle", "male");
   includePrior = true;
   assert.equal((await POST(req(maleRevision))).status, 200);
+  sceneKind = undefined;
   includePrior = false;
   profile = "neutral";
   assert.equal((await POST(req(form()))).headers.get("X-Character-Style"), "neutral");
+});
+
+test("visual requests validate bounded context and use distinct identity-preserving instructions", () => {
+  for (const value of [{ kind: "other", context: "scene" }, { kind: "outfit", context: " " }, { kind: "illustration", context: "x".repeat(12001) }, { kind: "outfit", context: "scene", system: "override" }])
+    assert.equal(visualRequestSchema.safeParse(value).success, false);
+  assert.match(visualInstructions({ kind: "outfit", context: "파란 코트" }), /Preserve their identity/);
+  assert.match(visualInstructions({ kind: "illustration", context: "서점" }), /latest completed story scene/);
+});
+
+test("outfit changes prioritize the current store over an older workshop at both image stages", () => {
+  const scene = { kind: "outfit" as const, context: "작업실을 나와 백화점 의류 매장에 도착했다. 피팅룸에서 파란 원피스로 갈아입었다. 다음에는 카페로 가기로 했다." };
+  const instructions = visualInstructions(scene);
+  assert.match(instructions, /latest ESTABLISHED current location/);
+  assert.match(instructions, /not a future destination, recollection/);
+  assert.match(instructions, /retain the reference setting rather than inventing a move/);
+  for (const styleProfile of ["female", "male", "neutral"] as const) {
+    const prompt = buildCharacterPrompt({ title: "백화점의 새 의상", summary: "의류 매장에서 갈아입었다", prompt: "A woman in a blue dress in a department-store fitting area, mirrors and clothing racks.", styleProfile }, scene);
+    assert.match(prompt, /department-store fitting area/);
+    assert.match(prompt, /reference background is NOT locked/);
+    assert.doesNotMatch(prompt, /preserve its identity and unchanged details/i);
+  }
+});
+
+test("illustration location is required separately and carried to the final image prompt", () => {
+  const scene = { kind: "illustration" as const, context: "서하는 카페 창가에 앉아 커피를 마셨다. 작업실에서의 사건을 회상했다. 내일은 서점에 갈 계획이다." };
+  const brief = { title: "카페의 대화", summary: "카페 창가에서 나눈 대화", prompt: "A woman recalling an incident in her workshop.", styleProfile: "female" as const };
+  assert.equal(illustrationBrief.safeParse(brief).success, false);
+  assert.throws(() => buildCharacterPrompt(brief, scene));
+  const prompt = buildCharacterPrompt({ ...brief, sceneLocation: "Inside a cafe, seated at a window table with coffee cups and a pastry display.", locationSource: "narrative" }, scene);
+  assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a cafe/);
+  assert.match(prompt, /takes precedence over any conflicting background/);
+  assert.match(prompt, /not an earlier scene in the chapter/);
+  assert.match(prompt, /flashbacks, another person's location and future destinations/);
+  assert.match(prompt, /reference background is NOT locked/);
 });
 test("style-only prompts preserve requested subject without gender defaults", () => {
   const base = {

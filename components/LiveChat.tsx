@@ -1,44 +1,104 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { ArrowUp, LoaderCircle, MessageCircle, Square } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowRight, ArrowUp, LoaderCircle, MessageCircle, Square } from "lucide-react";
 import { readEvents } from "@/lib/chat/stream";
+import type { CharacterContext } from "@/lib/chat/character";
+import { createChatSession, type ChatSession } from "@/lib/chat/session";
+import { illustrationContext, mentionsClothing, plainDialogue, visualContext } from "@/lib/chat/presentation";
+import type { CharacterImageJob, VisualKind } from "@/lib/characters/gallery";
+import { storyStateSchema, type StoryState } from "@/lib/novel/state";
+import { speechStyleSchema, type SpeechStyle } from "@/lib/chat/speech";
+
+const storyPhases: Record<string, string> = { planning: "다음 전개 구상 중…", writing: "이야기 작성중", reviewing: "이야기 흐름 확인 중…", rewriting: "이야기 다듬는 중…", remembering: "이야기 마무리 중…" };
 
 type Message = { role: "user" | "assistant"; content: string };
-export default function LiveChat() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState("");
+export default function LiveChat({ character, active = true, headingContent, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
+  character?: CharacterContext; active?: boolean; headingContent?: ReactNode; session?: ChatSession;
+  onGenerateVisual?: (kind: VisualKind, context: string) => Promise<void>;
+  imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void;
+}) {
+  const localSession = useRef(createChatSession());
+  const saved = session ?? localSession.current;
+  const autoStarted = useRef(saved.started);
+  const [messages, setMessages] = useState<Message[]>(saved.messages);
+  const [input, setInput] = useState(saved.input);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
-  const committed = useRef<Message[]>([]);
+  const [storyPhase, setStoryPhase] = useState("이야기 작성중");
+  const [notice, setNotice] = useState(saved.notice);
+  const committed = useRef<Message[]>(saved.committed);
+  // Only the latest completed user/character exchange may enable an outfit job.
+  const outfitAvailable = saved.latestClothingMentioned ?? mentionsClothing(committed.current.slice(-2));
   const controller = useRef<AbortController | null>(null);
   const sequence = useRef(0), stopped = useRef(false);
   const log = useRef<HTMLDivElement>(null);
-  useEffect(() => () => { controller.current?.abort(); }, []);
-  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [messages]);
+  const followOutput = useRef(true);
+  const previousTurnLength = useRef(0);
+  useEffect(() => {
+    saved.messages = messages; saved.input = input; saved.notice = notice;
+  }, [saved, messages, input, notice]);
+  useEffect(() => () => {
+    sequence.current++;
+    if (controller.current) {
+      if (!saved.messages.at(-1)?.content.trim()) {
+        saved.input = saved.messages.at(-2)?.content || "";
+        saved.messages = saved.messages.slice(0, -2);
+      }
+      saved.notice = "화면을 이동해 응답을 중지했습니다.";
+      controller.current.abort();
+    }
+  }, [saved]);
+  useEffect(() => {
+    if (character?.mode !== "story" || !active || autoStarted.current) return;
+    // Defer until mount settles so development Strict Mode does not send two requests.
+    const timer = setTimeout(() => { autoStarted.current = true; saved.started = true; void submit("설정에 맞춰 첫 장면부터 이야기를 시작해줘."); }, 0);
+    return () => clearTimeout(timer);
+  }, [character, active]);
+  useEffect(() => {
+    const element = log.current;
+    if (!element) return;
+    if (character?.mode === "story") {
+      // Start each installment at its first line instead of chasing streamed tokens.
+      if (messages.length !== previousTurnLength.current) {
+        const last = element.lastElementChild;
+        if (last) element.scrollTop += last.getBoundingClientRect().top - element.getBoundingClientRect().top;
+      }
+    } else if (followOutput.current) element.scrollTop = element.scrollHeight;
+    previousTurnLength.current = messages.length;
+  }, [messages, character?.mode]);
   function reset() {
     sequence.current++;
     controller.current?.abort();
     controller.current = null;
     committed.current = [];
+    Object.assign(saved, { messages: [], committed: [], input: "", notice: "", storyState: undefined, speechStyle: undefined, clothingDetected: undefined, latestClothingMentioned: undefined });
+    followOutput.current = true;
+    previousTurnLength.current = 0;
     setMessages([]); setInput(""); setNotice(""); setBusy(false);
   }
-  async function submit() {
-    if (controller.current || !input.trim()) return;
-    const text = input.trim();
-    const history: Message[] = [...committed.current.slice(-20), { role: "user", content: text }];
+  async function submit(initialText?: string) {
+    const text = (initialText ?? input).trim();
+    if (controller.current || !text) return;
+    const isStory = character?.mode === "story";
+    const storyState = saved.storyState;
+    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => message.role === "assistant" ? { ...message, content: isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content) } : message), { role: "user", content: text }];
     while (history.length > 1 && history.reduce((n, m) => n + m.content.length, 0) > 24000)
       history.splice(0, 2);
     const displayed = [...messages, { role: "user" as const, content: text }];
     const abort = new AbortController(), id = ++sequence.current;
     controller.current = abort; stopped.current = false;
+    followOutput.current = true;
     setMessages([...displayed, { role: "assistant", content: "" }]);
     setInput(""); setNotice(""); setBusy(true);
+    setStoryPhase("다음 전개 구상 중…");
     let answer = "", completed = false;
+    let nextChapter: { text: string; state: StoryState } | undefined;
+    let nextSpeech: SpeechStyle | undefined;
+    let clothingDetected: boolean | undefined;
     const timeout = setTimeout(() => abort.abort(), 160000);
     try {
       const response = await fetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history }), signal: abort.signal,
+        body: JSON.stringify({ messages: history, character, ...(isStory && storyState ? { storyState } : {}), ...(!isStory && character && saved.speechStyle ? { speechStyle: saved.speechStyle } : {}) }), signal: abort.signal,
       });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
@@ -48,15 +108,41 @@ export default function LiveChat() {
         throw new Error("응답 형식이 올바르지 않습니다.");
       for await (const event of readEvents(response.body)) {
         if (id !== sequence.current) return;
-        if (event.type === "delta" && typeof event.text === "string") {
+        if (isStory && event.type === "phase" && typeof event.phase === "string") {
+          setStoryPhase(storyPhases[event.phase] || "이야기 작성중");
+        } else if (isStory && event.type === "chapter") {
+          if (nextChapter || typeof event.text !== "string" || !event.text.trim() || event.text.length > 8000)
+            throw new Error("이야기 응답 형식이 올바르지 않습니다.");
+          const state = storyStateSchema.parse(event.state);
+          if (event.expectedChapter !== (storyState?.chapter ?? 0) || state.chapter !== (storyState?.chapter ?? 0) + 1 || state.previousProse !== event.text)
+            throw new Error("이야기 회차가 일치하지 않습니다. 다시 시도해주세요.");
+          nextChapter = { text: event.text, state };
+        } else if (!isStory && event.type === "clothing" && typeof event.mentioned === "boolean") {
+          clothingDetected = event.mentioned;
+        } else if (!isStory && event.type === "speech") {
+          const parsed = speechStyleSchema.safeParse(event.speechStyle);
+          if (!parsed.success) throw new Error("대화 응답 형식이 올바르지 않습니다.");
+          nextSpeech = parsed.data;
+        } else if (!isStory && event.type === "delta" && typeof event.text === "string") {
           answer += event.text;
           if (answer.length > 8000) throw new Error("응답이 너무 길어 중단했습니다.");
-          setMessages([...displayed, { role: "assistant", content: answer }]);
+          setMessages([...displayed, { role: "assistant", content: plainDialogue(answer) }]);
         } else if (event.type === "done") { completed = true; break; }
         else if (event.type === "error") throw new Error(typeof event.message === "string" ? event.message : "응답이 중단되었습니다.");
       }
-      if (!completed || !answer.trim()) throw new Error("응답이 중단되었습니다. 다시 시도해주세요.");
-      committed.current = [...history, { role: "assistant", content: answer }];
+      const prose = plainDialogue(isStory ? nextChapter?.text ?? "" : answer).trim();
+      if (!completed || !prose) throw new Error("응답이 중단되었습니다. 다시 시도해주세요.");
+      if (isStory && nextChapter) {
+        saved.storyState = nextChapter.state;
+        setMessages([...displayed, { role: "assistant", content: prose }]);
+      }
+      committed.current = [...history, { role: "assistant", content: prose }];
+      saved.committed = committed.current;
+      if (!isStory && nextSpeech) saved.speechStyle = nextSpeech;
+      if (!isStory) {
+        saved.latestClothingMentioned = clothingDetected ?? mentionsClothing(committed.current.slice(-2));
+        if (saved.latestClothingMentioned) saved.clothingDetected = true;
+      }
     } catch (error) {
       if (id !== sequence.current) return;
       setNotice(stopped.current ? "응답을 중지했습니다." : abort.signal.aborted ? "응답 시간이 초과되었습니다. 다시 시도해주세요." : error instanceof Error ? error.message : "대화 중 오류가 발생했습니다.");
@@ -71,21 +157,34 @@ export default function LiveChat() {
   return (
     <section className="live-chat" aria-label="AI 실시간 대화">
       <div className="live-chat-heading">
-        <div><h2><MessageCircle size={18} /> AI와 대화하기</h2><p>궁금한 점이나 떠오르는 이야기를 나눠보세요.</p></div>
+        {headingContent ?? <div><h2><MessageCircle size={18} /> {character ? character.mode === "story" ? "함께 쓰는 이야기" : `${character.name}와 대화하기` : "AI와 대화하기"}</h2>{character?.mode !== "story" && <p>{character ? "그림 속 캐릭터와 나만의 장면을 이어가세요." : "궁금한 점이나 떠오르는 이야기를 나눠보세요."}</p>}</div>}
         <button type="button" onClick={reset} aria-label="AI 대화 초기화">새 대화</button>
       </div>
-      <div className="live-chat-log" ref={log} role="log" aria-label="AI 대화 기록" aria-live="polite" aria-relevant="additions text">
-        {!messages.length && <p className="live-chat-empty">캐릭터 아이디어부터 일상 이야기까지, 자유롭게 대화하세요.</p>}
-        {messages.map((m, i) => <article className={`chat-message ${m.role}`} key={i}><span>{m.role === "user" ? "나" : "AI"}</span><p>{m.content || "답변을 기다리는 중…"}</p></article>)}
+      <div className="live-chat-log" ref={log} role="log" aria-label="AI 대화 기록" aria-live="polite" aria-relevant="additions text" onScroll={event => {
+        const element = event.currentTarget;
+        followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
+      }}>
+        {!messages.length && character?.mode !== "story" && <div className="live-chat-empty"><p>첫마디로 둘만의 이야기를 시작해보세요.</p><button className="character-start" type="button" onClick={() => setInput("안녕. 우리 처음 만난 순간부터 시작해볼까?")}>첫인사 준비하기</button></div>}
+        {messages.map((m, i) => character?.mode === "story" && m.role === "user" ? null : <article className={`chat-message ${m.role}`} key={i}><span>{m.role === "user" ? "나" : character?.mode === "story" ? "이야기" : character?.name || "AI"}</span><p>{(m.role === "assistant" ? plainDialogue(m.content) : m.content) || (character?.mode === "story" ? storyPhase : "대화 작성중")}</p></article>)}
       </div>
       {notice && <p className="chat-error" role="status">{notice}</p>}
-      <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-        <textarea aria-label="AI에게 보낼 메시지" placeholder="AI에게 이야기해보세요…" maxLength={2000} value={input} disabled={busy} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => {
+      {imageJob && <div className="character-visual-status" role="status"><span><LoaderCircle className="spin" size={15} />{imageJob.kind === "illustration" ? "삽화 생성 중…" : "의상 변경 이미지 생성 중…"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
+      {imageError && <p className="character-visual-error" role="alert">{imageError}</p>}
+      {onGenerateVisual && character && (character.mode === "story" || saved.clothingDetected || mentionsClothing(committed.current)) && <button className="character-visual-button" type="button" disabled={busy || !!imageJob || (character.mode === "chat" && !outfitAvailable) || !committed.current.some(message => message.role === "assistant" && message.content.trim())} onClick={() => {
+        if (busy || imageJob || (character.mode === "chat" && !outfitAvailable)) return;
+        void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", character.mode === "story" ? illustrationContext(committed.current, saved.storyState) : visualContext(committed.current));
+      }}>{character.mode === "story" ? "삽화 생성" : "의상 변경하기"}</button>}
+      {character?.mode === "story" ? <button className="story-next-button" type="button" disabled={busy || !!imageJob} aria-busy={busy} onClick={() => {
+        void submit(committed.current.length
+          ? "앞선 이야기의 사건과 인물 관계를 이어서 다음 장면을 써줘. 이전 내용을 반복하지 말고 자연스럽게 이어줘."
+          : "설정에 맞춰 첫 장면부터 이야기를 시작해줘.");
+      }}>다음 이야기 {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+        <textarea aria-label="AI에게 보낼 메시지" placeholder="캐릭터에게 이야기해보세요…" maxLength={2000} value={input} disabled={busy} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }
         }} />
         <div><span>{input.length}/2000</span>{busy ? <button type="button" aria-label="AI 응답 중지" onClick={(event) => { event.preventDefault(); stopped.current = true; controller.current?.abort(); }}><Square size={14} /></button> : <button type="submit" aria-label="AI 메시지 보내기" disabled={!input.trim()}><ArrowUp size={18} /></button>}</div>
-      </form>
-      <p className="live-chat-status" role="status">{busy ? <><LoaderCircle size={13} className="spin" /> 답변하는 중…</> : "GPT-5.4 mini · 실시간 대화 · 이미지 생성과 별도 대화"}</p>
+      </form>}
+      <p className="live-chat-status" role="status">{busy ? <><LoaderCircle size={13} className="spin" /> {character?.mode === "story" ? storyPhase : "대화 작성중"}</> : "AI 캐릭터의 허구의 대화·이야기"}</p>
     </section>
   );
 }
