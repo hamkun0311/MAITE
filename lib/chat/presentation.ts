@@ -1,5 +1,6 @@
 import type { ChatMessage } from "./session.ts";
 import type { StoryState } from "../novel/state.ts";
+import type { ChatMemory } from "./memory.ts";
 
 export function plainDialogue(text: string, mode: "prose" | "chat" = "prose") {
   const source = mode === "chat" ? text.replace(/__([^_\n]+)__/g, "$1") : text;
@@ -21,11 +22,25 @@ export function visualContext(messages: ChatMessage[]) {
   return messages.slice(-12).map(message => `${message.role === "assistant" ? "캐릭터/이야기" : "사용자"}: ${plainDialogue(message.content)}`).join("\n\n").slice(-12000).trim();
 }
 
+export function outfitContext(messages: ChatMessage[], memory?: ChatMemory) {
+  const facts = memory?.facts.filter(fact => ["user", "character"].includes(fact.subjectId) &&
+    /location|outfit|cloth|wardrobe|attire|wear|situation|장소|의상|착장|옷|위치|상황/i.test(fact.action)).slice(-8)
+    .map(({ subjectId, action, value, certainty, sourceTurnId }) => ({ subjectId, action, value, certainty, sourceTurnId }));
+  const continuity = facts?.length ? `Established conversation continuity (not the original image setting; later explicit changes override older facts):\n${JSON.stringify({ participants: memory!.participants.filter(person => ["user", "character"].includes(person.id)), facts })}\n\n` : "";
+  const heading = "Recent completed dialogue (latest last; distinguish the character's outfit from the user's):\n";
+  const recent = messages.slice(-20).map(message => `${message.role === "assistant" ? "캐릭터" : "사용자"}: ${plainDialogue(message.content)}`).join("\n\n");
+  return `${continuity}${heading}${recent.slice(-(12000 - continuity.length - heading.length))}`.trim();
+}
+
 export function illustrationContext(messages: ChatMessage[], memory?: Pick<StoryState, "summary" | "currentSituation">) {
-  const prose = plainDialogue(messages.filter(message => message.role === "assistant").at(-1)?.content ?? "").slice(-8000).trim();
+  const chapters = messages.filter(message => message.role === "assistant");
+  const prose = plainDialogue(chapters.at(-1)?.content ?? "").slice(-7500).trim();
+  const previous = plainDialogue(chapters.at(-2)?.content ?? "").trim();
+  // Keep both the arrival at a chapter's opening and its final location.
+  const bridge = previous ? `Previous chapter (location continuity only, NOT the moment to illustrate):\n${previous.length <= 1800 ? previous : previous.slice(0, 900) + "\n[...]\n" + previous.slice(-900)}\n\n` : "";
   const continuity = memory ? [
     memory.summary && `Continuity summary (background knowledge, not a scene to redraw): ${memory.summary.slice(0, 1400)}`,
     memory.currentSituation && `Current situation after the latest chapter: ${memory.currentSituation.slice(0, 400)}`,
   ].filter(Boolean).join("\n") : "";
-  return continuity ? `${continuity}\n\nLatest completed chapter (current action):\n${prose}` : prose;
+  return `${continuity ? continuity + "\n\n" : ""}${bridge}Latest completed chapter (current action):\n${prose}`;
 }

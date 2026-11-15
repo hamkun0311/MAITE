@@ -5,19 +5,25 @@ import { storyStateSchema } from "../../../lib/novel/state.ts";
 import { generateChapter } from "../../../lib/novel/generate.ts";
 import { resolveSpeechStyle, speechInstructions, speechStyleSchema } from "../../../lib/chat/speech.ts";
 import { detectClothing } from "../../../lib/chat/clothing.ts";
-import { dialogueSchema, streamedDialogue } from "../../../lib/chat/dialogue.ts";
+import { streamedDialogue } from "../../../lib/chat/dialogue.ts";
+import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, mergeChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
+import { storyComplete } from "../../../lib/novel/series.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
 const schema = z.object({
   character: characterContextSchema.optional(),
   storyState: storyStateSchema.optional(),
+  additionalConcept: z.string().trim().min(1).max(1000).optional(),
+  chatMemory: chatMemorySchema.optional(),
   speechStyle: speechStyleSchema.optional(),
   messages: z.array(z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().trim().min(1).max(8000),
   }).strict()).min(1).max(21),
 }).strict().refine(({ storyState, character }) => !storyState || character?.mode === "story")
+  .refine(({ additionalConcept, character }) => !additionalConcept || character?.mode === "story")
+  .refine(({ chatMemory, character }) => !chatMemory || character?.mode === "chat")
   .refine(({ speechStyle, character }) => !speechStyle || character?.mode === "chat").refine(({ messages }) =>
   messages.at(-1)?.role === "user" &&
   messages.reduce((n, m) => n + m.content.length, 0) <= 24000,
@@ -55,7 +61,9 @@ export async function POST(request: Request) {
         chunks.push(value);
       }
     } finally { reader.releaseLock(); }
-    const { messages, character, storyState, speechStyle } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const { messages, character, storyState, speechStyle, additionalConcept, chatMemory } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (character?.mode === "story" && storyComplete(storyState) && !additionalConcept)
+      return fail("완결된 이야기입니다. 컨셉을 추가하거나 새 이야기로 시작해주세요.", 409);
     if (Date.now() > usage.until) { usage.count = 0; usage.until = Date.now() + 60000; }
     if (usage.count >= 15) return fail("요청이 많습니다. 잠시 후 다시 대화해주세요.", 429);
     usage.count++;
@@ -68,7 +76,7 @@ export async function POST(request: Request) {
             if (!signal.aborted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
           };
           try {
-            const chapter = await generateChapter({ character, state: storyState,
+            const chapter = await generateChapter({ character, state: storyState, additionalConcept,
               previous: messages.filter(message => message.role === "assistant").at(-1)?.content,
               direction: messages.at(-1)!.content, key, signal,
               phase: phase => { stage = phase; send({ type: "phase", phase }); },
@@ -93,6 +101,7 @@ export async function POST(request: Request) {
       } });
     }
     const selectedSpeech = character?.mode === "chat" ? await resolveSpeechStyle({ character, current: speechStyle, messages, key, signal }) : undefined;
+    const memory = character?.mode === "chat" ? chatMemory ?? emptyChatMemory(character.name) : undefined;
     const upstream = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -100,9 +109,10 @@ export async function POST(request: Request) {
       body: JSON.stringify({
         model: "gpt-5.4-mini", stream: true, store: false,
         reasoning: { effort: "low" }, max_output_tokens: 2000,
-        instructions: [characterInstructions(character), ...(selectedSpeech ? [speechInstructions(selectedSpeech)] : [])].join("\n\n"),
+        instructions: [characterInstructions(character), ...(selectedSpeech ? [speechInstructions(selectedSpeech)] : []),
+          ...(memory && character ? [conversationInstructions(character, memory, messages.at(-1)!.content)] : [])].join("\n\n"),
         input: messages,
-        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: z.toJSONSchema(dialogueSchema) } } } : {}),
+        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: z.toJSONSchema(characterDialogueSchema) } } } : {}),
       }),
     });
     if (!upstream.ok || !upstream.body) {
@@ -117,6 +127,7 @@ export async function POST(request: Request) {
           let completed = false;
           let answer = "";
           let rawDialogue = "";
+          let nextMemory: ChatMemory | undefined;
           for await (const event of readEvents(upstream.body!)) {
             if ((event.type === "response.output_text.delta" || event.type === "response.refusal.delta") && typeof event.delta === "string") {
               if (character?.mode === "chat") {
@@ -133,8 +144,13 @@ export async function POST(request: Request) {
             }
             if (event.type === "response.completed") {
               if (character?.mode === "chat") {
-                const final = dialogueSchema.parse(JSON.parse(rawDialogue)).utterances.join("\n\n");
+                const result = characterDialogueSchema.parse(JSON.parse(rawDialogue));
+                const final = result.utterances.join("\n\n");
                 if (!final.trim() || final !== answer) throw new Error("Invalid dialogue output");
+                nextMemory = mergeChatMemory(memory!, result.memory, messages.at(-1)!.content, final);
+                const ids = new Set(nextMemory.participants.map(person => person.id));
+                if ([result.continuity.actorId, result.continuity.targetId].some(id => id !== null && !ids.has(id)) ||
+                  result.continuity.factIds.some(id => !memory!.facts.some(fact => fact.id === id))) console.info("chat-continuity-rejected");
               }
               completed = true;
               if (character?.mode === "chat") {
@@ -148,6 +164,7 @@ export async function POST(request: Request) {
                 }
               }
               if (selectedSpeech) send({ type: "speech", speechStyle: selectedSpeech });
+              if (nextMemory) send({ type: "memory", state: nextMemory, expectedTurn: memory!.turn });
               send({ type: "done" }); break;
             }
             if (["error", "response.failed", "response.incomplete"].includes(String(event.type)))

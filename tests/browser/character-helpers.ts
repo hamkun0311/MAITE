@@ -2,13 +2,13 @@ import type { Page } from "@playwright/test";
 import sharp from "sharp";
 import { emptyStoryState, type StoryState } from "../../lib/novel/state";
 
-export function chapterEvent(body: { storyState?: StoryState }, text: string) {
+export function chapterEvent(body: { storyState?: StoryState; additionalConcept?: string }, text: string) {
   const state = body.storyState ?? emptyStoryState();
   return { type: "chapter", text, expectedChapter: state.chapter,
-    state: { ...state, chapter: state.chapter + 1, previousProse: text, previousEnding: text.slice(-700),
+    state: { ...state, ...(body.additionalConcept ? { seriesStartChapter: state.chapter, seriesConcept: body.additionalConcept } : {}), chapter: state.chapter + 1, previousProse: text, previousEnding: text.slice(-700),
       recentEvents: ["서하가 친구와 재회했다."], resolvedEvents: ["서점에서의 재회"], nextChapterGoal: "함께 서점을 정리한다." } };
 }
-export function storyWire(body: { storyState?: StoryState }, text: string) {
+export function storyWire(body: { storyState?: StoryState; additionalConcept?: string }, text: string) {
   return `data: ${JSON.stringify(chapterEvent(body, text))}\n\ndata: {"type":"done"}\n\n`;
 }
 

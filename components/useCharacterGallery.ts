@@ -14,12 +14,26 @@ export default function useCharacterGallery(reference?: Reference) {
   const controller = useRef<AbortController | null>(null);
   const sequence = useRef(0);
   const urls = useRef(new Set<string>());
+  const [archive, setArchive] = useState<CharacterGalleryImage[]>([]);
+  const archiveRef = useRef<CharacterGalleryImage[]>([]);
   useEffect(() => () => {
     sequence.current++;
     controller.current?.abort();
     urls.current.forEach(url => URL.revokeObjectURL(url));
     urls.current.clear();
+    archiveRef.current.forEach(image => URL.revokeObjectURL(image.url));
+    archiveRef.current = [];
   }, []);
+
+  // The gallery owns separate URLs so a new character can clear its current
+  // backgrounds without invalidating earlier generated images.
+  function remember(image: CharacterGalleryImage) {
+    const saved = { ...image, id: crypto.randomUUID(), url: URL.createObjectURL(image.blob) };
+    const next = [saved, ...archiveRef.current];
+    next.slice(MAX_GALLERY_IMAGES).forEach(image => URL.revokeObjectURL(image.url));
+    archiveRef.current = next.slice(0, MAX_GALLERY_IMAGES);
+    setArchive(archiveRef.current);
+  }
 
   function cancel() {
     sequence.current++;
@@ -43,6 +57,7 @@ export default function useCharacterGallery(reference?: Reference) {
     imageRef.current = [original];
     setImages([original]);
     setBackgrounds({ chat: original.id, story: original.id });
+    remember(original);
   }
   function selectBackground(mode: "chat" | "story", id: string) {
     if (imageRef.current.some(image => image.id === id)) setBackgrounds(current => ({ ...current, [mode]: id }));
@@ -61,7 +76,9 @@ export default function useCharacterGallery(reference?: Reference) {
       body.set("previousStyle", reference.style);
       body.set("image", reference.blob, "original-character.jpg");
       body.set("scene", JSON.stringify({ kind, context: context.slice(-12000) }));
-      body.set("messages", JSON.stringify([{ role: "user", content: reference.description.slice(0, 1600) + (kind === "illustration" ? "\n위 설명과 첨부 이미지는 인물 식별용입니다. scene.context의 최신 원고와 현재 상황에서 실제 현재 장소를 먼저 확정하고 그 장소의 장면을 그려주세요. 원본 배경·과거 장면·회상·앞으로 갈 장소는 현재 장소보다 우선하지 않습니다. 자세·손짓·표정·의상·소품·구도도 현재 장면에 맞게 새로 그려주세요." : "\n위 설명과 첨부 이미지는 인물 식별용입니다. 얼굴과 정체성을 유지하고 대화의 최신 의상과 현재 실제 장소를 함께 반영해주세요. 이동한 장소가 확인되면 원본의 배경보다 우선하고, 앞으로 갈 장소나 회상은 현재 장소로 오인하지 마세요.") }]));
+      body.set("messages", JSON.stringify([{ role: "user", content: kind === "illustration"
+        ? "첨부 이미지는 인물 식별용입니다. scene.context의 최신 원고와 직전 회차·현재 상황에서 실제 현재 장소를 먼저 확정하고 그 장소의 장면을 그려주세요. 원본 배경·과거 장면·회상·앞으로 갈 장소는 현재 장소보다 우선하지 않습니다. 자세·손짓·표정·의상·소품·구도도 현재 장면에 맞게 새로 그려주세요."
+        : "첨부 이미지는 인물 식별용입니다. scene.context의 완료된 대화와 확정 기억에서 캐릭터의 최신 의상과 현재 실제 장소를 각각 확정해 새 장면을 그려주세요. 원본 생성 설명이나 캐릭터의 직업·초기 컨셉으로 현재 의상과 배경을 되돌리지 마세요. 얼굴·나이·머리·눈과 정체성은 유지하되 현재 장면에 맞게 의상·배경·소품·자세를 새로 구성해주세요. 앞으로 갈 장소나 회상은 현재 장소로 오인하지 마세요." }]));
       const response = await fetch("/api/characters", { method: "POST", body, signal: abort.signal });
       if (!response.ok) {
         const data = await response.json().catch(() => null);
@@ -78,6 +95,7 @@ export default function useCharacterGallery(reference?: Reference) {
       imageRef.current = [...imageRef.current, image];
       setImages(imageRef.current);
       setBackgrounds(current => ({ ...current, [mode]: image.id }));
+      remember(image);
       return image;
     } catch (failure) {
       if (id === sequence.current) setError(abort.signal.aborted ? "이미지 생성 시간이 초과되었습니다. 다시 시도해주세요." : failure instanceof Error ? failure.message : "이미지를 생성하지 못했습니다.");
@@ -87,5 +105,5 @@ export default function useCharacterGallery(reference?: Reference) {
       if (id === sequence.current) { controller.current = null; setJob(undefined); }
     }
   }
-  return { images, backgrounds, job, error, cancel, clear, registerOriginal, selectBackground, generate };
+  return { images, archive, backgrounds, job, error, cancel, clear, registerOriginal, selectBackground, generate };
 }

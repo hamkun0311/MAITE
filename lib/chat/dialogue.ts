@@ -7,7 +7,9 @@ export const dialogueSchema = z.object({
 // Decode only the utterance string values from a growing Structured Outputs
 // stream. Incomplete escapes and surrogate pairs wait for the next chunk.
 export function streamedDialogue(json: string): string {
-  const opening = /^\s*\{\s*"utterances"\s*:\s*\[/.exec(json);
+  // The optional private verdict contains only IDs, enums and a flat ID list.
+  // Wait until it closes, then expose only utterance values, never metadata.
+  const opening = /^\s*\{\s*(?:"continuity"\s*:\s*\{[^{}]*\}\s*,\s*)?"utterances"\s*:\s*\[/.exec(json);
   if (!opening) return "";
   let offset = opening[0].length;
   const utterances: string[] = [];

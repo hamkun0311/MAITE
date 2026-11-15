@@ -134,6 +134,13 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await enterCharacterMode(page);
   await expect(chat.locator(".character-backdrop")).toHaveAttribute("src", originalUrl!);
   await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
+  await page.getByRole("link", { name: "갤러리", exact: true }).click();
+  const gallery = page.getByRole("main", { name: "생성 이미지 갤러리" });
+  await expect(gallery.getByRole("article")).toHaveCount(3);
+  await expect(gallery.getByRole("heading", { name: "유카타의 서하", exact: true })).toBeVisible();
+  await expect(gallery.getByRole("heading", { name: "카페에서의 대화", exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(chat).toBeVisible();
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);

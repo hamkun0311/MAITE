@@ -10,7 +10,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(page.getByLabel("만들고 싶은 캐릭터")).toHaveCount(0);
   await expect(page.getByRole("combobox", { name: "장르", exact: true })).toHaveCount(0);
   const gender = page.getByRole("combobox", { name: "성별", exact: true });
-  await expect(gender.locator("option:not([disabled])")).toHaveText(["남성", "여성", "바이섹슈얼"]);
+  await expect(gender.locator("option:not([disabled])")).toHaveText(["남성", "여성"]);
   expect(await gender.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('textarea[aria-label="성격"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   await expect(page.getByRole("navigation", { name: "캐릭터 활동" })).toHaveCount(0);
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toHaveCount(0);

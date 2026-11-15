@@ -3,11 +3,12 @@ import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 import { characterProfileSchema } from "../../../lib/chat/character.ts";
-import { visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
+import { ILLUSTRATION_DIRECTION, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
   characterBrief,
   illustrationBrief,
+  outfitBrief,
   CHARACTER_DIRECTION,
   MAX_CHARACTER_IMAGE,
   MAX_CHARACTER_REQUEST,
@@ -162,7 +163,7 @@ export async function POST(request: Request) {
       prior instanceof File
         ? Buffer.from(await prior.arrayBuffer()).toString("base64")
         : null;
-    const briefSchema = scene?.kind === "illustration" ? illustrationBrief : characterBrief;
+    const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
     const briefResponse = await checked(
       await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
@@ -176,17 +177,17 @@ export async function POST(request: Request) {
           store: false,
           max_output_tokens: 5000,
           instructions:
-            CHARACTER_DIRECTION +
+            (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
             " Reference style analysis: " +
             JSON.stringify(CHARACTER_STYLES) +
-            " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. If it is 바이섹슈얼, treat it as bisexual orientation only: it does not specify gender, anatomy, clothing, sexualized appearance or a mixed styleProfile. Use the actual described subjects/concept for appearance and rendering. Do not stereotype orientation." +
-            " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults." + visualInstructions(scene),
+            " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
+            (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene),
           input: [
             {
               role: "user",
               content: [
                 { type: "input_text", text: JSON.stringify({ messages, profile, previousStyle, scene }) },
-                ...(previousData
+                ...(previousData && !scene
                   ? [
                       {
                         type: "input_image",
@@ -261,13 +262,12 @@ export async function POST(request: Request) {
     const raw = Buffer.from(encoded, "base64");
     if (!isJpeg(raw))
       throw new RequestError("이미지 응답 형식이 올바르지 않습니다.", 502);
-    const image = await sharp(raw, { limitInputPixels: 16_777_216 })
+    const { data: image, info } = await sharp(raw, { limitInputPixels: 16_777_216 })
       .resize(CHARACTER_WIDTH, CHARACTER_HEIGHT, {
-        fit: "contain",
-        background: "#f8f4eb",
+        fit: "inside",
       })
       .jpeg({ quality: 85 })
-      .toBuffer();
+      .toBuffer({ resolveWithObject: true });
     if (image.length > MAX_CHARACTER_IMAGE)
       throw new RequestError("이미지 크기 제한을 초과했습니다.", 502);
     return new Response(image, {
@@ -278,6 +278,8 @@ export async function POST(request: Request) {
         "X-Character-Summary": encodeURIComponent(brief.summary),
         "X-Character-Prompt": prompt,
         "X-Character-Style": brief.styleProfile,
+        "X-Character-Width": String(info.width),
+        "X-Character-Height": String(info.height),
       },
     });
   } catch (error) {

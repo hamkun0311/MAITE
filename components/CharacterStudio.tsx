@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import CharacterImage from "./CharacterImage";
+import CharacterGallery from "./CharacterGallery";
 import useCharacterGallery from "./useCharacterGallery";
 import { createChatSession, type ChatSession } from "@/lib/chat/session";
 import {
@@ -21,15 +22,13 @@ import CharacterExperience from "./CharacterExperience";
 import { CHARACTER_GENDERS, characterProfileSchema, type CharacterProfile } from "@/lib/chat/character";
 import {
   MAX_CHARACTER_IMAGE,
-  CHARACTER_WIDTH,
-  CHARACTER_HEIGHT,
   CHARACTER_STYLES,
   characterStyleProfile,
 } from "@/lib/characters/schema";
 
 type Message = { role: "user" | "assistant"; content: string };
 type StyleProfile = keyof typeof CHARACTER_STYLES;
-type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile; description: string; profile: CharacterProfile };
+type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile; description: string; profile: CharacterProfile; width: number; height: number };
 type StudioSession = {
   creation: ReactNode;
   art?: Artwork;
@@ -47,6 +46,10 @@ function useStudioSession() {
 export function CharacterCreationScreen() {
   return useStudioSession().creation;
 }
+export function CharacterGalleryScreen() {
+  const { visuals } = useStudioSession();
+  return <CharacterGallery images={visuals.archive} />;
+}
 export function CharacterActivityScreen({ mode }: { mode: "chat" | "story" }) {
   const { art, sessions, editProfile, openMenu, visuals } = useStudioSession();
   if (!art) return <main className="character-missing"><h1>캐릭터를 먼저 만들어주세요.</h1><p>생성한 캐릭터로 대화와 이야기를 시작할 수 있습니다.</p><Link href="/ideal">캐릭터 생성으로 이동</Link></main>;
@@ -59,9 +62,9 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   const sessions = useRef({ chat: createChatSession(), story: createChatSession() });
   const pendingFocus = useRef<"result" | "profile" | null>(null);
   const app = useRef<HTMLDivElement>(null);
-  const menu = pathname === "/ideal/chat" ? "chat" : pathname === "/ideal/story" ? "story" : "image";
+  const menu = pathname === "/ideal/chat" ? "chat" : pathname === "/ideal/story" ? "story" : pathname === "/ideal/gallery" ? "gallery" : "image";
   useEffect(() => {
-    if (menu === "image") return;
+    if (menu !== "chat" && menu !== "story") return;
     const viewport = window.visualViewport;
     const resize = () => app.current?.style.setProperty("--character-viewport-height", `${viewport?.height ?? window.innerHeight}px`);
     resize();
@@ -224,6 +227,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
         prompt: response.headers.get("X-Character-Prompt") || "",
         style,
         profile,
+        width: Number(response.headers.get("X-Character-Width")),
+        height: Number(response.headers.get("X-Character-Height")),
         description: [history.find(m => m.role === "user")?.content.slice(0, 2000), history.filter(m => m.role === "user").slice(1).map(m => m.content).join("\n").slice(-1400), summary.slice(0, 1000), (response.headers.get("X-Character-Prompt") || "").slice(0, 1500)].filter(Boolean).join("\n").slice(0, 6000),
       });
       setMessages([...history, { role: "assistant", content: summary }]);
@@ -355,7 +360,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
               <strong>{art?.title || "나만의 2D 캐릭터"}</strong>
               <p>
                 {art
-                  ? `${CHARACTER_WIDTH} × ${CHARACTER_HEIGHT} · 9:16 · JPG`
+                  ? art.width && art.height ? `${art.width} × ${art.height} · JPG` : "원본 비율 · JPG"
                   : "헤어스타일 · 의상 · 표정 · 분위기를 자유롭게"}
               </p>
             </div>
@@ -381,7 +386,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   );
   return (
     <StudioContext.Provider value={{ creation, art, sessions: sessions.current, openMenu, editProfile, visuals }}>
-    <div ref={app} className={`chat-app character-app ${menu !== "image" ? "is-character-reading" : ""} ${menu === "chat" ? "is-character-chat" : ""}`}>
+    <div ref={app} className={`chat-app character-app ${menu === "chat" || menu === "story" ? "is-character-reading" : ""} ${menu === "chat" ? "is-character-chat" : ""}`}>
       <header className="chat-header">
         <Link href="/ideal" className="chat-brand">
           <Cuboid size={26} />

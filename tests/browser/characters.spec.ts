@@ -40,6 +40,8 @@ test("top menus, character generation, download and image-based revision", async
         "X-Character-Prompt":
           "Portrait 9:16, 2D anime, woman in a dress, clean outlines, cel shading.",
         "X-Character-Style": "female",
+        "X-Character-Width": "720",
+        "X-Character-Height": "1280",
       },
       body: jpeg,
     });
@@ -55,7 +57,7 @@ test("top menus, character generation, download and image-based revision", async
   await expect(
     page.getByAltText("우아한 캐릭터 — 생성된 2D 캐릭터 일러스트"),
   ).toBeVisible();
-  await expect(page.getByText("720 × 1280 · 9:16 · JPG")).toBeVisible();
+  await expect(page.getByText("720 × 1280 · JPG")).toBeVisible();
   await page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
   await expect(viewer).toBeVisible();

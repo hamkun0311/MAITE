@@ -1,10 +1,14 @@
 import { z } from "zod";
+import { seriesArcSchema } from "./series.ts";
 
 const short = z.string().trim().min(1).max(240);
 const facts = z.array(short).max(24);
 export const storyStateSchema = z.object({
   version: z.literal(1),
   chapter: z.number().int().min(0).max(100000),
+  seriesArc: seriesArcSchema.optional(),
+  seriesStartChapter: z.number().int().min(0).max(100000).optional(),
+  seriesConcept: z.string().trim().max(1000).optional(),
   summary: z.string().max(1400),
   currentSituation: z.string().max(400),
   longTermGoal: z.string().max(240),
@@ -20,7 +24,8 @@ export const storyStateSchema = z.object({
   previousEnding: z.string().max(700),
   nextChapterGoal: z.string().max(240),
   previousProse: z.string().max(8000),
-}).strict().refine(value => JSON.stringify(value).length <= 16000, "Story memory is too large");
+}).strict().refine(value => (value.seriesStartChapter ?? 0) <= value.chapter, "Invalid series start")
+  .refine(value => JSON.stringify(value).length <= 16000, "Story memory is too large");
 export type StoryState = z.infer<typeof storyStateSchema>;
 export function emptyStoryState(): StoryState {
   return { version: 1, chapter: 0, summary: "", currentSituation: "", longTermGoal: "",
@@ -47,6 +52,16 @@ export const createReviewSchema = (citation: z.ZodType<string> = quoteSchema) =>
   endingChange: evidence(citation),
 }).strict();
 export const reviewSchema = createReviewSchema();
+export const createFinalReviewSchema = (citation: z.ZodType<string> = quoteSchema) => createReviewSchema(citation).extend({
+  resolution: z.object({
+    centralConflictResolved: z.boolean(),
+    protagonistOutcomeShown: z.boolean(),
+    relationshipOutcomeShown: z.boolean(),
+    hasSequelHook: z.boolean(),
+    evidence: citation,
+    fix: short,
+  }).strict(),
+}).strict();
 export const createMemoryPatchSchema = (citation: z.ZodType<string> = quoteSchema) => z.object({
   summary: z.string().trim().min(1).max(1400),
   currentSituation: evidence(citation),

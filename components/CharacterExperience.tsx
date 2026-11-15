@@ -34,8 +34,7 @@ export default function CharacterExperience({ mode, imageUrl, imageDescription, 
   return <section className={`character-experience character-${mode}-experience`} aria-label={mode === "chat" ? "대화하기" : "이야기 만들기"}>
     <img className="character-backdrop" src={imageUrl} alt="" />
     <div className="character-experience-content">
-      {mode === "story" && readerHeading}
-      <LiveChat character={character} active={active} session={session} headingContent={mode === "chat" ? readerHeading : undefined} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} />
+      <LiveChat character={character} active={active} session={session} headingContent={readerHeading} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} />
     </div>
     <CharacterBackgroundPicker open={pickerOpen} images={gallery} selected={backgroundId} onSelect={onBackground} onClose={() => setPickerOpen(false)} />
     <CharacterImageViewer src={preview?.url || imageUrl} title={preview?.title || profile.name} open={!!preview} onClose={() => setPreview(undefined)} />
