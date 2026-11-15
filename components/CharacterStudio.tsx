@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import StudioNav from "./StudioNav";
 import CharacterExperience from "./CharacterExperience";
-import { characterProfileSchema, type CharacterProfile } from "@/lib/chat/character";
+import { CHARACTER_GENDERS, characterProfileSchema, type CharacterProfile } from "@/lib/chat/character";
 import {
   MAX_CHARACTER_IMAGE,
   CHARACTER_WIDTH,
@@ -71,7 +71,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   }, [menu]);
   const result = useRef<HTMLElement>(null);
   const profileFields = useRef<HTMLFieldSetElement>(null);
-  const [draft, setDraft] = useState({ name: "", age: "", personality: "", concept: "" });
+  const [draft, setDraft] = useState({ name: "", age: "", gender: "", personality: "", concept: "" });
   function focusCreation(target: "result" | "profile") {
     requestAnimationFrame(() => {
       if (target === "profile") {
@@ -149,7 +149,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     pendingFocus.current = "profile";
     router.replace("/ideal", { scroll: false });
     if (menu === "image") focusCreation("profile");
-    setDraft({ name: "", age: "", personality: "", concept: "" });
+    setDraft({ name: "", age: "", gender: "", personality: "", concept: "" });
     previous.current = null;
     previousStyle.current = null;
     setError("");
@@ -158,7 +158,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   async function submit() {
     if (controller.current) return;
     const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age) });
-    if (!parsedProfile.success) { setError("캐릭터 이름·나이·성격·컨셉을 입력해주세요."); return; }
+    if (!parsedProfile.success) { setError("캐릭터 이름·나이·성별·성격·컨셉을 입력해주세요."); return; }
     const profile = parsedProfile.data;
     const user: Message = { role: "user", content: profile.concept },
       history = [...messages, user];
@@ -266,6 +266,10 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
               <label>캐릭터 이름<input form="character-generation" name="name" required pattern=".*\S.*" maxLength={80} value={draft.name} onChange={event => setDraft({ ...draft, name: event.target.value })} placeholder="이름" /></label>
               <label>나이<input form="character-generation" name="age" type="number" required min={1} max={120} step={1} value={draft.age} onChange={event => setDraft({ ...draft, age: event.target.value })} placeholder="나이" /></label>
             </div>
+            <label>성별<select aria-label="성별" form="character-generation" name="gender" required value={draft.gender} onChange={event => setDraft({ ...draft, gender: event.target.value })}>
+              <option value="" disabled>선택해주세요</option>
+              {CHARACTER_GENDERS.map(gender => <option key={gender} value={gender}>{gender}</option>)}
+            </select></label>
             <label>성격<textarea aria-label="성격" form="character-generation" name="personality" required maxLength={1000} value={draft.personality} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, personality: event.target.value }); }} placeholder="캐릭터의 성격을 적어주세요" /></label>
             <label>컨셉<textarea aria-label="컨셉" form="character-generation" name="concept" required maxLength={1000} value={draft.concept} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, concept: event.target.value }); }} placeholder="관계, 세계관, 배경 등 원하는 설정을 적어주세요" /></label>
             {art && <small>수정한 특성은 이미지를 다시 생성하면 대화·이야기에 적용됩니다.</small>}

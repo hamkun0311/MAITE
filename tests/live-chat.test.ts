@@ -6,9 +6,26 @@ import { CHARACTER_GENRES, characterContextSchema, characterInstructions } from 
 import { illustrationContext, mentionsClothing, plainDialogue, visualContext } from "../lib/chat/presentation.ts";
 import { explicitSpeechRequest, speechInstructions, resolveSpeechStyle } from "../lib/chat/speech.ts";
 import { detectClothing } from "../lib/chat/clothing.ts";
+import { dialogueSchema, streamedDialogue } from "../lib/chat/dialogue.ts";
 
 const encoder = new TextEncoder();
 const wire = (event: object) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
+test("dialogue-only streaming decodes utterances across every escape/chunk boundary and preserves emoticons", () => {
+  const json = '{"utterances":["반가워요 \\ud83d\\ude0a ^_^~", "왜요? ㅎㅎ \\"좋아요\\"라고 했잖아요."]}';
+  const expected = dialogueSchema.parse(JSON.parse(json)).utterances.join("\n\n");
+  let previous = "";
+  for (let i = 0; i <= json.length; i++) {
+    const next = streamedDialogue(json.slice(0, i));
+    assert.ok(next.startsWith(previous));
+    assert.ok(!/[\uD800-\uDBFF]$/.test(next));
+    previous = next;
+  }
+  assert.equal(previous, expected);
+  assert.equal(plainDialogue("**안녕** 😊 ^_^~ ㅎㅎ :) (≧▽≦)", "chat"), "안녕 😊 ^_^~ ㅎㅎ :) (≧▽≦)");
+  assert.equal(streamedDialogue('카페의 조명이 흔들렸다.'), "");
+  assert.equal(dialogueSchema.safeParse({ utterances: ["안녕"], narration: "미소 지었다" }).success, false);
+  assert.equal(dialogueSchema.safeParse({ utterances: [] }).success, false);
+});
 test("dialogue removes formatting without losing prose and visual context stays bounded", () => {
   assert.equal(plainDialogue('**안녕.** *미소를 짓는다.*\n\n“다시 만나서 반가워.”'), '안녕. 미소를 짓는다.\n\n“다시 만나서 반가워.”');
   assert.equal(plainDialogue('## 제목\n- __문장__\n> `대사`'), '제목\n문장\n대사');
@@ -59,6 +76,10 @@ test("illustration context carries the established cafe when the newest chapter 
 test("character context validates profiles and gives chat and story distinct, age-aware roles", () => {
   const profile = { mode: "chat", name: "서하", age: 25, personality: "다정한 라이벌", concept: "도시의 비밀", imageDescription: "은발 탐정, 검은 코트" };
   const parsed = characterContextSchema.parse(profile);
+  for (const gender of ["남성", "여성", "바이섹슈얼"])
+    assert.equal(characterContextSchema.parse({ ...profile, gender }).gender, gender);
+  assert.equal(characterContextSchema.safeParse({ ...profile, gender: "unknown" }).success, false);
+  assert.match(characterInstructions(characterContextSchema.parse({ ...profile, gender: "바이섹슈얼" })), /orientation, NOT a gender/);
   const chat = characterInstructions(parsed);
   assert.match(chat, /first person/);
   assert.match(chat, /은발 탐정/);
@@ -67,6 +88,9 @@ test("character context validates profiles and gives chat and story distinct, ag
   assert.match(chat, /Never sexualize minors/);
   assert.match(chat, /untrusted/);
   assert.match(chat, /Never use Markdown/);
+  assert.match(chat, /ONLY direct conversational back-and-forth/);
+  assert.match(chat, /context-appropriate emoji and text emoticons/);
+  assert.doesNotMatch(chat, /or emoji\./);
   assert.match(characterInstructions({ ...parsed, mode: "story" }), /serialized novel/);
   assert.equal(parsed.genre, "막장드라마");
   assert.match(characterInstructions(parsed), /Genre: makjang melodrama/);
@@ -99,18 +123,21 @@ test("chat API forwards validated character data as role instructions, not conve
     assert.match(body.instructions, /검은 코트/);
     assert.match(body.instructions, /서하/);
     assert.deepEqual(body.input, [{ role: "user", content: "첫 장면" }]);
+    assert.equal(body.text.format.name, "character_dialogue");
+    assert.match(body.instructions, /"gender":"바이섹슈얼"/);
     return new Response(new ReadableStream({ start(c) {
-      c.enqueue(wire({ type: "response.output_text.delta", delta: "비가 내렸다." }));
+      c.enqueue(wire({ type: "response.output_text.delta", delta: '{"utterances":["반가워요 😊 ^_^~"]}' }));
       c.enqueue(wire({ type: "response.completed" })); c.close();
     } }));
   });
-  const character = { mode: "chat", name: "서하", age: 25, personality: "다정함", concept: "재회", imageDescription: "검은 코트" };
+  const character = { mode: "chat", name: "서하", age: 25, gender: "바이섹슈얼", personality: "다정함", concept: "재회", imageDescription: "검은 코트" };
   const request = (value: unknown) => new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: [{ role: "user", content: "첫 장면" }], character: value }) });
   assert.equal((await POST(request({ ...character, age: -1 }))).status, 400);
   assert.equal(calls, 0);
   const response = await POST(request(character));
   const output = await response.text();
-  assert.match(output, /비가 내렸다/);
+  assert.match(output, /반가워요 😊 \^_\^~/);
+  assert.ok(!output.includes("utterances"));
   assert.match(output, /"speechStyle":"polite"/);
   assert.equal(calls, 3);
 });
@@ -135,6 +162,31 @@ test("speech selection uses durable register, concept and latest request; failur
   assert.match(speechInstructions("polite"), /Never slip into 반말/);
   completed = false;
   await assert.rejects(resolveSpeechStyle(options), /Incomplete speech style/);
+});
+
+test("character dialogue streams only utterance values and malformed outputs never complete", async t => {
+  const old = process.env.OPENAI_API_KEY; process.env.OPENAI_API_KEY = "test-key";
+  t.after(() => { if (old === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = old; });
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { source = controller; } })));
+  const request = () => new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character: { mode: "chat", name: "서하", age: 25, gender: "여성", personality: "차분함", concept: "재벌가의 비밀과 폭풍 속 재회", imageDescription: "성인 여성" }, messages: [{ role: "user", content: "유카타 입고 반말해줘" }] }) });
+  const response = await POST(request());
+  const events = readEvents(response.body!);
+  source.enqueue(wire({ type: "response.output_text.delta", delta: '{"utterances":["유카타 입었어 😊' }));
+  assert.deepEqual((await events.next()).value, { type: "delta", text: "유카타 입었어 😊" });
+  source.enqueue(wire({ type: "response.output_text.delta", delta: ' 어때?","몰래 만나자 ㅎㅎ"]}' }));
+  source.enqueue(wire({ type: "response.completed" }));
+  const rest = []; for await (const event of events) rest.push(event);
+  assert.equal(rest[0].text, " 어때?\n\n몰래 만나자 ㅎㅎ");
+  assert.equal(rest.at(-1)!.type, "done");
+  assert.ok(!JSON.stringify(rest).includes("utterances"));
+  const invalid = await POST(request());
+  source.enqueue(wire({ type: "response.output_text.delta", delta: '{"utterances":["유카타"],"narration":"그녀는 고개를 끄덕였다"}' }));
+  source.enqueue(wire({ type: "response.completed" }));
+  const failure = await invalid.text();
+  assert.match(failure, /"type":"error"/);
+  assert.ok(!failure.includes("그녀는 고개를 끄덕였다"));
+  assert.ok(!failure.includes('"type":"done"'));
 });
 
 test("clear speech requests override a concept directly without interpreting quoted or negated requests", async t => {

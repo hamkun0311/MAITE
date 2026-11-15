@@ -15,6 +15,7 @@ export function storyWire(body: { storyState?: StoryState }, text: string) {
 export async function fillCharacterProfile(page: Page) {
   await page.getByLabel("캐릭터 이름").fill("서하");
   await page.getByLabel("나이", { exact: true }).fill("25");
+  await page.getByRole("combobox", { name: "성별", exact: true }).selectOption("여성");
   await page.getByLabel("성격", { exact: true }).fill("도도하지만 다정한 성격");
   await page.getByLabel("컨셉", { exact: true }).fill("재회한 라이벌과 도시의 비밀을 추적한다");
 }

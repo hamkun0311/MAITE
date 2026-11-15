@@ -179,6 +179,7 @@ export async function POST(request: Request) {
             CHARACTER_DIRECTION +
             " Reference style analysis: " +
             JSON.stringify(CHARACTER_STYLES) +
+            " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. If it is 바이섹슈얼, treat it as bisexual orientation only: it does not specify gender, anatomy, clothing, sexualized appearance or a mixed styleProfile. Use the actual described subjects/concept for appearance and rendering. Do not stereotype orientation." +
             " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults." + visualInstructions(scene),
           input: [
             {

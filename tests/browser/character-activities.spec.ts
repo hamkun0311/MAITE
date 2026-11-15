@@ -9,6 +9,9 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(page.getByLabel("캐릭터 이름")).toBeInViewport();
   await expect(page.getByLabel("만들고 싶은 캐릭터")).toHaveCount(0);
   await expect(page.getByRole("combobox", { name: "장르", exact: true })).toHaveCount(0);
+  const gender = page.getByRole("combobox", { name: "성별", exact: true });
+  await expect(gender.locator("option:not([disabled])")).toHaveText(["남성", "여성", "바이섹슈얼"]);
+  expect(await gender.evaluate(element => !!(element.compareDocumentPosition(document.querySelector('textarea[aria-label="성격"]')!) & Node.DOCUMENT_POSITION_FOLLOWING))).toBe(true);
   await expect(page.getByRole("navigation", { name: "캐릭터 활동" })).toHaveCount(0);
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toHaveCount(0);
   await generateCharacter(page);
@@ -53,6 +56,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(chat.getByText("우리가 다시 만나다니. 비밀은 아직 끝나지 않았어.")).toBeVisible();
   expect(bodies[0].character).toMatchObject({ mode: "chat", name: "서하", age: 25, personality: "도도하지만 다정한 성격", concept: "25살 은발 탐정, 비 오는 도시, 검은 코트", genre: "막장드라마" });
   expect(bodies[0].character.imageDescription).toContain("25살 은발 탐정");
+  expect(bodies[0].character).toMatchObject({ gender: "여성" });
   expect(bodies[0].character.imageDescription).toContain("Silver-haired detective");
   await chat.getByLabel("AI에게 보낼 메시지").fill("아직 보내지 않은 말");
   await page.goBack();
@@ -74,6 +78,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(story.getByText("우리가 다시 만나다니. 비밀은 아직 끝나지 않았어.")).toBeVisible();
   expect(bodies[1].character).toMatchObject({ mode: "story", name: "서하", age: 25, genre: "막장드라마" });
   expect(bodies[1].messages).toEqual([{ role: "user", content: "설정에 맞춰 첫 장면부터 이야기를 시작해줘." }]);
+  expect(bodies[1].character).toMatchObject({ gender: "여성" });
   await expect(story.getByLabel("AI에게 보낼 메시지")).toHaveCount(0);
   await expect(story.getByRole("log").locator(".user")).toHaveCount(0);
   await story.getByRole("button", { name: "다음 이야기", exact: true }).click();
@@ -109,6 +114,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await enterCharacterMode(page);
   await chat.getByRole("button", { name: "캐릭터 설정", exact: true }).click();
   await expect(page.getByLabel("캐릭터 이름")).toHaveValue("서하");
+  await expect(gender).toHaveValue("여성");
   await enterCharacterMode(page);
   await expect(chat.getByText("오랜만이야", { exact: true })).toBeVisible();
   await page.screenshot({ path: ".verification/character-chat-mobile.png", fullPage: true });
@@ -117,6 +123,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toHaveCount(0);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);
   await expect(page.getByLabel("캐릭터 이름")).toHaveValue("");
+  await expect(gender).toHaveValue("");
   await expect(page.getByRole("combobox", { name: "장르", exact: true })).toHaveCount(0);
 });
 

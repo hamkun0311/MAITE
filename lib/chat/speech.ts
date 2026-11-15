@@ -20,7 +20,7 @@ export function speechInstructions(style: SpeechStyle) {
   return `Korean speech register for this entire reply: ${style === "polite"
     ? "존댓말 (polite). Address the user exclusively with polite endings such as -요/-습니다; use 저/제가 as appropriate. Never slip into 반말, including short reactions and rhetorical questions."
     : "반말 (casual). Address the user exclusively with casual endings such as -해/-야/-지; use 나/내가 as appropriate. Never slip into -요/-세요/-습니다, including short reactions and questions."}
-Keep one register throughout all speech addressed to the user. Convey personality, warmth, teasing or anger within this register; mood alone must not cause random mixed endings. Action narration and verbatim quotations from other speakers are separate from the character's direct speech.`;
+Keep one register throughout all speech addressed to the user. Convey personality, warmth, teasing or anger within this register; mood alone must not cause random mixed endings. Output only the character's own conversational words, with occasional appropriate emoji/emoticons. Do not insert action narration or other speakers' lines.`;
 }
 
 export async function resolveSpeechStyle(options: {

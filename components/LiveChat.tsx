@@ -80,7 +80,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
     if (controller.current || !text) return;
     const isStory = character?.mode === "story";
     const storyState = saved.storyState;
-    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => message.role === "assistant" ? { ...message, content: isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content) } : message), { role: "user", content: text }];
+    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => message.role === "assistant" ? { ...message, content: isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content, "chat") } : message), { role: "user", content: text }];
     while (history.length > 1 && history.reduce((n, m) => n + m.content.length, 0) > 24000)
       history.splice(0, 2);
     const displayed = [...messages, { role: "user" as const, content: text }];
@@ -126,11 +126,11 @@ export default function LiveChat({ character, active = true, headingContent, ses
         } else if (!isStory && event.type === "delta" && typeof event.text === "string") {
           answer += event.text;
           if (answer.length > 8000) throw new Error("응답이 너무 길어 중단했습니다.");
-          setMessages([...displayed, { role: "assistant", content: plainDialogue(answer) }]);
+          setMessages([...displayed, { role: "assistant", content: plainDialogue(answer, "chat") }]);
         } else if (event.type === "done") { completed = true; break; }
         else if (event.type === "error") throw new Error(typeof event.message === "string" ? event.message : "응답이 중단되었습니다.");
       }
-      const prose = plainDialogue(isStory ? nextChapter?.text ?? "" : answer).trim();
+      const prose = plainDialogue(isStory ? nextChapter?.text ?? "" : answer, isStory ? "prose" : "chat").trim();
       if (!completed || !prose) throw new Error("응답이 중단되었습니다. 다시 시도해주세요.");
       if (isStory && nextChapter) {
         saved.storyState = nextChapter.state;
@@ -165,7 +165,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
         followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
       }}>
         {!messages.length && character?.mode !== "story" && <div className="live-chat-empty"><p>첫마디로 둘만의 이야기를 시작해보세요.</p><button className="character-start" type="button" onClick={() => setInput("안녕. 우리 처음 만난 순간부터 시작해볼까?")}>첫인사 준비하기</button></div>}
-        {messages.map((m, i) => character?.mode === "story" && m.role === "user" ? null : <article className={`chat-message ${m.role}`} key={i}><span>{m.role === "user" ? "나" : character?.mode === "story" ? "이야기" : character?.name || "AI"}</span><p>{(m.role === "assistant" ? plainDialogue(m.content) : m.content) || (character?.mode === "story" ? storyPhase : "대화 작성중")}</p></article>)}
+        {messages.map((m, i) => character?.mode === "story" && m.role === "user" ? null : <article className={`chat-message ${m.role}`} key={i}><span>{m.role === "user" ? "나" : character?.mode === "story" ? "이야기" : character?.name || "AI"}</span><p>{(m.role === "assistant" ? plainDialogue(m.content, character?.mode === "story" ? "prose" : "chat") : m.content) || (character?.mode === "story" ? storyPhase : "대화 작성중")}</p></article>)}
       </div>
       {notice && <p className="chat-error" role="status">{notice}</p>}
       {imageJob && <div className="character-visual-status" role="status"><span><LoaderCircle className="spin" size={15} />{imageJob.kind === "illustration" ? "삽화 생성 중…" : "의상 변경 이미지 생성 중…"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}

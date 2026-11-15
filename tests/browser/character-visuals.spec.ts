@@ -81,7 +81,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
       const encoder = new TextEncoder();
       return new Response(new ReadableStream({ start(controller) {
         const finish = (text: string) => { controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "delta", text })}\n\ndata: {"type":"done"}\n\n`)); controller.close(); };
-        if (calls === 1) scope.finishVisualChat = () => finish("백화점 피팅룸에서 **유카타**로 갈아입었어. *미소를 짓는다.*");
+        if (calls === 1) scope.finishVisualChat = () => finish("백화점 피팅룸에서 **유카타**로 갈아입었어. 어때? 😊 ^_^~");
         else {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(storyChapter)}\n\ndata: {"type":"done"}\n\n`));
           controller.close();
@@ -96,7 +96,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await expect(chat.getByRole("log").getByText("대화 작성중", { exact: true })).toBeVisible();
   await page.evaluate(() => (window as typeof window & { finishVisualChat?: () => void }).finishVisualChat!());
-  await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 미소를 짓는다.");
+  await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
   await chat.getByRole("button", { name: "의상 변경하기", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
   await expect(viewer.getByAltText("유카타의 서하 — 전체화면 이미지")).toBeVisible();
@@ -105,6 +105,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   expect(imageBodies[0]).toMatchObject({ kind: "outfit" });
   expect(imageBodies[0].context).toContain("유카타");
   expect(imageBodies[0].context).toContain("백화점 피팅룸");
+  expect(imageBodies[0].context).not.toContain("미소를 짓는다");
   await viewer.getByRole("button", { name: "전체화면 닫기" }).click();
   await chat.getByRole("button", { name: "배경 변경", exact: true }).click();
   let picker = page.getByRole("dialog", { name: "배경 변경", exact: true });
@@ -132,7 +133,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await page.screenshot({ path: ".verification/story-illustration-background.png" });
   await enterCharacterMode(page);
   await expect(chat.locator(".character-backdrop")).toHaveAttribute("src", originalUrl!);
-  await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 미소를 짓는다.");
+  await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);

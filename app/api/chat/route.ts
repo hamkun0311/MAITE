@@ -5,6 +5,7 @@ import { storyStateSchema } from "../../../lib/novel/state.ts";
 import { generateChapter } from "../../../lib/novel/generate.ts";
 import { resolveSpeechStyle, speechInstructions, speechStyleSchema } from "../../../lib/chat/speech.ts";
 import { detectClothing } from "../../../lib/chat/clothing.ts";
+import { dialogueSchema, streamedDialogue } from "../../../lib/chat/dialogue.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -101,6 +102,7 @@ export async function POST(request: Request) {
         reasoning: { effort: "low" }, max_output_tokens: 2000,
         instructions: [characterInstructions(character), ...(selectedSpeech ? [speechInstructions(selectedSpeech)] : [])].join("\n\n"),
         input: messages,
+        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: z.toJSONSchema(dialogueSchema) } } } : {}),
       }),
     });
     if (!upstream.ok || !upstream.body) {
@@ -114,12 +116,26 @@ export async function POST(request: Request) {
         try {
           let completed = false;
           let answer = "";
+          let rawDialogue = "";
           for await (const event of readEvents(upstream.body!)) {
             if ((event.type === "response.output_text.delta" || event.type === "response.refusal.delta") && typeof event.delta === "string") {
-              answer = (answer + event.delta).slice(-8000);
-              send({ type: "delta", text: event.delta });
+              if (character?.mode === "chat") {
+                rawDialogue += event.delta;
+                if (rawDialogue.length > 16000) throw new Error("Dialogue too long");
+                const next = streamedDialogue(rawDialogue);
+                if (!next.startsWith(answer)) throw new Error("Invalid dialogue stream");
+                if (next.length > answer.length) send({ type: "delta", text: next.slice(answer.length) });
+                answer = next;
+              } else {
+                answer = (answer + event.delta).slice(-8000);
+                send({ type: "delta", text: event.delta });
+              }
             }
             if (event.type === "response.completed") {
+              if (character?.mode === "chat") {
+                const final = dialogueSchema.parse(JSON.parse(rawDialogue)).utterances.join("\n\n");
+                if (!final.trim() || final !== answer) throw new Error("Invalid dialogue output");
+              }
               completed = true;
               if (character?.mode === "chat") {
                 try {

@@ -28,6 +28,7 @@ test("top menus, character generation, download and image-based revision", async
     const body = route.request().postDataBuffer()!.toString("utf8");
     expect(body).toContain("messages");
     expect(body).toContain('"genre":"막장드라마"');
+    expect(body).toContain('"gender":"여성"');
     expect(body).toContain(calls === 1 ? "성인 여성, 우아한 원피스" : "은발의 성인 여성, 우아한 원피스");
     if (calls === 2) expect(body).toContain("previous-character.jpg");
     await route.fulfill({

@@ -1,11 +1,12 @@
 import type { ChatMessage } from "./session.ts";
 import type { StoryState } from "../novel/state.ts";
 
-export function plainDialogue(text: string) {
-  return text
+export function plainDialogue(text: string, mode: "prose" | "chat" = "prose") {
+  const source = mode === "chat" ? text.replace(/__([^_\n]+)__/g, "$1") : text;
+  return source
     .replace(/```[a-zA-Z]*[ \t]*\r?\n/g, "")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/[*_`~]+/g, "")
+    .replace(mode === "chat" ? /[*`]+/g : /[*_`~]+/g, "")
     .replace(/^\s{0,3}#{1,6}\s*/gm, "")
     .replace(/^\s*>\s?/gm, "")
     .replace(/^\s*(?:[-+•]\s+|\d+[.)]\s+)/gm, "")
