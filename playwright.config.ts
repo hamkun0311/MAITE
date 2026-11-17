@@ -16,6 +16,9 @@ export default defineConfig({
     timeout: 120000,
     env: {
       MAITE_TEST_MODE: "1",
+      // These browser fixtures exercise demo mode, independently of .env.local.
+      ACCOUNT_FEATURES_ENABLED: "false",
+      NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED: "false",
       OPENAI_API_KEY: "",
       CLOUDFLARE_ACCOUNT_ID: "",
       CLOUDFLARE_API_TOKEN: "",

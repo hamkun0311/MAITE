@@ -68,7 +68,11 @@ export default function useCharacterGallery(reference?: Reference) {
     if (id === NO_BACKGROUND || imageRef.current.some(image => image.id === id)) setBackgrounds(current => ({ ...current, [mode]: id }));
   }
   function restoreImages(saved: Omit<CharacterGalleryImage, "url">[], selected: { chat?: string; story?: string }) {
-    const extra = saved.filter(image => image.id !== "original").map(image => ({ ...image, url: URL.createObjectURL(image.blob) }));
+    const used = new Set(imageRef.current.map(image => image.id));
+    const extra = saved.filter(image => image.id !== "original").map(image => {
+      const id = used.has(image.id) ? `${image.kind}-${crypto.randomUUID()}` : image.id;
+      used.add(id); return { ...image, id, url: URL.createObjectURL(image.blob) };
+    });
     extra.forEach(image => { urls.current.add(image.url); remember(image); });
     imageRef.current = [...imageRef.current, ...extra].slice(0, MAX_GALLERY_IMAGES); setImages(imageRef.current);
     setBackgrounds(selected);
@@ -88,7 +92,7 @@ export default function useCharacterGallery(reference?: Reference) {
       body.set("image", reference.blob, "original-character.jpg");
       body.set("scene", JSON.stringify({ kind, context: context.slice(-12000), previousCompositions: imageRef.current.filter(image => image.composition).slice(-3).map(image => image.composition) }));
       body.set("messages", JSON.stringify([{ role: "user", content: kind === "illustration"
-        ? "첨부 이미지는 인물 식별용입니다. scene.context의 최신 원고와 직전 회차·현재 상황에서 실제 현재 장소를 먼저 확정하고 그 장소의 장면을 그려주세요. 원본 배경·과거 장면·회상·앞으로 갈 장소는 현재 장소보다 우선하지 않습니다. 자세·손짓·표정·의상·소품·구도도 현재 장면에 맞게 새로 그려주세요."
+        ? "현재 선택한 이야기 원고의 한 장면을 그려주세요. 현재 원고의 실제 등장인물·시점·실제 현재 장소를 우선합니다. 원본 캐릭터가 그 장면에 없으면 넣지 말고 다른 등장인물이나 풍경만 그려주세요. 첨부 이미지는 캐릭터가 실제 등장할 때만 인물 식별용입니다. 원본 배경·과거 장면·회상·앞으로 갈 장소는 현재 장소보다 우선하지 않습니다."
         : "첨부 이미지는 인물 식별용입니다. scene.context의 완료된 대화와 확정 기억에서 캐릭터의 최신 의상과 현재 실제 장소를 각각 확정해 새 장면을 그려주세요. 원본 생성 설명이나 캐릭터의 직업·초기 컨셉으로 현재 의상과 배경을 되돌리지 마세요. 얼굴·나이·머리·눈과 정체성은 유지하되 현재 장면에 맞게 배경·소품·자세를 새로 구성하고, 의상 변경이 없다면 최근 확정 의상을 유지해주세요. 앞으로 갈 장소나 회상은 현재 장소로 오인하지 마세요." }]));
       const response = await usageImageFetch(kind === "illustration" ? "삽화 생성" : "이미지 생성", "/api/characters", { method: "POST", body, signal: abort.signal });
       if (!response.ok) {
@@ -107,7 +111,7 @@ export default function useCharacterGallery(reference?: Reference) {
         const parsed = compositionSchema.safeParse(JSON.parse(decodeURIComponent(response.headers.get("X-Character-Composition") || "null")));
         if (parsed.success) composition = parsed.data;
       } catch { /* Older servers/invalid optional metadata must not discard the image. */ }
-      const image: CharacterGalleryImage = { id: `${kind}-${id}`, url, title, blob, kind, jobId: response.headers.get("X-Job-Id") ?? undefined, ...(composition ? { composition } : {}) };
+      const image: CharacterGalleryImage = { id: `${kind}-${crypto.randomUUID()}`, url, title, blob, kind, jobId: response.headers.get("X-Job-Id") ?? undefined, ...(composition ? { composition } : {}) };
       imageRef.current = [...imageRef.current, image];
       setImages(imageRef.current);
       setBackgrounds(current => current[mode] === NO_BACKGROUND ? current : ({ ...current, [mode]: image.id }));

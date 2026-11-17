@@ -22,7 +22,7 @@ export default function CharacterBackgroundPicker({ open, images, selected, onSe
         <div className="background-none-preview"><ImageOff size={32} aria-hidden="true" /></div><span>배경 없음</span><small>이미지 없이 보기</small>
       </button>
       {images.map(image => <button key={image.id} type="button" aria-label={`배경 선택: ${image.title}`} aria-pressed={selected === image.id} onClick={() => { onSelect(image.id); onClose(); }}>
-        <img src={image.url} alt={image.title} /><span>{image.title}</span><small>{image.kind === "character" ? "원본 캐릭터" : image.kind === "illustration" ? "이야기 삽화" : "대화 이미지"}</small>
+        <img src={image.url} alt={image.title} />
       </button>)}
     </div>
   </dialog>;

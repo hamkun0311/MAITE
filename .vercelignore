@@ -1,0 +1,15 @@
+.git/
+.vercel/
+.env*
+!.env.example
+.verification/
+.venv/
+node_modules/
+.next/
+.next-test/
+test-results/
+playwright-report/
+apps/mobile/android/
+apps/mobile/dist/
+*.jks
+*.keystore

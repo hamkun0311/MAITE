@@ -194,11 +194,11 @@ test("chat requests and usage metadata follow OPENAI_MODEL on each request", asy
   }
 });
 
-test("the interacting person's display name is 당신 while stable identity IDs remain unchanged", () => {
+test("conversation memory preserves the resolved display name and stable identity IDs", () => {
   const state = emptyChatMemory("서하");
   assert.deepEqual(state.participants[0], { id: "user", name: "당신" });
-  state.participants[0].name = "사용자";
-  assert.equal(mergeChatMemory(state, emptyPatch(), "안녕", "안녕").participants[0].name, "당신");
+  state.participants[0].name = "햄군";
+  assert.equal(mergeChatMemory(state, emptyPatch(), "안녕", "안녕").participants[0].name, "햄군");
 });
 const verdict = { actorId: null, targetId: null, intent: "other", premise: "consistent", factIds: [] };
 

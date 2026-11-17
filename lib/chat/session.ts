@@ -13,6 +13,9 @@ export type ChatSession = {
   notice: string;
   started: boolean;
   storyState?: StoryState;
+  storyPage?: number;
+  documentId?: string;
+  lastJobId?: string;
   speechStyle?: SpeechStyle;
   chatMemory?: ChatMemory;
   visualDetected?: boolean;

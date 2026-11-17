@@ -1,5 +1,13 @@
 apply plugin: 'com.android.application'
 
+// Upload signing credentials stay outside the repository and are provided only
+// to the build process. Android Studio's signing wizard can also supply its own.
+def maiteSigningValues = ['MAITE_UPLOAD_STORE_FILE', 'MAITE_UPLOAD_STORE_PASSWORD', 'MAITE_UPLOAD_KEY_ALIAS', 'MAITE_UPLOAD_KEY_PASSWORD'].collectEntries { [(it): System.getenv(it)] }
+def maiteSigningReady = maiteSigningValues.values().every { it }
+if (maiteSigningValues.values().any { it } && !maiteSigningReady) {
+    throw new GradleException('Provide all four MAITE_UPLOAD signing environment variables.')
+}
+
 android {
     namespace = "com.oestewdio.maite"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +15,8 @@ android {
         applicationId "com.oestewdio.maite"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.0.1"
         // Google's sample app ID keeps development builds safe. Set -PADMOB_APP_ID for production.
         manifestPlaceholders = [admobAppId: project.findProperty('ADMOB_APP_ID') ?: 'ca-app-pub-3940256099942544~3347511713']
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
@@ -18,8 +26,21 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (maiteSigningReady) {
+            upload {
+                storeFile file(maiteSigningValues['MAITE_UPLOAD_STORE_FILE'])
+                storePassword maiteSigningValues['MAITE_UPLOAD_STORE_PASSWORD']
+                keyAlias maiteSigningValues['MAITE_UPLOAD_KEY_ALIAS']
+                keyPassword maiteSigningValues['MAITE_UPLOAD_KEY_PASSWORD']
+            }
+        }
+    }
     buildTypes {
         release {
+            if (maiteSigningReady) {
+                signingConfig signingConfigs.upload
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

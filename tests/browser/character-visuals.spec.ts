@@ -101,14 +101,15 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
   await chat.getByRole("button", { name: "이미지 생성", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
-  await expect(viewer.getByAltText("유카타의 서하 — 전체화면 이미지")).toBeVisible();
+  await expect(chat.locator(".character-backdrop")).not.toHaveAttribute("src", originalUrl!);
+  await expect(viewer).not.toBeVisible();
   const outfitUrl = await chat.locator(".character-backdrop").getAttribute("src");
   expect(outfitUrl).not.toBe(originalUrl);
   expect(imageBodies[0]).toMatchObject({ kind: "outfit" });
   expect(imageBodies[0].context).toContain("유카타");
   expect(imageBodies[0].context).toContain("백화점 피팅룸");
   expect(imageBodies[0].context).not.toContain("미소를 짓는다");
-  await viewer.getByRole("button", { name: "전체화면 닫기" }).click();
+
   await chat.getByRole("button", { name: "배경 변경", exact: true }).click();
   let picker = page.getByRole("dialog", { name: "배경 변경", exact: true });
   await expect(picker.locator(".background-picker-grid > button")).toHaveCount(3);
@@ -121,7 +122,8 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   const next = story.getByRole("button", { name: "다음 이야기", exact: true });
   expect((await illustration.boundingBox())!.y).toBeLessThan((await next.boundingBox())!.y);
   await illustration.click();
-  await expect(viewer.getByAltText("카페에서의 대화 — 전체화면 이미지")).toBeVisible();
+  await expect(story.locator(".character-backdrop")).not.toHaveAttribute("src", originalUrl!);
+  await expect(viewer).not.toBeVisible();
   const storyUrl = await story.locator(".character-backdrop").getAttribute("src");
   expect(imageBodies[1].kind).toBe("illustration");
   expect(imageBodies[1].context).toContain("Current situation after the latest chapter: 서하는 카페 창가");
@@ -136,13 +138,14 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await enterCharacterMode(page);
   await expect(chat.locator(".character-backdrop")).toHaveAttribute("src", originalUrl!);
   await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
-  await page.getByRole("link", { name: "갤러리", exact: true }).click();
+  await page.getByRole("link", { name: "장면 갤러리", exact: true }).click();
   const gallery = page.getByRole("main", { name: "생성 이미지 갤러리" });
   await expect(gallery.getByRole("article")).toHaveCount(3);
   await expect(gallery.getByRole("heading", { name: "유카타의 서하", exact: true })).toBeVisible();
   await expect(gallery.getByRole("heading", { name: "카페에서의 대화", exact: true })).toBeVisible();
   await page.goBack();
   await expect(chat).toBeVisible();
+  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);
@@ -164,7 +167,7 @@ test("cancelled and failed illustrations preserve the gallery and a late respons
   const image = await jpeg();
   await page.route("**/api/characters", async route => { await gate; await route.fulfill({ contentType: "image/jpeg", body: image }).catch(() => {}); });
   await story.getByRole("button", { name: "삽화 생성", exact: true }).click();
-  await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeDisabled();
+  await expect(page.locator(".story-next-button")).toBeDisabled();
   await story.getByRole("button", { name: "이미지 생성 취소", exact: true }).click();
   release();
   await expect(story.getByRole("alert")).toContainText("취소했습니다");
@@ -183,7 +186,12 @@ test("cancelled and failed illustrations preserve the gallery and a late respons
   const late = new Promise<void>(resolve => { finish = resolve; });
   await page.route("**/api/characters", async route => { await late; await route.fulfill({ contentType: "image/jpeg", headers: { "X-Character-Title": encodeURIComponent("오래된 삽화") }, body: image }).catch(() => {}); });
   await story.getByRole("button", { name: "삽화 생성", exact: true }).click();
-  await expect(story.getByRole("button", { name: "이미지 생성 취소", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "그림을 그리고 있어요" })).toHaveCount(0);
+  await expect(story.getByRole("log")).toBeVisible();
+  await expect(story.getByRole("button", { name: "삽화 생성", exact: true })).toHaveAttribute("aria-busy", "true");
+  // Cancel the modal before resetting; the server response is still deliberately late.
+  await story.getByRole("button", { name: "이미지 생성 취소", exact: true }).click();
+  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   finish();
   await expect(page).toHaveURL(/\/ideal$/);

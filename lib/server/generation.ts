@@ -3,8 +3,16 @@ import { AccountError, requireAccount, rpc } from "./account.ts";
 import { allowedOrigin, corsHeaders, preflight } from "./http.ts";
 import type { GenerationKind } from "../account/policy.ts";
 import type { UsageRecord } from "../usage.ts";
+import sharp from "sharp";
+import { storyStateSchema } from "../novel/state.ts";
 
 type Job = { id: string; status: "reserved" | "completed" | "failed"; result: { events?: object[]; headers?: Record<string, string> } | null; storage_path: string | null };
+function completeOutput(kind: GenerationKind, events: object[]) {
+  const data = events as { type?: string; text?: unknown; state?: unknown }[];
+  if (!data.some(event => event.type === "done") || data.some(event => event.type === "error")) return false;
+  if (kind !== "story") return data.some(event => event.type === "delta" && typeof event.text === "string" && event.text.trim());
+  return data.some(event => { const parsed = storyStateSchema.safeParse(event.state); return event.type === "chapter" && typeof event.text === "string" && event.text.trim() && parsed.success && parsed.data.previousProse === event.text; });
+}
 export { preflight };
 // A successful completion is persisted BEFORE its done event/JPEG reaches the client.
 export function withGeneration(handler: (request: Request) => Promise<Response>, image = false) {
@@ -55,7 +63,7 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
         const data = JSON.parse(body.toString("utf8")); kind = data.character?.mode === "story" ? "story" : "chat";
         fingerprint = createHash("sha256").update(body).digest("hex");
       }
-      const job = await rpc<Job>("reserve_generation", { p_user: user.id, p_id: id, p_kind: kind, p_fingerprint: fingerprint });
+      const job = await rpc<Job>("reserve_generation_v2", { p_user: user.id, p_id: id, p_kind: kind, p_fingerprint: fingerprint });
       const headers = { ...cors, "X-Job-Id": id };
       if (job.status === "completed") {
         if (job.storage_path) {
@@ -71,8 +79,8 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
       const claimId = randomUUID();
       const claim = await db.from("generation_jobs").update({ result: { processing: claimId } })
         .eq("id", id).eq("user_id", user.id).eq("status", "reserved").is("result", null).select("id").maybeSingle();
-      if (claim.error) throw new AccountError("작업 시작 상태를 저장하지 못했습니다. 작업 내역을 확인해주세요.", 503);
-      if (!claim.data) return jsonError("작업 처리 중입니다. 계정의 작업 내역에서 확인해주세요.", 409);
+      if (claim.error) throw new AccountError("작업 시작 상태를 저장하지 못했습니다. 잠시 후 다시 시도해주세요.", 503);
+      if (!claim.data) return jsonError("같은 작업을 처리 중입니다. 잠시 기다려주세요.", 409);
       owned = true;
       settle = (result, path, success = true) => rpc("finish_generation", { p_user: user.id, p_id: id, p_result: result, p_storage: path ?? null, p_success: success });
       const response = await handler(forwarded);
@@ -82,8 +90,14 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
       if (!response.ok) { await settle({ usage: imageUsage }, undefined, false); return response; }
       if (image) {
         const blob = await response.blob(); const path = `${user.id}/${id}.jpg`;
+        if (request.signal.aborted) throw new AccountError("생성을 취소했습니다.", 499);
+        if (response.headers.get("content-type")?.split(";")[0] !== "image/jpeg" || !blob.size || blob.size > 5_000_000) throw new AccountError("완성된 이미지를 받지 못했습니다.", 502);
+        const bytes = Buffer.from(await blob.arrayBuffer()); const metadata = await sharp(bytes).metadata();
+        if (metadata.format !== "jpeg" || !metadata.width || !metadata.height || metadata.width * metadata.height > 16_000_000) throw new AccountError("이미지 형식을 확인하지 못했습니다.", 502);
+        await sharp(bytes, { failOn: "error" }).stats();
         const { error } = await db.storage.from("maite-private").upload(path, blob, { contentType: "image/jpeg", upsert: false });
         if (error) throw new AccountError("이미지를 저장하지 못했습니다. 하트 예약은 취소됩니다.", 503);
+        if (request.signal.aborted) throw new AccountError("생성을 취소했습니다.", 499);
         await settle({ headers: Object.fromEntries([...response.headers].filter(([key]) => key.startsWith("x-character-"))), usage: imageUsage }, path);
         return new Response(blob, { headers: response.headers });
       }
@@ -107,14 +121,17 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
                 const event = JSON.parse(data);
                 if (event.type === "usage" && typeof event.record?.id === "string") metrics.set(event.record.id, event.record);
                 if (event.type !== "usage" && event.type !== "phase") { bytes += data.length; if (bytes > 400000) throw new Error("Result too large"); events.push(event); }
-                if (event.type === "done") { await settle!({ events, usage: [...metrics.values()] }); finished = true; }
+                if (event.type === "done") {
+                  if (request.signal.aborted || !completeOutput(kind, events)) throw new Error("Incomplete generation");
+                  await settle!({ events, usage: [...metrics.values()] }); finished = true;
+                }
                 if (!closed) controller.enqueue(encoder.encode(`${raw}\n\n`));
               }
             }
             if (!finished) await refund();
           } catch {
             await refund().catch(() => undefined);
-            if (!closed) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: "응답 저장을 완료하지 못했습니다. 작업 내역을 확인해주세요." })}\n\n`));
+            if (!closed) controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", message: "응답 저장을 완료하지 못했습니다. 연결을 확인해주세요." })}\n\n`));
           } finally { source.releaseLock(); if (!closed) { closed = true; controller.close(); } }
         },
         async cancel() { closed = true; await source.cancel().catch(() => undefined); if (!finished) await refund().catch(() => undefined); },

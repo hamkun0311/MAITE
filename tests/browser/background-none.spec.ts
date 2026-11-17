@@ -41,8 +41,8 @@ test("background none is independent per screen, survives generation and can be 
   await chat.getByLabel("AI에게 보낼 메시지").fill("새 코트 입어줘");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await chat.getByRole("button", { name: "이미지 생성", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true })).toBeVisible();
-  await page.keyboard.press("Escape");
+  await expect(chat.getByRole("button", { name: "이미지 생성", exact: true })).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true })).toHaveCount(0);
   await expect(chat.locator(".character-backdrop")).toHaveCount(0);
   await chat.getByRole("button", { name: "배경 변경", exact: true }).click();
   await picker.getByRole("button", { name: "배경 선택: 새 장면", exact: true }).click();

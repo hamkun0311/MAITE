@@ -1,0 +1,29 @@
+{
+  "mode": "built-in image_gen edit",
+  "revisions": [
+    {
+      "id": "08_newface",
+      "prompt": "Refine ONLY the form UX of this MAITE screen. Keep the exact character identities, header 하루/1,005, same colors, typography, bottom five tabs and selected 뉴페이스, all existing field content and 50-heart CTA. REMOVE the misleading three-step progress indicator entirely because this is a single-page form. Use freed space for comfortable spacing. Appearance, personality and concept are editable text inputs/textarea, so REMOVE dropdown chevrons from 외모, 성격 and 컨셉 fields. Keep a dropdown only for 성별 if needed; age is numeric. No new labels, no new portraits, no change to the costs. Keep full edge-to-edge portrait 9:16."
+    },
+    {
+      "id": "13_confirm_hearts",
+      "prompt": "Fix ONLY the background consistency of this heart purchase confirmation. Preserve the WHITE confirmation sheet, its heading, buttons,100 hearts,2,000원 and1,105 exactly. The background accidentally contains invented product prices5,900 and9,900. Blur the entire background body strongly enough that ALL product names, counts and prices become unreadable soft shapes; keep only the dimmed 하루/1,005 top header faintly recognizable. Do NOT introduce any new legible pricing in the background. Keep the panel itself crisp and readable, and its violet/coral/light color identity. Its bottom edge reaches the bottom gesture bar; no interactive bottom navigation below the modal. Same portrait9:16."
+    },
+    {
+      "id": "14_confirm_character",
+      "prompt": "Refine ONLY the overlay behavior of this character-creation confirmation. Keep the existing confirmation sheet exact: 희진을 만들까요?, 사용 하트50,생성 후 잔액955,취소,50하트로 생성. Keep typography/palette/costs/character the same. Extend the sheet to the bottom gesture bar so NO bright five-tab navigation remains below it. The background form should be strongly blurred/dimmed and not legible: do not show or suggest a required uploaded profile image since MAITE generates the character image. Only the dimmed 하루/1,005 top header may be recognizable. Match the other MAITE bottom-sheet confirmation style, edge-to-edge portrait9:16."
+    },
+    {
+      "id": "15_confirm_novel",
+      "prompt": "Edit only the backdrop and bottom edge of this MAITE confirmation. Preserve ALL foreground sheet text, exact costs and arithmetic, title, portrait/book icon, buttons, typography and colors. Blur and darken the background content strongly so its extra tabs/list labels are no longer legible; preserve the faint user header 하루 and 1,005. Extend the WHITE bottom sheet down to the bottom gesture bar, REMOVE the bright five-tab app navigation currently below the sheet. A modal bottom sheet must cover the app navigation completely. Keep the heading, fee table, explanatory sentence, 취소 and primary violet button completely visible; reuse the extra bottom space instead of cropping anything. Match a coherent native Android bottom sheet with the other confirmations. Portrait9:16."
+    },
+    {
+      "id": "16_confirm_character_sale",
+      "prompt": "Edit only the backdrop and bottom edge of this MAITE confirmation. Preserve ALL foreground sheet text, exact costs and arithmetic, title, portrait/book icon, buttons, typography and colors. Blur and darken the background content strongly so its extra tabs/list labels are no longer legible; preserve the faint user header 하루 and 1,005. Extend the WHITE bottom sheet down to the bottom gesture bar, REMOVE the bright five-tab app navigation currently below the sheet. A modal bottom sheet must cover the app navigation completely. Keep the heading, fee table, explanatory sentence, 취소 and primary violet button completely visible; reuse the extra bottom space instead of cropping anything. Match a coherent native Android bottom sheet with the other confirmations. Portrait9:16."
+    },
+    {
+      "id": "17_confirm_novel_sale",
+      "prompt": "Edit ONLY the overlay backdrop and bottom edge. Preserve the entire foreground completed-novel sale confirmation EXACTLY: the character/cover, 完結 badge in Korean 완결, title input 서점의 약속, 총5편, price10 hearts, fee-2 hearts, proceeds8 hearts, both explanatory lines, 취소 and 판매 등록 buttons. No change to any amounts, typography or palette. Blur/darken the background body strongly so invented tabs are no longer legible; keep the top 하루/1,005 header faintly visible. Extend the white modal sheet all the way to the bottom safe area and REMOVE the bright bottom five-tab navigation currently below it. Do not crop the buttons or notes; use the added space. Match a native Android bottom sheet like the other MAITE confirmations. Exact9:16 full screenshot."
+    }
+  ]
+}

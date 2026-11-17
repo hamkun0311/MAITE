@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 import { POST } from "../app/api/characters/route.ts";
-import { visualInstructions, visualRequestSchema, compositionSchema } from "../lib/characters/visual.ts";
+import { visualInstructions, visualRequestSchema, compositionSchema, OVERLAP_DIRECTION, COMPOSITION_DIRECTION } from "../lib/characters/visual.ts";
 import {
   MAX_CHARACTER_REQUEST,
   buildCharacterPrompt,
@@ -22,6 +22,9 @@ test("scene composition is explicit and recent pose metadata is bounded", () => 
     pose: "Seated facing right, leaning toward a companion, left hand on seat, right palm open, feet braced.",
     framing: "Wide interior shot from the opposite seat." };
   const prompt = buildCharacterPrompt(brief, scene);
+  assert.ok(COMPOSITION_DIRECTION.includes(OVERLAP_DIRECTION));
+  assert.ok(prompt.includes(OVERLAP_DIRECTION));
+  assert.match(prompt, /Preserve required contact and narrative actions/);
   assert.ok(prompt.includes(`REQUIRED NEW BODY STAGING: ${JSON.stringify(brief.pose)}`));
   assert.ok(prompt.includes(`REQUIRED CAMERA: ${JSON.stringify(brief.framing)}`));
   assert.match(prompt, /at least TWO unconstrained axes/);
@@ -75,6 +78,7 @@ test("GPT Image route sends separate style and revision references and returns a
     briefCalls = 0;
   let includePrior = false;
   let sceneKind: "outfit" | "illustration" | undefined;
+  let characterPresent = true;
   t.mock.method(
     globalThis,
     "fetch",
@@ -126,7 +130,7 @@ test("GPT Image route sends separate style and revision references and returns a
                     prompt: profile === "female" ? "Adult woman with long hair in an elegant dress." : "A man wearing a blue coat, cheerful expression.",
                     styleProfile: profile,
                     ...(sceneKind ? composition : {}),
-                    ...(sceneKind === "illustration" ? { sceneLocation: "Inside a bookshop, bookshelves beside a reading table.", locationSource: "narrative" } : {}),
+                    ...(sceneKind === "illustration" ? { characterPresent, sceneLocation: "Inside a bookshop, bookshelves beside a reading table.", locationSource: "narrative" } : {}),
                     ...(sceneKind === "outfit" ? { sceneLocation: "Inside a clothing-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue coat with black trousers.", outfitSource: "conversation" } : {}),
                   }),
                 },
@@ -135,13 +139,17 @@ test("GPT Image route sends separate style and revision references and returns a
           ],
         });
       }
-      assert.equal(url, `https://api.openai.com/v1/images/${profile === "female" || includePrior ? "edits" : "generations"}`);
+      assert.equal(url, `https://api.openai.com/v1/images/${sceneKind === "illustration" && !characterPresent ? "generations" : profile === "female" || includePrior ? "edits" : "generations"}`);
       assert.equal(
         new Headers(options.headers).get("Authorization"),
         "Bearer fake-openai",
       );
       if (!(options.body instanceof FormData)) {
         const body = JSON.parse(String(options.body));
+        if (sceneKind === "illustration" && !characterPresent) {
+          assert.match(body.prompt, /profile character is ABSENT/);
+          assert.doesNotMatch(body.prompt, /FIRST input image is IDENTITY ONLY/);
+        }
         assert.equal(body.model, "gpt-image-2.5-sunburst");
         assert.equal(body.size, "720x1280");
         assert.ok(body.prompt.includes(`Rendering profile: ${profile}`));
@@ -259,6 +267,13 @@ test("GPT Image route sends separate style and revision references and returns a
   maleRevision.set("previousStyle", "male");
   includePrior = true;
   assert.equal((await POST(req(maleRevision))).status, 200);
+  characterPresent = false;
+  now += 61000;
+  const emptyScene = new FormData();
+  for (const [key, value] of maleRevision) emptyScene.set(key, value);
+  emptyScene.set("scene", JSON.stringify({ kind: "illustration", context: "희진은 이곳에 없다. 텅 빈 서점에서 열린 창문으로 바람만 들어왔다." }));
+  assert.equal((await POST(req(emptyScene))).status, 200);
+  characterPresent = true;
   sceneKind = undefined;
   includePrior = false;
   profile = "neutral";

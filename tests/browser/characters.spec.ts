@@ -8,7 +8,7 @@ test("top menus, character generation, download and image-based revision", async
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.getByRole("link", { name: "모양", exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("link", { name: "캐릭터 생성", exact: true }),
+    page.getByRole("link", { name: "뉴페이스", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   const jpeg = Buffer.from(
     await page.evaluate(() => {
@@ -114,7 +114,7 @@ test("cancellation and API error never expose a stale character download", async
     page.getByRole("alert").filter({ hasText: "요청을 변경해주세요." }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "이미지 다운로드" }),
+    page.locator(".chat-download button"),
   ).toBeDisabled();
   await page.unroute("**/api/characters");
   let release: () => void = () => {};
@@ -126,7 +126,7 @@ test("cancellation and API error never expose a stale character download", async
     await route.abort().catch(() => {});
   });
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
-  await page.getByRole("button", { name: "이미지 생성 취소" }).click();
+  await page.getByRole("button", { name: "이미지 생성 취소", exact: true }).click();
   release();
   await expect(
     page.getByText("생성을 취소했습니다.", { exact: false }),

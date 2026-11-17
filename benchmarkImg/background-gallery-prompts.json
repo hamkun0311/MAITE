@@ -1,0 +1,44 @@
+{
+  "mode": "built-in image_gen",
+  "date": "2026-11-17",
+  "edits": [
+    {
+      "id": "06_chat",
+      "file": "06_chat.png",
+      "title": "캐릭터 대화 · 옅은 장면 배경",
+      "prompt": "Use case: ui-mockup edit. Update this exact MAITE chat screen while preserving its typography, pale lavender/white/violet/coral palette, adult silver-haired 희진 identity, account header 하루/1,005, dialogue, manual 장면 생성30♥ button,2♥ chat cost, message composer and exact5footer tabs 캐릭터/뉴페이스/서점/스토어/마이페이지. Native full9:16 screenshot.\nThe generated scene image must be a faint FULL CONTENT BACKGROUND behind the chat, not a separate image bubble/card. Use a subtle low-opacity image of silver-haired adult 희진 in a beige coat by a cafe window, with an80–85% pale white/lavender veil so text is extremely legible. Profile avatar stays normally visible. No framed inline scene image.\nOn the character header row below 하루/heart header, replace the unlabeled book icon with TWO small matching outline icon buttons with readable exact labels \"배경\" and \"갤러리\". 배경 opens background selection; 갤러리 opens saved generated images. These are header actions, NOT new bottom navigation tabs. Keep the five bottom tabs unchanged. Keep all controls visible and uncluttered, use existing whitespace; retain all three chat bubbles and the 장소·의상 변경 indicator. Do not remove generation or composer controls. No new prices, no web panels."
+    },
+    {
+      "id": "07_novel_reader",
+      "file": "07_novel_reader.png",
+      "title": "소설 · 옅은 삽화 배경과 생성",
+      "prompt": "Use case: ui-mockup edit. Update this exact MAITE author novel screen with ONE important correction: the illustration is NOT inserted into the middle of the prose. REMOVE the framed inline illustration entirely. Instead reuse its SAME adult silver-haired 희진/bookstore artwork as a full-bleed low-opacity BACKGROUND behind the entire prose reading area, around15–20% visible beneath an80–85% pale white/lavender readability veil. No inline picture, no photo card between paragraphs. The prose flows continuously over this faint background; text remains dark and very legible.\nPreserve user 하루/1,005, title 서점의 약속, episode chips#1#2#3 with3selected, 이야기#3 title, same character artwork identity and violet/white/lavender/coral tone, and exact5footer tabs 캐릭터/뉴페이스/서점/스토어/마이페이지. Add two compact outline header actions labelled exactly \"배경\" and \"갤러리\" in the story title bar, replacing the old ellipsis; never add a6th bottom tab.\nMANDATORY keep ALL existing author functions completely visible: \"삽화 생성 · 50 ♥\" secondary button, the editable \"추가 컨셉 (선택)\" input with 둘이 함께 여행을 떠난다, helper 컨셉을 추가하면#4~#8로이어져요, violet \"다음 이야기 만들기 · 15 ♥\" primary button, and 이야기#3·완결까지2편 status. No free 다음편 button. Use the space freed by removing inline artwork for3–4 short literary paragraphs; do not shrink controls. The illustration-generation button creates a new background candidate to choose from, not an automatic inline insert. No automatic image generation. Whole9:16 native screenshot, same shared chrome."
+    }
+  ],
+  "newScreens": [
+    {
+      "id": "20_chat_background",
+      "file": "20_chat_background.png",
+      "title": "대화 배경 선택",
+      "prompt": "Use case: ui-mockup. Create a MAITE CHAT background selection screen. Reference1 is the updated chat screen for identity/background; reference2 is a shared modal styling reference only. Same original silver-haired adult 희진, user 하루/1,005, white/lavender/violet/coral palette and Korean font. Full9:16.\nA white rounded native bottom sheet over the dimmed chat, extending to bottom safe area and covering the5tab bar. Sheet title exactly \"대화 배경\", subtitle \"이 대화에 사용할 배경을 골라주세요\". A2-column grid of4 selectable tiles: \"배경 없음\" neutral tile with slash/image outline, \"캐릭터 원본\" showing normal full-color original 희진 portrait, \"카페 창가\" showing her in beige coat by cafe window, \"서점의 오후\" showing cream cardigan at bookshelves. Select \"카페 창가\" with violet outline and checkmark. Thumbnail images are FULL COLOR normal opacity so the user can identify originals; only applied chat background is faint.\nBelow grid a small native slider labelled \"배경 농도\" with value \"20%\" and muted note \"글자가 잘 보이도록 옅게 적용해요\". A quiet action \"갤러리에서 크게 보기\". A full-width violet button \"대화 배경으로 적용\". Small note \"소설 배경은 따로 유지돼요\". Preserve readable spacing. Do not include generation costs or payment confirmations: selecting an existing background is free. No inset phone border, no global sixth navigation tab."
+    },
+    {
+      "id": "21_novel_background",
+      "file": "21_novel_background.png",
+      "title": "소설 배경 선택",
+      "prompt": "Use case: ui-mockup. Create a MAITE NOVEL background selection screen. Reference1 updated author novel screen; reference2 modal style only. Same user하루/1,005, adult silver-haired희진, pale lavender/white/violet/coral, Korean typography. Full9:16.\nA native white rounded bottom sheet over dimmed continuous novel prose with faint background. Sheet title \"소설 배경\", subtitle \"이 소설에 사용할 배경을 골라주세요\". A2-column grid of4 tiles: \"배경 없음\" neutral slash/image icon, \"캐릭터 원본\" full-color original 희진 portrait, \"카페 창가\" beige-coat cafe artwork, \"서점의 오후\" original silver-haired woman reaching for book in cream cardigan. Select \"서점의 오후\" with violet outline/check. Thumbnails are vivid originals, NOT faded. Beneath grid slider \"배경 농도\" showing \"20%\", note \"삽화는 본문 뒤에 옅게 표시돼요\". Quiet action \"갤러리에서 크게 보기\". Violet full-width primary \"소설 배경으로 적용\". Small \"대화 배경은 따로 유지돼요\". Sheet covers bottom navigation to safe area. Never insert illustration between paragraphs, no payment/heart deduction for selecting existing images, no extra footer tab. Keep matching sheet spacing/labels to 대화 배경 screen."
+    },
+    {
+      "id": "22_gallery",
+      "file": "22_gallery.png",
+      "title": "캐릭터 이미지 갤러리",
+      "prompt": "Use case: ui-mockup. Create MAITE's image gallery for the selected character 희진. Reference1 is updated chat screen for overall chrome and character; reference2 is the app's original character list for style. Native full9:16 screenshot with the same white/lavender/violet/coral colors and readable Korean font. Top account header 하루/heart1,005. Below back arrow and title \"희진의 갤러리\", small count \"이미지 6개\". Do NOT add a gallery sixth footer tab. Keep original5tabs 캐릭터/뉴페이스/서점/스토어/마이페이지, 캐릭터 active.\nSmall filter chips \"전체\" selected, \"대화 장면\", \"소설 삽화\". A clear2-column by3-row grid of6 vivid full-color generated image thumbnails of the SAME original silver-haired25-year-oldwoman/violet eyes. Vary staging and setting instead of repeating exactly the same pose: seated original cream-cardigan bookstore portrait; standing beige-coat cafe-window scene; reaching for bookshelf; reading by bookshop table; walking with umbrella; side-profile warm evening cafe. All tasteful fully clothed original anime style. Small badges distinguish \"원본\", \"대화 장면\", \"소설 삽화\". Show a small expand icon on thumbnails, and a single line \"이미지를 누르면 전체화면으로 볼 수 있어요\". One tile may have subtle violet focus border but this is gallery browsing, not forced background selection. Full original colors here; fading belongs only to chat/prose backgrounds. No generation fees or giant marketing cards. No separate novel/character global list on this screen."
+    },
+    {
+      "id": "23_gallery_fullscreen",
+      "file": "23_gallery_fullscreen.png",
+      "title": "갤러리 이미지 전체화면",
+      "prompt": "Use case: ui-mockup. Create MAITE's immersive FULLSCREEN original-image viewer. Reference1 updated chat provides identity of original adult silver-haired희진, user role and palette. Reference2 is app style only. Whole9:16 portrait.\nUnlike chat backgrounds, the original artwork is VIVID and full opacity. Center a high-quality original anime portrait scene of the SAME adult woman aged25, long silver hair/violet eyes, modest beige coat, standing beside a warm cafe window and holding a cup with a natural relaxed pose. Show the ENTIRE selected portrait without cropping any essential subject, using a black/dark-charcoal canvas with letterbox margins where necessary. This is a flat app viewer, not a physical phone or promotional poster.\nMinimal white overlay controls at top: X close on left, centered \"2 / 6\", download/save icon on right. Quiet caption near bottom \"카페 창가 · 대화 장면\". A violet action near bottom \"대화 배경으로 적용\". No common account header, no hearts strip, no five-tab footer inside fullscreen viewer, no cost/deduction, no washed-out filter over the artwork. Keep the artwork dominant and controls slim. In a novel-origin flow the equivalent button would apply to novel, but THIS screenshot shows the chat-origin case. Same icon stroke style and typography as MAITE."
+    }
+  ]
+}

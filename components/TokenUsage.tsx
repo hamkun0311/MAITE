@@ -12,7 +12,12 @@ const number = (value: number | null) => value === null ? "확인 불가" : valu
 export default function TokenUsage() {
   const tasks = useSyncExternalStore(subscribeUsage, usageSnapshot, usageServerSnapshot);
   const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => { loadUsage(); }, []);
+  useEffect(() => {
+    loadUsage();
+    const open = () => { if (!dialog.current?.open) dialog.current?.showModal(); };
+    window.addEventListener("maite-open-token-usage", open);
+    return () => window.removeEventListener("maite-open-token-usage", open);
+  }, []);
   const records = tasks.flatMap(task => task.records);
   const total = sumUsage(records, "totalTokens");
   const unknown = records.filter(record => record.totalTokens === null && record.status !== "running").length;

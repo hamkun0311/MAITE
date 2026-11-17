@@ -1,0 +1,257 @@
+{
+  "date": "2026-11-17",
+  "mode": "built-in image_gen",
+  "exportSize": "1080x1920",
+  "exportMethod": "Whole-canvas size normalization; no content cropped",
+  "originals": ".verification/benchmark-references/originals",
+  "images": [
+    {
+      "file": "01_login.png",
+      "title": "Google 로그인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1519441
+    },
+    {
+      "file": "02_onboarding.png",
+      "title": "첫 접속 프로필 입력",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1207838
+    },
+    {
+      "file": "03_characters_9x16.png",
+      "title": "재접속 랜딩 · 내 캐릭터",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 2086027
+    },
+    {
+      "file": "04_character_chats.png",
+      "title": "캐릭터 상세 · 대화 목록",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1691408
+    },
+    {
+      "file": "05_character_novels.png",
+      "title": "캐릭터 상세 · 소설 목록",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 2021334
+    },
+    {
+      "file": "06_chat.png",
+      "title": "캐릭터 대화 · 옅은 장면 배경",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 2094898,
+      "originalBackup": ".verification/benchmark-background-originals/06_chat.png"
+    },
+    {
+      "file": "07_novel_reader.png",
+      "title": "소설 읽기·이어서 만들기",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 2199045,
+      "originalBackup": ".verification/benchmark-reading-originals/07_novel_reader.png"
+    },
+    {
+      "file": "08_newface.png",
+      "title": "뉴페이스 · 캐릭터 생성",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1476668
+    },
+    {
+      "file": "09_bookshop_characters.png",
+      "title": "서점 · 캐릭터 거래",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 2534956
+    },
+    {
+      "file": "10_bookshop_novels.png",
+      "title": "서점 · 완결 소설 거래",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 2604029
+    },
+    {
+      "file": "11_heart_store.png",
+      "title": "스토어 · 하트 구매",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1370877
+    },
+    {
+      "file": "12_mypage.png",
+      "title": "마이페이지 · 계정",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1346393
+    },
+    {
+      "file": "13_confirm_hearts.png",
+      "title": "하트 구매 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1494830
+    },
+    {
+      "file": "14_confirm_character.png",
+      "title": "캐릭터 생성 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 1635522
+    },
+    {
+      "file": "15_confirm_novel.png",
+      "title": "소설 생성 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 1417882
+    },
+    {
+      "file": "16_confirm_character_sale.png",
+      "title": "캐릭터 판매 등록 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 1468176
+    },
+    {
+      "file": "17_confirm_novel_sale.png",
+      "title": "완결 소설 판매 등록 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 1720664
+    },
+    {
+      "file": "18_confirm_scene.png",
+      "title": "장면 생성 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1816613
+    },
+    {
+      "file": "19_confirm_illustration.png",
+      "title": "삽화 생성 확인",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 1672919
+    },
+    {
+      "file": "20_chat_background.png",
+      "title": "대화 배경 선택",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1671,
+      "bytes": 2312081,
+      "originalBackup": ".verification/benchmark-background-originals/20_chat_background.png"
+    },
+    {
+      "file": "21_novel_background.png",
+      "title": "소설 배경 선택",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 2202661,
+      "originalBackup": ".verification/benchmark-background-originals/21_novel_background.png"
+    },
+    {
+      "file": "22_gallery.png",
+      "title": "캐릭터 이미지 갤러리",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 3745443,
+      "originalBackup": ".verification/benchmark-background-originals/22_gallery.png"
+    },
+    {
+      "file": "23_gallery_fullscreen.png",
+      "title": "갤러리 이미지 전체화면",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 941,
+      "originalHeight": 1672,
+      "bytes": 3592346,
+      "originalBackup": ".verification/benchmark-background-originals/23_gallery_fullscreen.png"
+    },
+    {
+      "file": "24_generation_loading.png",
+      "title": "소설·이미지 생성 로딩",
+      "width": 1080,
+      "height": 1920,
+      "aspectRatio": "9:16",
+      "originalWidth": 916,
+      "originalHeight": 1717,
+      "bytes": 2088992,
+      "originalBackup": ".verification/benchmark-reading-originals/24_generation_loading.png"
+    }
+  ],
+  "latestUpdate": "Swipe chapter navigation without numbered chips or remaining chapter status, and shared paper/pen generation loading popup"
+}

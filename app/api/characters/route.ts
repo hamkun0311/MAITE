@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
 import { characterProfileSchema } from "../../../lib/chat/character.ts";
-import { ILLUSTRATION_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
+import { ILLUSTRATION_DIRECTION, OVERLAP_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
   characterBrief,
@@ -196,7 +196,7 @@ async function handle(request: Request) {
             JSON.stringify(CHARACTER_STYLES) +
             (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features. For scene images retain those identity features while current scene clothing, pose and location take precedence over any initial outfit or setting in that field. " : "") +
             " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
-            (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : ""),
+            (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : ""),
           input: [
             {
               role: "user",
@@ -245,12 +245,13 @@ async function handle(request: Request) {
       output_format: "jpeg", output_compression: 85, n: 1,
     };
     const useStyleImage = brief.styleProfile === "female" && !scene;
-    const useEdit = useStyleImage || prior instanceof File;
+    const useIdentity = prior instanceof File && (scene?.kind !== "illustration" || illustrationBrief.parse(brief).characterPresent);
+    const useEdit = useStyleImage || useIdentity;
     let imageBody: FormData | string;
     if (useEdit) {
       const imageForm = new FormData();
       for (const [name, value] of Object.entries(parameters)) imageForm.set(name, String(value));
-      if (prior instanceof File) imageForm.append("image[]", prior, "previous-character.jpg");
+      if (useIdentity && prior instanceof File) imageForm.append("image[]", prior, "previous-character.jpg");
       if (useStyleImage) {
         const reference = await readFile(path.join(process.cwd(), "public/references/anime-style.png"));
         imageForm.append("image[]", new Blob([reference], { type: "image/png" }), "style-reference.png");

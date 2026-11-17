@@ -13,6 +13,7 @@ import { streamedDialogue } from "../../../lib/chat/dialogue.ts";
 import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, mergeChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
 import { storyComplete } from "../../../lib/novel/series.ts";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
+import { userDisplayName } from "../../../lib/chat/identity.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 180;
@@ -74,7 +75,9 @@ async function handle(request: Request) {
         chunks.push(value);
       }
     } finally { reader.releaseLock(); }
-    const { messages, character, storyState, speechStyle, additionalConcept, chatMemory, timeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const { messages, character, storyState, speechStyle, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const userName = character ? userDisplayName(character, additionalConcept || storyState?.seriesConcept) : "당신";
+    const timeline = rawTimeline ? { ...rawTimeline, participants: rawTimeline.participants.map(p => p.id === "user" ? { ...p, name: userName } : p) } : undefined;
     if (character?.mode === "story" && storyComplete(storyState) && !additionalConcept)
       return fail("완결된 이야기입니다. 컨셉을 추가하거나 새 이야기로 시작해주세요.", 409);
     if (Date.now() > usage.until) { usage.count = 0; usage.until = Date.now() + 60000; }
@@ -95,7 +98,7 @@ async function handle(request: Request) {
               direction: messages.at(-1)!.content, key, signal,
               phase: phase => { stage = phase; send({ type: "phase", phase }); }, onUsage, timeline,
             });
-            if (timeline) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises) });
+            if (timeline) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises, userName) });
             send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter });
             send({ type: "done" });
           } catch (error) {
@@ -117,7 +120,8 @@ async function handle(request: Request) {
     }
     const requestedSpeech = explicitSpeechRequest(messages.at(-1)!.content);
     const registerInstructions = `Before continuity and utterances, select speechStyle for THIS reply and use it consistently throughout. Current register: ${speechStyle ?? "unset"}. Clear direct request: ${requestedSpeech ?? "none"}. The latest request addressed to the CHARACTER overrides the current register. Interpret negations, quotations, hypotheticals and third-party speech in context; asking the user to speak casually is not a request to change your register. Otherwise preserve current register; initially follow explicit concept requirements or established speech, default polite if ambiguous. Never mix polite and casual endings or switch merely because of mood. After utterances, set clothingMentioned from ONLY the latest user message and this reply when the CHARACTER has changed clothes, chosen a new outfit, or is explicitly asked to wear/change an outfit (including uncommon garments). Exclude unchanged outfits, compliments, incidental names, unrelated homonyms, metaphors, other people's clothing and old memory. Set locationChanged when this exchange establishes a new/current changed location for the CHARACTER or a shared scene. Distinguish actual arrival/move from plans, invitations, flashbacks, negated moves, absent NPC places or the user moving alone. Do not require outfit changes for a location change. No explanations.`;
-    const rawMemory = character?.mode === "chat" ? chatMemory ?? emptyChatMemory(character.name) : undefined;
+    const originalMemory = character?.mode === "chat" ? chatMemory ?? emptyChatMemory(character.name) : undefined;
+    const rawMemory = originalMemory ? { ...originalMemory, participants: originalMemory.participants.map(p => p.id === "user" ? { ...p, name: userName } : p) } : undefined;
     const memory = rawMemory && timeline ? timelineChatMemory(rawMemory, timeline) : rawMemory;
     finishReply = trackUsage("chat.reply", textModel(), onUsage);
     const upstream = await fetch("https://api.openai.com/v1/responses", {
@@ -187,7 +191,7 @@ async function handle(request: Request) {
               }
               if (selectedSpeech) send({ type: "speech", speechStyle: selectedSpeech });
               if (nextMemory) send({ type: "memory", state: nextMemory, expectedTurn: memory!.turn });
-              if (timeline && nextMemory && character) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, nextMemory) });
+              if (timeline && nextMemory && character) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, nextMemory, undefined, undefined, [], userName) });
               send({ type: "done" }); break;
             }
             if (["error", "response.failed", "response.incomplete"].includes(String(event.type))) {

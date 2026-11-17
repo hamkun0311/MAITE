@@ -1,0 +1,5 @@
+{
+  "mode": "built-in image_gen edit",
+  "id": "07_novel_reader",
+  "prompt": "Make ONE targeted UX correction to this updated MAITE author novel screenshot. Keep the entire design, current episode3, all top chips#1#2#3, exact palette/portrait/illustration, visible 추가 컨셉(선택) field, its sample text and#4~#8 hint, 삽화 생성50♥, 다음 이야기 만들기15♥, account header and five-tab footer UNCHANGED. The extra OLD navigation row just above footer currently contains 이전 편 and 다음 편. REMOVE BOTH of those old navigation buttons entirely because episode3 is the latest generated chapter and the next episode must be CREATED using the15-heart primary button, not confused with a free next-page button. In that space keep ONLY a single quiet centered text line \"이야기 #3 · 완결까지 2편\". Historical episodes are already selectable using the top#1#2#3 chips. Keep all required controls fully visible, preserve9:16, no new elements, no extra price changes."
+}

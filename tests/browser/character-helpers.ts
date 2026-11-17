@@ -43,5 +43,6 @@ export async function enterCharacterMode(page: Page, mode: "대화하기" | "이
   await page.getByRole("group", { name: "캐릭터와 함께하기" }).getByRole("button", { name: mode, exact: true }).click();
   // Client-side routing may have an intentionally open SSE response. Assert
   // the route itself rather than waiting for an unrelated document load event.
-  await expect(page).toHaveURL(mode === "대화하기" ? /\/ideal\/chat$/ : /\/ideal\/story$/);
+  // Allow a cold Next development route to compile when these tests run alone.
+  await expect(page).toHaveURL(mode === "대화하기" ? /\/ideal\/chat$/ : /\/ideal\/story$/, { timeout: 15000 });
 }

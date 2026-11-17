@@ -3,7 +3,7 @@ const listeners = new Set<() => void>();
 function emit() { listeners.forEach(listener => listener()); }
 if (typeof window !== "undefined") window.addEventListener("popstate", emit);
 export function navigate(path: string, replace = false) {
-  if (!/^\/ideal(?:\/(?:chat|story|gallery))?$/.test(path)) path = "/ideal";
+  if (!/^\/ideal(?:\/(?:chat|story|new|characters|bookshop|store|mypage)|\/gallery(?:\?from=(?:chat|story))?|\/(?:characters|novels)\/[0-9a-f-]{36})?$/.test(path)) path = "/ideal";
   if (replace) history.replaceState({}, "", path); else history.pushState({}, "", path);
   emit();
 }

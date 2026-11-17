@@ -16,6 +16,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
   }
   if (init.method === "POST" && !headers.has("X-Request-Id")) headers.set("X-Request-Id", crypto.randomUUID());
   const response = await fetch(`${base}${path}`, { ...init, headers });
-  if (typeof window !== "undefined" && init.method === "POST") window.dispatchEvent(new Event("maite-account-refresh"));
+  // Text streams refresh after their done event. Autosaves do not change the wallet.
+  if (typeof window !== "undefined" && init.method === "POST" && path === "/api/characters") window.dispatchEvent(new Event("maite-account-refresh"));
   return response;
 }

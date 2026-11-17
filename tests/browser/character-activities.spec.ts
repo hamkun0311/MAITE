@@ -86,7 +86,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(story.getByLabel("AI에게 보낼 메시지")).toHaveCount(0);
   await expect(story.getByRole("log").locator(".user")).toHaveCount(0);
   await story.getByRole("button", { name: "다음 이야기", exact: true }).click();
-  await expect(story.getByRole("log").locator(".assistant")).toHaveCount(2);
+  await expect(story.locator(".story-page > span")).toHaveText("이야기 #2");
   await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
   expect(bodies[2].messages).toHaveLength(3);
   expect(bodies[2].storyState?.chapter).toBe(1);
@@ -102,21 +102,16 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
   expect(bodies[4].messages).toEqual(bodies[3].messages);
   expect(bodies[4].storyState).toEqual(bodies[3].storyState);
-  await expect(story.getByRole("log").locator(".assistant")).toHaveCount(3);
+  await expect(story.locator(".story-page > span")).toHaveText("이야기 #3");
   await enterCharacterMode(page);
   await expect(chat.getByText("오랜만이야", { exact: true })).toBeVisible();
   await enterCharacterMode(page, "이야기 만들기");
-  await expect(story.getByRole("log").locator(".assistant")).toHaveCount(3);
+  await expect(story.locator(".story-page > span")).toHaveText("이야기 #3");
   await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
   expect(bodies).toHaveLength(5);
-  await story.getByRole("button", { name: "AI 대화 초기화", exact: true }).click();
-  await expect(story.getByRole("log").locator(".assistant")).toHaveCount(0);
-  await story.getByRole("button", { name: "다음 이야기", exact: true }).click();
-  await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
-  expect(bodies[5].storyState).toBeUndefined();
-  expect(bodies[5].messages).toHaveLength(1);
-  await enterCharacterMode(page);
-  await chat.getByRole("button", { name: "캐릭터 설정", exact: true }).click();
+  await expect(story.getByRole("button", { name: "AI 대화 초기화", exact: true })).toHaveCount(0);
+  await expect(story.getByRole("button", { name: "캐릭터 설정", exact: true })).toHaveCount(0);
+  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
   await expect(page.getByLabel("캐릭터 이름")).toHaveValue("서하");
   await expect(gender).toHaveValue("여성");
   await expect(page.getByLabel("외모", { exact: true })).toHaveValue("긴 은발, 보라색 눈동자, 갸름한 얼굴");
@@ -124,6 +119,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(chat.getByText("오랜만이야", { exact: true })).toBeVisible();
   await page.screenshot({ path: ".verification/character-chat-mobile.png", fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toHaveCount(0);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);
@@ -205,13 +201,18 @@ test("story reader uses most of the screen and commits a chapter only after comp
   await enterCharacterMode(page, "이야기 만들기");
   const story = page.getByRole("region", { name: "이야기 만들기", exact: true });
   const log = story.getByRole("log");
-  await expect(log.locator(".assistant p")).toHaveText("이야기 흐름 확인 중…");
+  const loading = page.getByRole("dialog", { name: "이야기를 쓰고 있어요" });
+  await expect(loading).toBeVisible();
+  await expect(loading.getByRole("status")).toHaveText("이야기 흐름 확인 중…");
+  await expect(loading.locator("img")).toHaveJSProperty("complete", true);
+  await expect(page.locator(".story-page p")).not.toContainText("첫 장면.");
   await expect(story.getByLabel("AI에게 보낼 메시지")).toHaveCount(0);
-  await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeDisabled();
+  await expect(page.locator(".story-next-button")).toBeDisabled();
   await page.evaluate(() => (window as typeof window & { finishStory?: () => void }).finishStory!());
   await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
   await expect(log.locator(".assistant p")).toContainText("첫 장면.");
-  await expect.poll(async () => (await log.boundingBox())!.height / 844).toBeGreaterThan(0.55);
+  const footer = page.getByRole("navigation", { name: "하단 메뉴" });
+  await expect.poll(async () => (await log.boundingBox())!.height / (844 - (await footer.boundingBox())!.height)).toBeGreaterThan(0.55);
   expect(await log.locator(".assistant p").evaluate(element => parseFloat(getComputedStyle(element).fontSize))).toBeGreaterThanOrEqual(17);
   const initial = await log.evaluate(element => ({ top: element.scrollTop, bottom: element.scrollHeight - element.clientHeight }));
   expect(initial.top).toBeLessThan(initial.bottom - 100);
@@ -220,7 +221,7 @@ test("story reader uses most of the screen and commits a chapter only after comp
   await page.screenshot({ path: ".verification/story-reader-mobile.png" });
   for (const viewport of [{ width: 320, height: 568 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
-    await expect.poll(async () => (await log.boundingBox())!.height / viewport.height).toBeGreaterThan(0.45);
+    await expect.poll(async () => (await log.boundingBox())!.height / (viewport.height - (await footer.boundingBox())!.height)).toBeGreaterThan(0.45);
     await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }

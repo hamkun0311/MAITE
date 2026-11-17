@@ -1,4 +1,3 @@
-"use client";
 import { z } from "zod";
 import { characterProfileSchema } from "../chat/character.ts";
 import { characterStyleProfile } from "../characters/schema.ts";
@@ -7,15 +6,16 @@ import { chatMemorySchema } from "../chat/memory.ts";
 import { timelineSchema } from "../chat/timeline.ts";
 import { storyStateSchema } from "../novel/state.ts";
 import { speechStyleSchema } from "../chat/speech.ts";
+import { uniqueGalleryIds } from "../characters/gallery.ts";
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(20000) });
-const session = z.object({ committed: z.array(message).max(1000), archive: z.array(message).max(1000).optional(), input: z.string().max(2000).default(""), started: z.boolean(), storyState: storyStateSchema.optional(), speechStyle: speechStyleSchema.optional(), chatMemory: chatMemorySchema.optional(), latestVisualChange: z.boolean().optional(), visualDetected: z.boolean().optional() });
+const session = z.object({ documentId: z.uuid().optional(), lastJobId: z.uuid().optional(), committed: z.array(message).max(1000), archive: z.array(message).max(1000).optional(), input: z.string().max(2000).default(""), started: z.boolean(), storyState: storyStateSchema.optional(), storyPage: z.number().int().min(0).max(1000).optional(), speechStyle: speechStyleSchema.optional(), chatMemory: chatMemorySchema.optional(), latestVisualChange: z.boolean().optional(), visualDetected: z.boolean().optional() });
 export const snapshotSchema = z.object({
   version: z.literal(1), id: z.uuid(),
   art: z.object({ title: z.string().max(120), summary: z.string().max(2000), prompt: z.string().max(12000), style: characterStyleProfile, description: z.string().max(6000), profile: characterProfileSchema, width: z.number(), height: z.number(), jobId: z.uuid().optional(), listingId: z.uuid().optional() }),
   chat: session, story: session, timeline: timelineSchema,
   gallery: z.array(z.object({ id: z.string().max(100), title: z.string().max(120), kind: z.enum(["character", "illustration", "outfit"]), jobId: z.uuid().optional(), composition: z.object({ pose: z.string().max(240), framing: z.string().max(160) }).optional() })).max(24).default([]),
   backgrounds: z.object({ chat: z.string().max(100).optional(), story: z.string().max(100).optional() }).default({}),
-});
+}).transform(value => ({ ...value, gallery: uniqueGalleryIds(value.gallery) }));
 export type StudioSnapshot = z.infer<typeof snapshotSchema>;
 export function restoreSessions(data: StudioSnapshot) {
   const sessions = createStudioSessions();
@@ -24,7 +24,7 @@ export function restoreSessions(data: StudioSnapshot) {
   return sessions;
 }
 export function sessionSnapshot(saved: ChatSession) {
-  return { committed: saved.committed, archive: saved.archive, input: saved.input, started: saved.started, storyState: saved.storyState, speechStyle: saved.speechStyle, chatMemory: saved.chatMemory, visualDetected: saved.visualDetected, latestVisualChange: saved.latestVisualChange };
+  return { documentId: saved.documentId, lastJobId: saved.lastJobId, committed: saved.committed, archive: saved.archive, input: saved.input, started: saved.started, storyState: saved.storyState, storyPage: saved.storyPage, speechStyle: saved.speechStyle, chatMemory: saved.chatMemory, visualDetected: saved.visualDetected, latestVisualChange: saved.latestVisualChange };
 }
 async function localDb() {
   return new Promise<IDBDatabase>((resolve, reject) => { const open = indexedDB.open("maite-mobile-v1", 1); open.onupgradeneeded = () => { open.result.createObjectStore("studio"); }; open.onerror = () => reject(open.error); open.onsuccess = () => resolve(open.result); });

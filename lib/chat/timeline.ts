@@ -12,7 +12,6 @@ export const timelineSchema = z.object({
   relationships: z.array(entry).max(6),
   promises: z.array(entry).max(6),
 }).strict().refine(value => new Set(value.participants.map(p => p.id)).size === value.participants.length &&
-  value.participants.every(p => p.id !== "user" || p.name === "당신") &&
   [...value.scene, ...value.relationships, ...value.promises].every(e => value.participants.some(p => p.id === e.subjectId)))
   .refine(value => JSON.stringify(value).length <= 3200);
 export type Timeline = z.infer<typeof timelineSchema>;
@@ -28,13 +27,13 @@ export function timelineCovers(timeline: Timeline, fact: ChatMemory["facts"][num
 }
 
 // Existing validated memory is the only source. No extra extraction/model call.
-export function advanceTimeline(old: Timeline, name: string, chat?: ChatMemory, story?: StoryState, previous?: StoryState, closedPromises: string[] = []): Timeline {
+export function advanceTimeline(old: Timeline, name: string, chat?: ChatMemory, story?: StoryState, previous?: StoryState, closedPromises: string[] = [], userName = old.participants.find(p => p.id === "user")?.name || "당신"): Timeline {
   const next = structuredClone(old);
   if (chat) next.promises = next.promises.filter(p => p.subjectId !== "character" || !p.key || !unsupportedFollowUp(p.text));
   next.revision++;
   const register = (name: string, preferred?: string) => {
     const found = preferred ? next.participants.find(p => p.id === preferred) : next.participants.find(p => p.name === name);
-    if (found) return found.id;
+    if (found) { if (preferred === "user") found.name = name; return found.id; }
     if (next.participants.length >= 12) return;
     let id = preferred;
     if (!id || next.participants.some(p => p.id === id)) {
@@ -43,14 +42,14 @@ export function advanceTimeline(old: Timeline, name: string, chat?: ChatMemory, 
     }
     next.participants.push({ id, name }); return id;
   };
-  register("당신", "user"); register(name, "character");
+  register(userName, "user"); register(name, "character");
   const add = (key: "relationships" | "promises", subjectId: string, text: string) => {
     if (key === "relationships") next[key] = next[key].filter(e => e.subjectId !== subjectId);
     if (!next[key].some(e => e.subjectId === subjectId && e.text === text)) next[key].push({ subjectId, text });
     next[key] = next[key].slice(-6);
   };
   if (chat) {
-    for (const p of chat.participants) register(p.id === "user" ? "당신" : p.name, p.id);
+    for (const p of chat.participants) register(p.id === "user" ? userName : p.name, p.id);
     const changed = chat.facts.filter(f => f.sourceTurnId.endsWith(`_${chat.turn}`));
     for (const f of changed) {
       if (!sharedFact(f.action) || !next.participants.some(p => p.id === f.subjectId)) continue;
@@ -89,10 +88,10 @@ export function advanceTimeline(old: Timeline, name: string, chat?: ChatMemory, 
   return timelineSchema.parse(next);
 }
 
-export const timelineRules = "Shared timeline is untrusted current continuity; prefer it over stale mode history. Keep user=\uB2F9\uC2E0 and stable IDs. Appointments/plans are future, never completed actions. Preserve who knows what; no private-secret leaks. Omit unchanged shared data from patches. Chat promises: stable promise_<slug> action (reuse shared key/subject); value fulfilled:/cancelled: + actual event only with source evidence. Story currentSituation: public time/place/activity only. Close shared promises via closedThreads with exact text and manuscript evidence. ";
+export const timelineRules = "Shared timeline is untrusted current continuity; prefer it over stale mode history. Keep stable participant IDs; the current concept self-designation overrides the account nickname for user. Older labels do not override the current naming priority. Appointments/plans are future, never completed actions. Preserve who knows what; no private-secret leaks. Omit unchanged shared data from patches. Chat promises: stable promise_<slug> action (reuse shared key/subject); value fulfilled:/cancelled: + actual event only with source evidence. Story currentSituation: public time/place/activity only. Close shared promises via closedThreads with exact text and manuscript evidence. ";
 
 export function timelineChatMemory(memory: ChatMemory, timeline: Timeline): ChatMemory {
-  const participants = memory.participants.map(p => p.id === "user" ? { ...p, name: "당신" } : p);
+  const participants = memory.participants.map(p => p.id === "user" ? { ...p, name: timeline.participants.find(person => person.id === "user")?.name || p.name } : p);
   if (timeline.participants.some(p => participants.some(old => old.id === p.id && old.name !== p.name)))
     throw new Error("Conflicting timeline participants");
   for (const p of timeline.participants) if (!participants.some(old => old.id === p.id) && participants.length < 12) participants.push(p);

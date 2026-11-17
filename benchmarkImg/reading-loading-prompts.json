@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-17",
+  "mode": "built-in image_gen",
+  "priority": "Overrides earlier chapter chip and remaining-chapter status instructions.",
+  "screens": [
+    {
+      "file": "07_novel_reader.png",
+      "prompt": "Edit this exact MAITE 9:16 mobile novel reader mockup, preserving its consistent violet/lavender/off-white palette, Korean typography, header 하루 1,005 hearts, silver-haired adult 희진 faint FULL BACKGROUND illustration, 배경 and 갤러리 controls, continuous Korean novel prose, 삽화 생성 50 hearts button, optional additional concept input, next story generation 15 hearts button, and exact five footer tabs 캐릭터 / 뉴페이스 / 서점 / 스토어 / 마이페이지. Remove the entire top #1 #2 #3 chapter selector chip row. Remove the bottom sentence 이야기 #3 · 완결까지 2편 completely. Redistribute freed space to enlarge the prose reading area. Keep a single current chapter title 이야기 #3, with subtle small left and right chevron controls for viewing already generated chapters and a very subtle horizontal swipe affordance, no numeric pagination chips, no remaining-chapters text. No second free next-chapter button. Make it a beautiful native app reading page. Export one clean full-frame 1080x1920 portrait mockup without device frame."
+    },
+    {
+      "file": "24_generation_loading.png",
+      "prompt": "Centered white rounded paper-and-violet-pen loading modal; heading 이야기를 쓰고 있어요 (or 그림을 그리고 있어요 for images), current generation phase, animated dots and 생성 취소. Preserve updated swipe reader behind dim/blur overlay; no chapter chips or remaining-chapter status."
+    }
+  ],
+  "asset": {
+    "file": "components/assets/writing-loading.png",
+    "description": "Transparent cream paper and violet fountain pen cutout, no human hands. Generated once and bundled; loading never calls the image API."
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "mode": "built-in image_gen",
+  "useCase": "ui-mockup",
+  "date": "2026-11-17",
+  "common": "Use case: ui-mockup. Create ONE polished production-ready MAITE mobile app screenshot, TRUE 9:16 portrait canvas, width/height=0.5625, match the corrected reference image's proportions precisely. Never narrow 1:2. Aim for 1080x1920. Edge-to-edge full-screen flat UI, NO physical phone bezel, no collage, no marketing poster, no surrounding margins. Native Android chat/character companion app rather than a responsive website. Consistent design system: pale cool off-white #F7F7FB, pure white surfaces, vivid violet #795BEE primary, soft lavender #EDE8FF selected backgrounds, charcoal #222234 text, muted gray #9392A5 text, coral #EF7589 hearts. Crisp readable Korean sans serif like Pretendard, practical mobile text sizes, thin outline icons, 16dp horizontal gutters, 16dp rounded surfaces, restrained shadows, dense but breathable native lists. Original identity, no borrowed brand logos or UI copied literally. Android status bar 9:41 at top; bottom gesture bar. Logged-in screens have a compact user header: small lavender avatar and nickname \"하루\" on the left; coral heart icon and \"1,005\" balance chip on the right. Main content below. Exactly FIVE equal-width bottom tabs, always spell labels verbatim: \"캐릭터\", \"뉴페이스\", \"서점\", \"스토어\", \"마이페이지\". Icons: person/sparkle avatar, plus sparkle, open book, heart bag, profile. One active violet tab, others gray. Do not substitute labels or add a sixth tab. Recurring character portrait 희진: original adult anime woman aged25, long silver hair, violet eyes, cream cardigan over black top; tasteful gentle 2D anime art. 롤랑: adult brown-haired anime knight; 루이: adult copper-haired anime princess. Use a single coherent illustration treatment. All labels Korean, short exact text; no gibberish, no web browser controls, no desktop sidebar, no oversized promotional hero, no lengthy explanatory copy. This is a visual design proposal, not a screenshot of the current implemented app.",
+  "anchor": {
+    "file": "03_characters_9x16.png",
+    "initialPrompt": "Use case: ui-mockup. Create ONE polished production-ready MAITE mobile app screenshot, exact 9:16 portrait canvas 1152x2048 pixels. Edge-to-edge full-screen flat UI, NO physical phone bezel, no collage, no marketing poster, no surrounding margins. Native Android chat/character companion app rather than a responsive website. Consistent design system: pale cool off-white #F7F7FB, pure white surfaces, vivid violet #795BEE primary, soft lavender #EDE8FF selected backgrounds, charcoal #222234 text, muted gray #9392A5 text, coral #EF7589 hearts. Crisp readable Korean sans serif like Pretendard, practical mobile text sizes, thin outline icons, 16dp horizontal gutters, 16dp rounded surfaces, restrained shadows, dense but breathable native lists. Original identity, no borrowed brand logos or UI copied literally. Android status bar 9:41 at top; bottom gesture bar. Logged-in screens have a compact user header: small lavender avatar and nickname \"하루\" on the left; coral heart icon and \"1,005\" balance chip on the right. Main content below. Exactly FIVE equal-width bottom tabs, always spell labels verbatim: \"캐릭터\", \"뉴페이스\", \"서점\", \"스토어\", \"마이페이지\". Icons: person/sparkle avatar, plus sparkle, open book, heart bag, profile. One active violet tab, others gray. Do not substitute labels or add a sixth tab. Recurring character portrait 희진: original adult anime woman aged25, long silver hair, violet eyes, cream cardigan over black top; tasteful gentle 2D anime art. 롤랑: adult brown-haired anime knight; 루이: adult copper-haired anime princess. Use a single coherent illustration treatment. All labels Korean, short exact text; no gibberish, no web browser controls, no desktop sidebar, no oversized promotional hero, no lengthy explanatory copy. This is a visual design proposal, not a screenshot of the current implemented app.\nSCREEN: returning-user landing / 캐릭터 tab selected. Native compact header with 하루 and 1,005 hearts. Title \"내 캐릭터\", subtitle \"우리의 이야기를 이어가요\". Compact search \"캐릭터 검색\". Small filter chips \"전체\" (active) and \"즐겨찾기\". Three generous native character-list rows with large square anime portrait thumbnails on left and text/action right; NOT a web card grid. Row1 \"희진\", secondary \"서점에서 다시 만난 우리\", small metadata \"대화 3 · 소설 2\", lavender capsule \"이어서 대화\". Row2 \"롤랑\", secondary \"언제나 당신의 곁에\", metadata \"대화 2 · 소설 1\". Row3 \"루이\", secondary \"왕국에 숨겨진 사랑\", metadata \"대화 1 · 소설 1\". Warm colorful small portraits make content appealing, but surrounding UI stays calm and minimal. Beneath rows a subtle dashed outline \"+ 새로운 캐릭터 만나기\" link, not a huge button. Keep bottom tabs attached at exact same baseline in future screens. Important: do not put global conversation or novel tabs in the bottom bar; those belong INSIDE a character's detail.",
+    "aspectCorrectionPrompt": "Edit this MAITE screenshot into a TRUE 9:16 image, NOT 1:2. The current image is 887x1774 (1:2), which is too narrow. Regenerate at exactly 1080px wide by 1920px high, or 1152x2048, so WIDTH/HEIGHT MUST EQUAL 0.5625. Reflow the app slightly wider and less tall. Keep the same complete top status/user header and complete five-tab bottom bar, all character rows, same palette, exact labels, character identities and design. Do not crop off the header or footer. Only change layout aspect ratio and spacing to fill the wider 9:16 canvas edge-to-edge. No phone frame."
+  },
+  "screens": [
+    {
+      "id": "01_login",
+      "title": "Google 로그인",
+      "file": "01_login.png",
+      "prompt": "SCREEN: Google login AFTER the user's own splash screen (do NOT design a splash logo). Use the reference palette and typography. NO account header, balance or bottom tabs before authentication. At top small simple text wordmark \"maite\" only, no new emblem. Center small illustration of the existing silver-haired adult character peeking from a lavender chat bubble, modest and welcoming. Main heading \"당신만의 이야기가 시작되는 곳\". Subtext \"캐릭터와 대화하고, 함께 이야기를 만들어요\". Near bottom a large white bordered \"Google로 시작하기\" button with a small multicolor G, followed by quiet \"이용약관 · 개인정보처리방침\". Avoid a giant branding poster, keep this an actual functional app login page with ample native whitespace."
+    },
+    {
+      "id": "02_onboarding",
+      "title": "첫 접속 프로필 입력",
+      "file": "02_onboarding.png",
+      "prompt": "SCREEN: first-login profile setup. No accessible bottom navigation until setup is complete. Compact back chevron, header \"프로필 설정\", small \"처음 한 번만 입력해요\". Small lavender user avatar with edit icon. Heading \"어떻게 불러드릴까요?\". Native rounded text field label \"닉네임\" value \"하루\"; segmented selection label \"성별\", options \"여성\" selected and \"남성\"; compact numeric field label \"나이\" value \"27\". Tiny help \"프로필은 마이페이지에서 수정할 수 있어요\". Sticky bottom full-width violet \"시작하기\" button above gesture bar. Beautiful concise form, not web fieldsets or big cards."
+    },
+    {
+      "id": "04_character_chats",
+      "title": "캐릭터 상세 · 대화 목록",
+      "file": "04_character_chats.png",
+      "prompt": "SCREEN: selected character 희진 detail, bottom 캐릭터 selected. Retain user header 하루 and heart1,005; back chevron + small title \"캐릭터\". Top third a compact hero portrait card for the EXACT same silver-haired 희진, cream cardigan and modest black top, name \"희진\", small \"25세 · 서점의 소꿉친구\", short line \"당신에게만 조금 다정한 친구\". Character action link \"캐릭터 판매\". Below native underline tabs \"대화\" selected violet and \"소설\" unselected. Conversation list rows with speech-bubble icons, title \"서점에서의 재회\", preview \"오늘도 여기서 만났네.\", timestamp \"오후 3:20\"; second \"비 오는 날의 약속\", preview \"우산은 같이 쓰면 되지.\", \"어제\"; third \"첫 인사\", \"처음 만난 순간부터\", \"11월 15일\". Bottom content CTA \"+ 새 대화\". Do not show novels from other characters, do not add global chats tab. Compact native list visual."
+    },
+    {
+      "id": "05_character_novels",
+      "title": "캐릭터 상세 · 소설 목록",
+      "file": "05_character_novels.png",
+      "prompt": "SCREEN: selected character 희진 detail with SAME portrait/header layout as character chat detail. Bottom 캐릭터 selected. Header 하루 heart1,005. Character name 희진, \"25세 · 서점의 소꿉친구\", small \"캐릭터 판매\" action. Underline tabs \"대화\" gray and \"소설\" active violet. Two novel rows with small illustrated book covers: \"서점의 약속\" with greenish or lavender badge \"완결\", metadata \"총 5편\", secondary \"마지막 페이지까지 함께\"; and \"비가 그친 오후\" with neutral badge \"연재 중\", metadata \"이야기 #3 · 완결까지 2편\". Distinguish complete novel's subtle \"판매 등록\" action and ongoing novel no sale action. Bottom content CTA \"+ 새 소설\". The lists belong to THIS character. Same native density and shared nav; original cover art matching reference characters."
+    },
+    {
+      "id": "06_chat",
+      "title": "캐릭터 대화",
+      "file": "06_chat.png",
+      "prompt": "SCREEN: immersive but clean native text conversation with 희진. Account header 하루 and heart1,005 remains compact. Character conversation header below: back chevron, small circular 희진 portrait, \"희진\", small book icon for context. Light lavender near-white chat background with very faint original bookshelf artwork at low opacity, never obscuring words. Left white rounded bubbles with small avatar: \"오늘도 서점에 왔네.\", \"당신이 올 것 같아서 기다렸어.\" Right violet bubble with white text: \"나도 보고 싶었어.\" Next left white bubble \"그럼 오늘은 조금 더 같이 있어.\" Small timestamps understated. At bottom above five-tab nav 캐릭터 active, slim composer with + icon, placeholder \"희진에게 메시지 보내기\", violet circular send arrow; small cost label \"대화 1회 2 ♥\". No web card enclosing the whole chat, no character full-body figure covering messages, no auto-message promises."
+    },
+    {
+      "id": "07_novel_reader",
+      "title": "소설 회차 읽기",
+      "file": "07_novel_reader.png",
+      "prompt": "SCREEN: full native novel reader for completed story \"서점의 약속\". Header user 하루 / heart1,005 compact; underneath back chevron, small story title and a more icon. Thin horizontal episode chips \"#1\" \"#2\" \"#3\" (selected violet) \"#4\" \"#5\". Centered modest chapter title \"이야기 #3\", subtitle \"오래된 책장 사이\". Readable left-aligned Korean prose with generous line height and modest serif-like literary text; four short paragraphs about 희진 and 하루 meeting in a quiet bookstore, no murder or mystery shift. Small landscape anime illustration showing the SAME silver-haired adult woman in a modest cream cardigan reaching for a book, around middle of body, not a huge cover. Bottom slim previous/next controls \"이전 편\" and \"다음 편\", a subtle \"완결 · 총 5편\" indicator. Shared five-tab navigation 캐릭터 active. No full-page bordered web card, no excessive prose, no extra app menu list."
+    },
+    {
+      "id": "08_newface",
+      "title": "뉴페이스 · 캐릭터 생성",
+      "file": "08_newface.png",
+      "prompt": "SCREEN: 뉴페이스 tab active, user 하루 and heart1,005 at top. Title \"새로운 인연 만들기\", tiny caption \"당신이 상상한 그 사람\". Compact step indicator \"1 기본 설정\" active, \"2 컨셉\", \"3 생성\". A small neutral lavender profile silhouette and + icon, not a completed portrait before creation. Native form fields: \"캐릭터 이름\" value \"희진\"; paired compact fields \"나이\" 25 and \"성별\" 여성 selected; \"외모\" value \"긴 은발, 보라색 눈동자\"; \"성격\" value \"도도하지만 다정한 성격\"; larger compact \"컨셉\" value \"오랜만에 서점에서 다시 만난 소꿉친구\". A single sticky violet CTA \"캐릭터 만들기 · 50 ♥\" above the shared bottom nav. Small note \"확인 후 하트가 사용돼요\". Same native style, tight spacing suitable for9:16, not a long website form."
+    },
+    {
+      "id": "09_bookshop_characters",
+      "title": "서점 · 캐릭터 거래",
+      "file": "09_bookshop_characters.png",
+      "prompt": "SCREEN: 서점 tab selected. User header 하루 and heart1,005. Title \"서점\", small search icon. Full-width underline tabs \"캐릭터\" selected violet, \"소설\" gray. Small chips \"추천\" active, \"로맨스\", \"판타지\". Two-column catalog with four original anime portrait covers (same reference art style, adult characters, tasteful) using silver-haired 희진 and brown-haired 롤랑 plus two original companions. Titles \"희진\", \"롤랑\", \"도윤\", \"서연\". Small creator handles \"by 별빛\", \"by 하루\". Below each show \"30 ♥ + 수수료 5 ♥\", bold total \"총 35 ♥\". Keep native catalog cards compact with image as main content, clear tap affordance. No heart top-up packages here; those belong only to 스토어. No giant banners or desktop marketplace panels. Include original character art, no copied reference-app characters."
+    },
+    {
+      "id": "10_bookshop_novels",
+      "title": "서점 · 완결 소설 거래",
+      "file": "10_bookshop_novels.png",
+      "prompt": "SCREEN: 서점 tab selected. User header 하루 and1,005 hearts. Title \"서점\". Native tabs \"캐릭터\" gray, \"소설\" selected violet. Small filter pill \"완결 작품\". Two-column cover grid with original anime illustrated book covers; titles \"서점의 약속\", \"달빛 아래서\", \"왕국의 연인\", \"다시 만난 계절\". Every cover has a small coherent \"완결\" badge and metadata \"총 5편\". Each card shows \"회차당 10 ♥ + 수수료 2 ♥\" then \"총 12 ♥ / 편\". The reference silver-haired woman may appear on the first cover; preserve her identity. No incomplete novel sale, no heart packs, no global private novel list. This is public bookstore browsing. Maintain calm neutral UI and colorful small covers."
+    },
+    {
+      "id": "11_heart_store",
+      "title": "스토어 · 하트 구매",
+      "file": "11_heart_store.png",
+      "prompt": "SCREEN: 스토어 tab selected. User header 하루 and heart1,005. Title \"하트 스토어\". Compact balance summary \"보유 하트 1,005\" with coral heart icon, not a massive illustration. Four clean native purchase rows with small heart bundle icons and right-aligned won amounts: \"100 하트\" / \"2,000원\"; \"250 + 50 하트\" / \"5,000원\"; \"500 + 200 하트\" / \"10,000원\" with tiny \"인기\" lavender badge; \"하트 패스 30일\" / \"5,000원\", subtext \"즉시 100개 + 접속한 날 하루 10개\", small note \"자동 갱신 없음\". Under a divider two quiet utility rows \"광고 보고 5하트\" with \"오늘 0/5회\" and \"구매 복구\". Clear distinction between current hearts and item amounts. No character or novel product cards on this tab. Shared exact five tabs and UI tokens."
+    },
+    {
+      "id": "12_mypage",
+      "title": "마이페이지 · 계정",
+      "file": "12_mypage.png",
+      "prompt": "SCREEN: 마이페이지 tab selected. Same compact header 하루 and1,005 heart chip. Title \"마이페이지\". A profile section with circular lavender avatar, nickname \"하루\", small email \"haru@example.com\", and quiet \"프로필 수정\" outline button. Personal info as clean native rows: \"닉네임\" 하루; \"성별\" 여성; \"나이\" 27세. A compact white rounded wallet summary \"보유 하트 1,005\", split lines \"구매·판매 하트 1,000\" and \"보상 하트 5\". Native settings rows with thin chevrons \"하트 이용내역\", \"계정 관리\", \"이용약관\", and a muted \"로그아웃\". IMPORTANT: no character list, no novel list on this page, because both are accessed via a character selected in the 캐릭터 tab. No web dashboard grids or huge profile hero. Match all reference spacing and palette."
+    },
+    {
+      "id": "13_confirm_hearts",
+      "title": "하트 구매 확인",
+      "file": "13_confirm_hearts.png",
+      "prompt": "SCREEN: heart purchase confirmation over the SAME heart-store screen with user header 하루 /1,005 hearts and 스토어 active. Background dimmed with 36% charcoal scrim, recognizable but unobtrusive. A native rounded WHITE bottom sheet occupying lower half, drag handle at top, small coral heart icon. Exact heading \"하트를 충전할까요?\". Summary \"100 하트\", row \"결제 금액\" / \"2,000원\", row \"충전 후 하트\" / \"1,105 ♥\". Small calm note \"Google Play 결제로 이어집니다\". Two clear buttons in same row: quiet \"취소\" and violet primary \"2,000원 결제\". Show amount in won, no consumption cost or fiction-sale fees here. A confirmation, not a purchase success screen. Sheet covers navigation while modal is open; no background interaction. Same typography, corner radii and density as other screens."
+    },
+    {
+      "id": "14_confirm_character",
+      "title": "캐릭터 생성 확인",
+      "file": "14_confirm_character.png",
+      "prompt": "SCREEN: character-creation confirmation over the SAME 뉴페이스 form, user 하루 /1,005 heart balance. Dimmed background and a consistent white rounded lower-half bottom sheet with drag handle. Tiny lavender portrait placeholder icon, exact heading \"희진을 만들까요?\". Rows \"사용 하트\" / \"50 ♥\", \"생성 후 잔액\" / \"955 ♥\". Brief line \"입력한 설정으로 캐릭터를 생성해요\". Two equal-height buttons: quiet \"취소\" and vivid violet \"50하트로 생성\". This is preflight confirmation, not success and not a real-money payment. Keep all costs exact, same sheet geometry as heart purchase; footer is dimmed beneath overlay."
+    },
+    {
+      "id": "15_confirm_novel",
+      "title": "소설 생성 확인",
+      "file": "15_confirm_novel.png",
+      "prompt": "SCREEN: new-novel-episode confirmation over character 희진's own 소설 list, 캐릭터 tab active behind dimmed background. User header 하루 and1,005. Consistent white rounded lower-half bottom sheet with handle and small open-book icon. Heading \"다음 이야기를 만들까요?\". Title line \"서점의 약속 · 이야기 #4\". Rows \"사용 하트\" / \"15 ♥\" and \"생성 후 잔액\" / \"990 ♥\". Small note \"추가 컨셉을 반영해 앞으로 5편을 구성해요\" and smaller \"#4부터 #8까지 이어집니다\". Two native buttons quiet \"취소\" and violet \"15하트로 생성\". Do not reset episode number to1. No extra AI-validation fees. Same shared modal styling as other confirmations."
+    },
+    {
+      "id": "16_confirm_character_sale",
+      "title": "캐릭터 판매 등록 확인",
+      "file": "16_confirm_character_sale.png",
+      "prompt": "SCREEN: character-sale confirmation over 희진's character detail screen, user 하루 and1,005 hearts. Consistent white rounded lower-half bottom sheet, dark translucent scrim. Small thumbnail of SAME silver-haired adult 희진. Heading \"희진을 판매 등록할까요?\". Rows \"판매금액\" / \"30 ♥\", \"판매 수수료\" / \"-5 ♥\", bold \"구매 1건당 수령\" / \"25 ♥\". Calm note \"구매자가 구매하면 하트가 지급돼요\". Show no immediate subtraction or immediate balance increase, since listing does not itself transfer proceeds. Buttons quiet \"취소\" and violet \"판매 등록\". No won prices. Same modal geometry and typography as every other confirmation."
+    },
+    {
+      "id": "17_confirm_novel_sale",
+      "title": "완결 소설 판매 등록 확인",
+      "file": "17_confirm_novel_sale.png",
+      "prompt": "SCREEN: completed novel sale confirmation over 희진's novel detail, user 하루 and1,005. Consistent white rounded lower-half bottom sheet and dimmed background. Tiny original illustrated cover plus green/lavender \"완결\" badge. Heading \"소설을 판매 등록할까요?\". Labeled native text field \"작품 제목\" with \"서점의 약속\". Summary \"완결 · 총 5편\". Clear fee breakdown rows \"회차당 판매금액\" / \"10 ♥\", \"회차당 수수료\" / \"-2 ♥\", bold \"회차당 수령\" / \"8 ♥\". Small note \"전체 회차를 등록하며, 회차별로 판매돼요\" and \"완결된 소설만 등록할 수 있어요\". Buttons quiet \"취소\" and violet \"판매 등록\". This must clearly be a confirmation, not a completed transaction; no immediate balance gain, no real-money price, no incomplete novel listing. Match sheet style of other confirmations."
+    }
+  ]
+}

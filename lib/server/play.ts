@@ -20,14 +20,18 @@ async function accessToken() {
 }
 export async function verifyPurchase(userId: string, productId: string, token: string) {
   if (process.env.GOOGLE_PLAY_BILLING_ENABLED !== "true") throw new AccountError("결제를 아직 사용할 수 없습니다.", 503);
-  if (!PRODUCTS.some(product => product.id === productId)) throw new AccountError("등록되지 않은 상품입니다.");
+  const product = PRODUCTS.find(product => product.id === productId || ("legacyPlayIds" in product && product.legacyPlayIds.some(id => id === productId)));
+  if (!product) throw new AccountError("등록되지 않은 상품입니다.");
+  // Both the original app SKU and the already registered legacy SKU grant
+  // the same canonical ledger product; Google still verifies the exact SKU.
+  const grantProductId = product.id;
   const packageName = process.env.GOOGLE_PLAY_PACKAGE_NAME;
   if (!packageName) throw new AccountError("앱 패키지 설정이 필요합니다.", 503);
   const hash = createHash("sha256").update(token).digest("hex");
   const db = serviceDb();
   const previous = await db.from("payment_purchases").select("user_id,product_id,acknowledged_at").eq("token_hash", hash).maybeSingle();
   if (previous.error) throw new AccountError("결제 기록을 확인하지 못했습니다.", 503);
-  if (previous.data && (previous.data.user_id !== userId || previous.data.product_id !== productId)) throw new AccountError("다른 계정의 결제입니다.", 403);
+  if (previous.data && (previous.data.user_id !== userId || previous.data.product_id !== grantProductId)) throw new AccountError("다른 계정의 결제입니다.", 403);
   if (previous.data?.acknowledged_at) return { granted: false, settled: true };
   const auth = await accessToken();
   const base = `https://androidpublisher.googleapis.com/androidpublisher/v3/applications/${encodeURIComponent(packageName)}/purchases/products/${encodeURIComponent(productId)}/tokens/${encodeURIComponent(token)}`;
@@ -36,7 +40,7 @@ export async function verifyPurchase(userId: string, productId: string, token: s
   if (!response.ok) throw new AccountError("Google Play 구매를 확인하지 못했습니다.", 409);
   const purchase = await response.json();
   if (purchase.purchaseState !== 0 || (purchase.quantity ?? 1) !== 1 || purchase.obfuscatedExternalAccountId !== playAccountId(userId) || (purchase.productId && purchase.productId !== productId)) throw new AccountError("완료된 본인 구매만 충전할 수 있습니다.", 409);
-  const granted = await rpc<boolean>("grant_purchase", { p_user: userId, p_hash: hash, p_product: productId, p_order: purchase.orderId ?? null });
+  const granted = await rpc<boolean>("grant_purchase", { p_user: userId, p_hash: hash, p_product: grantProductId, p_order: purchase.orderId ?? null });
   // Consumption acknowledges consumables and allows another purchase; grant precedes consume.
   if (purchase.consumptionState !== 1) {
     const consumed = await fetch(`${base}:consume`, { method: "POST", headers, signal: AbortSignal.timeout(15000) });

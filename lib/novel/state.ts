@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { seriesArcSchema } from "./series.ts";
+import { storedSeriesArcSchema } from "./series.ts";
 
 const short = z.string().trim().min(1).max(240);
 const facts = z.array(short).max(24);
 export const storyStateSchema = z.object({
   version: z.literal(1),
   chapter: z.number().int().min(0).max(100000),
-  seriesArc: seriesArcSchema.optional(),
+  seriesArc: storedSeriesArcSchema.optional(),
   seriesStartChapter: z.number().int().min(0).max(100000).optional(),
   seriesConcept: z.string().trim().max(1000).optional(),
   summary: z.string().max(1400),
@@ -43,6 +43,7 @@ const quoteSchema = z.string().trim().min(1).max(400);
 const evidence = (citation: z.ZodType<string>) => z.object({ text: short, evidence: citation }).strict();
 export const createReviewSchema = (citation: z.ZodType<string> = quoteSchema) => z.object({
   pass: z.boolean(),
+  conceptAlignment: z.object({ satisfied: z.boolean(), evidence: citation, fix: short }).strict(),
   blockingIssues: z.array(z.object({
     type: z.enum(["repetition", "continuity", "causality", "no_progress", "missing_beat"]),
     evidence: citation, fix: short,

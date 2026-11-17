@@ -48,12 +48,13 @@ test("live chat shows partial output before completion, keeps context and stays 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeVisible();
   const log = chat.getByRole("log");
-  await expect.poll(async () => (await log.boundingBox())!.height / 844).toBeGreaterThan(0.65);
+  const footer = page.getByRole("navigation", { name: "하단 메뉴" });
+  await expect.poll(async () => (await log.boundingBox())!.height / (844 - (await footer.boundingBox())!.height)).toBeGreaterThan(0.65);
   expect((await log.boundingBox())!.width).toBeGreaterThan(390 * 0.88);
   for (const viewport of [{ width: 320, height: 568 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
-    await expect.poll(async () => (await log.boundingBox())!.height / viewport.height).toBeGreaterThan(0.55);
-    expect((await log.boundingBox())!.width).toBeGreaterThan(viewport.width * 0.85);
+    await expect.poll(async () => (await log.boundingBox())!.height / (viewport.height - (await footer.boundingBox())!.height)).toBeGreaterThan(0.55);
+    expect((await log.boundingBox())!.width).toBeGreaterThan(Math.min(viewport.width, 480) * 0.85);
     await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeInViewport();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }

@@ -1,13 +1,24 @@
 # Android · 계정 · 하트 구현 및 설정
 
-2026-11-17. 이 문서는 소스에 추가된 기능과 실제 운영 전 필요한 설정·검증을 구분한다. 기존 `.env.local`의 OpenAI 모델/키는 변경하지 않았다.
+2026-11-18. 이 문서는 소스에 추가된 기능과 실제 운영 전 필요한 설정·검증을 구분한다. 기존 `.env.local`의 OpenAI 모델/키는 변경하지 않았다.
+
+## 11월 18일 적용 사항
+
+- 현재 회차 삽화는 해당 장면에 실제 등장하는 인물만 그린다. 설명 정리의 `characterPresent=false`이면 원본 캐릭터 참조를 렌더러에 보내지 않는다. 추가 모델 호출은 없다. 사용자 호칭은 컨셉의 명시적 자기 지칭 > 로그인 닉네임 > 당신 순으로 생성하며 기존 원고는 재작성하지 않는다.
+- 소설의 새 이야기·캐릭터 설정 아이콘을 제거하고 배경·갤러리 버튼과 프로필 수정·캐릭터 삭제를 앱 디자인으로 통일했다. 하트 작업 내역 팝업은 제거했으며 상단 하트를 누르면 충전 스토어로 이동한다. 서버의 작업 결과·원장은 유지한다.
+- 자동 저장 중복과 저장마다의 계정 재조회를 제거하고 계정 응답에서 사용하지 않는 작업·기간권·원장 조회 3개를 제외했다. 문서·이미지 조회는 만료 정산을 기다리지 않는다. 닉네임·잔액과 소유권은 서버 확인을 유지한다. 이전의 작업 내역 팝업 안내보다 이 절이 우선한다.
+
+- `supabase/migrations/202611180001_deferred_billing_and_character_delete.sql`을 기존 기본 마이그레이션 이후 실행한다. 현재 연결된 프로젝트에는 사용자가 실행했고 새 열과 RPC 존재를 확인했다. 별도 테스트·운영 DB에도 이 파일을 적용해야 한다.
+- 생성 중에는 하트와 무료 대화의 사용 가능분만 예약하고 표시 잔액을 줄이지 않는다. 완성된 텍스트 또는 검증·업로드를 마친 이미지가 서버에 정상 저장될 때 한 번만 차감한다. 완료 확정 전 실패·취소는 예약만 해제하며, 완료 후 통신 단절은 저장된 작업 결과를 다시 연다. 과거 선차감 작업의 환불은 기존 규칙을 유지한다.
+- 이미지 생성은 버튼의 스피너로 표시하며 읽기를 막는 팝업과 완료 후 자동 전체화면 표시를 제거했다. 기존 소설 회차는 이미지 생성 중에도 넘길 수 있다. 소설 생성 팝업의 사용량 버튼도 제거했다. 상단은 닉네임과 하트만 표시하며 화면 내부의 배경·갤러리 메뉴는 유지한다.
+- 캐릭터 상세 하단에서 확인 후 삭제할 수 있다. 연결된 개인 대화·소설을 보관함에서 숨기고 판매를 중지한다. 기존 구매자의 공개 사본·주문·정산 원장·완료 작업은 보존하며 자동 저장으로 삭제한 문서가 복원되지 않게 차단한다.
 
 ## 구현한 흐름
 
 - 기존 Next 웹 화면과 `apps/mobile`의 React/Vite 화면이 캐릭터·대화·소설·갤러리 컴포넌트를 공유한다. Capacitor 8 Android 프로젝트의 앱 ID는 `com.oestewdio.maite`이다. Next 서버와 OpenAI 키는 앱에 포함되지 않는다.
 - 공통 `apiFetch`가 웹에서는 상대 경로, 앱에서는 설정된 HTTPS API를 사용하며 Supabase Bearer 토큰을 전송한다. `/api/chat`, `/api/characters`는 명시적 CORS와 스트리밍을 지원한다. 계정 모드에서 CAD 기술 검증 API는 사용을 차단한다.
 - Google 로그인, 잔액/무료 대화, 출석 수령, 현재 작업 저장/불러오기, 작업별 완료 결과 재열람, 콘텐츠 신고 화면을 상단 **계정 · 하트** 메뉴에 추가했다.
-- 생성 전에 하트/무료 대화를 예약하고, 완성된 응답·이미지를 서버에 저장한 후 성공을 전달한다. 실패·취소 시 반환하고, 응답 유실 시 계정 메뉴에서 결과를 다시 확인한다. 같은 `X-Request-Id`의 재전송은 AI를 다시 호출하지 않는다. 새 요청 ID로 명시적으로 재시도하면 새 작업이다.
+- 생성 전에 하트/무료 대화의 사용 가능분을 예약하고, 완성된 응답·이미지를 서버에 저장할 때 차감한다. 완료 확정 전 실패·취소 시 예약만 해제하고, 응답 유실 시 계정 메뉴에서 결과를 다시 확인한다. 같은 `X-Request-Id`의 재전송은 AI를 다시 호출하지 않는다. 새 요청 ID로 명시적으로 재시도하면 새 작업이다.
 - 서버가 강제 종료돼 남은 예약은 15분 이후 해당 계정 조회 시 반환한다. 생성 서버 최대 실행 시간은 5분 이하로 유지해야 한다. 이미지 업로드 후 DB 확정 실패 시 고아 파일 정리 작업은 운영에서 별도 관리가 필요하다.
 - 개인 보관함은 `documents`의 버전 1 스냅샷에 프로필·완료 대화·소설 회차·기억·공통 시간선·현재 캐릭터 갤러리 참조를 저장한다. 실제 이미지와 생성 작업별 결과는 별도 비공개 Storage/DB에 저장된다. 완료 시 자동 저장하고 메뉴에서 수동 저장도 가능하다. 모바일은 Blob을 포함해 IndexedDB에도 보관한다. 웹의 미로그인 탭 기록은 기존처럼 새로고침 시 초기화한다.
 - 모바일에서 백그라운드 전환 시 진행 생성을 중지한다. 완료된 내용만 저장하며 자동 재시도하지 않는다. 이미지/토큰 CSV는 네이티브 공유 메뉴로 저장할 수 있다. 뒤로가기는 열린 다이얼로그를 먼저 닫는다.
@@ -54,7 +65,34 @@ npm run mobile:sync
 npm run mobile:open
 ```
 
-Android Studio에서 JDK 21 이상, Android SDK Platform 36 및 SDK 도구를 설정한 다음 에뮬레이터 또는 기기에서 실행한다. 현재 환경은 `JAVA_HOME`이 JDK 18이며 Android SDK 경로가 설정되지 않아 APK/AAB 컴파일 및 실행은 검증하지 못했다. 설치된 adb만으로 앱 빌드가 가능해지는 것은 아니다. 소스의 Gradle 프로젝트 생성과 웹 번들 복사는 완료했다. 앱 ID를 바꾸면 Capacitor 설정·Android namespace/applicationId·Manifest 로그인 scheme·Supabase 허용 주소·Play 설정을 함께 수정한다.
+이 프로젝트의 Gradle 8.14.3에는 **JDK 21**을 사용한다. 최신 Android Studio에 포함된 Java 25를 그대로 사용하면 호환되지 않는다. Android SDK Platform 36 및 SDK Build Tools 36도 설치한다. 앱 ID를 바꾸면 Capacitor 설정·Android namespace/applicationId·Manifest 로그인 scheme·Supabase 허용 주소·Play 설정을 함께 수정한다.
+
+2026-11-17 현재 PC 설정을 완료했다.
+
+- Android Studio: `D:\Android\Android Studio` (2026.2.2)
+- JDK: `%USERPROFILE%\.jdks\jdk-21.0.13+9` (Temurin 21)
+- Android SDK: `D:\Android\AddData\Local\Android\Sdk`, Platform 36 / Build Tools 36.0.0
+- `apps/mobile/android/local.properties`에 SDK 경로, `.gradle/config.properties`에 JDK 경로를 저장했다. Android Studio 프로젝트는 `#GRADLE_LOCAL_JAVA_HOME`을 사용한다. 로컬 경로 파일은 Git에서 제외한다.
+- Android Studio에서 다른 JDK가 선택되어 있다면 **File → Settings → Build, Execution, Deployment → Build Tools → Gradle → Gradle JDK**에서 위 JDK 21을 선택한다.
+
+Windows에서 다음 명령으로 실제 Android 빌드를 수행한다.
+
+```powershell
+npm run android:apk
+npm run android:aab
+```
+
+두 명령은 모바일 웹 번들 생성·동기화 후 Gradle을 실행한다. APK는 `apps/mobile/android/app/build/outputs/apk/debug/app-debug.apk`, 서명된 AAB는 `apps/mobile/android/app/build/outputs/bundle/release/app-release.aab`에 생성한다. APK 생성, AAB 생성 및 AAB 서명 검증이 통과했다. 기기/에뮬레이터 실행과 실제 Play 결제는 별도 검증해야 한다.
+
+첫 Play 업로드용 서명키는 `%USERPROFILE%\.maite\signing\maite-upload.jks`, 비밀번호·별칭은 같은 폴더의 `maite-upload.json`, 공개 인증서는 `maite-upload-certificate.pem`에 저장했다. 이 폴더는 현재 사용자·시스템·관리자만 접근하도록 설정했고 Git과 APK/서버 소스 업로드에 포함하지 않는다. **키와 비밀번호 파일을 개인 보관소에 함께 백업해야 이후 업데이트에 같은 업로드 키를 사용할 수 있다.** Gradle에는 빌드 프로세스의 `MAITE_UPLOAD_*` 환경변수로만 전달한다. JSON 내용이나 비밀번호를 채팅에 보내지 않는다.
+
+## 2-1. 연결한 테스트 서버
+
+`https://maite-five.vercel.app`의 기존 `maite` 프로젝트에 최신 소스를 배포했다. 로컬 `VITE_API_BASE_URL`도 이 HTTPS 서버로 연결했다. 서버에는 OpenAI 모델/키, Supabase URL·공개 키·서비스 키, 계정 활성화 플래그와 Android Origin을 설정했다. 결제·광고는 필요한 외부 설정이 끝날 때까지 비활성이다.
+
+배포 후 `/ideal` 200, 미로그인 `/api/account` 및 `/api/billing` 401, `https://localhost` Origin의 `/api/characters`·`/api/chat` OPTIONS 204를 확인했다. 로그인하지 않은 요청의 401은 정상이다. Supabase에는 웹 복귀 주소 `https://maite-five.vercel.app/ideal`과 앱 복귀 주소 `com.oestewdio.maite://auth/callback`을 허용한다.
+
+Vercel 연결은 `.vercel/project.json`에만 저장하며 `.vercelignore`로 `.env*`, 서명키, `.verification`, Android 빌드 출력 등을 소스 업로드에서 제외한다. 이번 CLI 배포는 현재 작업 폴더를 사용했다. **GitHub에는 아직 반영하지 않은 변경이 있으므로, 이후 Git 기반 재배포 전에 최신 소스를 저장소에도 반영해야 한다.**
 
 ## 3. Google Play 결제
 
@@ -68,6 +106,26 @@ Android Studio에서 JDK 21 이상, Android SDK Platform 36 및 SDK 도구를 �
 | `heart_pass_30` | 100 + 30일 일일 접속 보상 | 5,000원 |
 
 Play Console 내부 테스트 트랙에 서명된 앱과 상품을 등록하고 라이선스 테스트 계정을 설정한다. 다중 수량 구매는 사용하지 않는다. 서비스 계정에 해당 앱의 구매 조회·소비 권한을 부여하고 서버의 `GOOGLE_PLAY_PACKAGE_NAME`, `GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_PLAY_PRIVATE_KEY`를 설정한다. 콘솔 설정 후 테스트에만 `GOOGLE_PLAY_BILLING_ENABLED=true`를 켠다.
+
+현재 Play Console에서는 **Monetize with Play → Products → One-time products(일회성 제품)**에서 위 네 상품을 만든다. 각 상품에 구매 옵션을 하나 추가하고 구매 유형 **Buy**, 구매 옵션 ID `buy`, 대한민국 가격을 위 표대로 설정한 뒤 옵션을 활성화한다. 30일 기간권도 일회성 Buy 상품이며, 정기결제나 Rent 옵션을 만들지 않는다. 기간 만료와 일일 하트는 이 프로젝트 서버가 처리한다.
+
+상품 메뉴에서 먼저 앱 번들 업로드를 요구하면 **테스트 및 출시 → 내부 테스트 → 새 버전 만들기**에서 서명된 AAB를 업로드한다. 패키지명은 `com.oestewdio.maite`다. 최초 업로드한 **versionCode 1**은 상품 ID `hearts_700`을 사용하므로 해당 상품을 Play에 새로 등록하면 AAB 재업로드 없이 사용할 수 있다. 이미 만든 `heart_700` 상품도 서버에서 호환 처리한다. 준비했던 versionCode 2 / versionName 1.0.1의 재업로드는 필수가 아니다. 이후 새 앱 버전 업로드에는 이전에 사용한 versionCode보다 큰 값을 사용한다. 생성된 APK에서 `com.android.vending.BILLING` 권한과 targetSdk 36을 확인했다.
+
+### 구매 검증용 서비스 계정
+
+이 계정은 Google 로그인 OAuth 클라이언트와 별개이며 서버에서 구매 영수증을 확인할 때 사용한다.
+
+1. [Google Play Android Developer API](https://console.cloud.google.com/apis/library/androidpublisher.googleapis.com)를 열고 MAITE용 Google Cloud 프로젝트를 선택해 API를 사용 설정한다.
+2. [서비스 계정](https://console.cloud.google.com/iam-admin/serviceaccounts)에서 `maite-play-billing` 같은 이름으로 계정을 만든다. 이 용도에 Google Cloud 프로젝트 소유자 권한을 부여할 필요는 없다.
+3. Play Console의 **사용자 및 권한 → 새 사용자 초대**에서 서비스 계정 이메일을 입력한다. MAITE 앱 접근 권한과 **재무 데이터·주문·취소 설문 응답 보기**, **주문 및 정기 결제 관리** 권한을 부여한다.
+4. Google Cloud 서비스 계정의 **키 → 키 추가 → 새 키 만들기 → JSON**으로 키를 내려받는다. 프로젝트에 보관한다면 Git 제외 경로인 `.verification/google-play-service-account.json`을 사용한다. 파일 내용이나 개인키를 채팅에 보내지 않는다.
+5. JSON의 `client_email`은 서버의 `GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL`, `private_key`는 `GOOGLE_PLAY_PRIVATE_KEY`로 연결한다. 공개 환경변수나 APK에 넣지 않는다. 구매 상품 및 API 접근 확인 후 `GOOGLE_PLAY_BILLING_ENABLED=true`로 바꾸고 Vercel에 재배포한다.
+
+테스트 계정은 **내부 테스트 참여자**와 **라이선스 테스터** 양쪽에 등록한다. 테스트 참여 링크로 앱을 설치하고 결제창에서 Google 테스트 카드를 선택한다. 내부 테스트 참여자 등록만으로 모의 결제가 보장되는 것은 아니다. 현재 기간권은 서버에서 30일을 계산하므로 Google의 구독 가속 테스트 대상이 아니다.
+
+2026-11-17 연결 확인: 서비스 계정 JSON을 로컬 `.verification/google-play-service-account.json`에 저장하고 파일 접근 권한을 현재 사용자·시스템·관리자로 제한했다. Google OAuth 토큰 발급과 기존 Play 상품 4개의 활성 상태·대한민국 가격 조회가 통과했다. 앱·DB의 공통 상품 ID는 `hearts_700`으로 유지한다. 기존 등록 상품 `heart_700`과 새로 등록할 `hearts_700` 모두 동일한 700하트 지급으로 처리하며, DB SQL 재적용은 필요 없다. 새 `hearts_700`의 Play 등록·활성 상태는 별도로 확인해야 한다.
+
+Play API에서 서비스 계정의 `ACCESS_GRANTED`, MAITE 앱 접근, 재무 데이터 보기·주문 관리 권한을 확인했다. 다만 당시 재무·구매 검증 API가 `401 permissionDenied`를 반환해 **결제 활성화 플래그는 false로 유지**한다. Google은 권한 변경 반영에 최대 48시간이 걸릴 수 있다고 [안내](https://developers.google.com/android-publisher/api-ref/rest/v3/users#DeveloperLevelPermission)한다. 추가 권한 변경을 반복하지 말고 `node .verification/android-setup/check-play-access.mjs`로 재확인한다. 이 명령은 상품/재무 API를 조회할 뿐 실제 결제나 하트 지급을 실행하지 않는다. 실제 영수증 확인·소비는 라이선스 테스트 구매로 별도 검증한다.
 
 앱은 계정의 난독화 ID를 구매에 연결하고 서버가 Google 구매 상태·수량·계정·상품을 검증한다. 토큰 해시 중복 방지 후 지급하고 Google 소비 API로 구매를 완료한다. 앱에서 승인 대기 구매는 지급하지 않으며 ‘구매 복구’로 미완료 구매를 재검증한다. 상품의 실제 결제 금액은 Google 결제창에서 최종 확인한다.
 
@@ -89,3 +147,5 @@ SDK의 사용자 동의 절차를 거쳐 광고를 표시하며 앱 완료 콜�
 - 푸시 알림/먼저 말 걸기와 예약 생성은 이번 범위에 추가하지 않았다. 캐릭터의 현재 기능 설명은 계속 선제 알림을 약속하지 않도록 유지한다.
 
 공식 참고: [Capacitor App](https://capacitorjs.com/docs/apis/app), [Supabase Google 로그인](https://supabase.com/docs/guides/auth/social-sign-in/auth-google), [Google 구매 검증 API](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.products), [AdMob SSV 서명 검증](https://developers.google.com/admob/android/ssv).
+
+추가 참고: [Gradle Java 호환성](https://docs.gradle.org/current/userguide/compatibility.html), [Play 일회성 제품 설정](https://support.google.com/googleplay/android-developer/answer/16430488), [서비스 계정의 Play 권한](https://developers.google.com/android-publisher/getting_started).

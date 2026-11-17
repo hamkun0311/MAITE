@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import sharp from "sharp";
 import { fillCharacterProfile } from "./character-helpers";
 
-test("images fit their actual aspect ratio; gallery keeps prior generations through reset and supports preview/download", async ({ page }) => {
+test("images fit their actual aspect ratio; gallery keeps images through reset and previews without titles or downloads", async ({ page }) => {
   await page.goto("/ideal/gallery");
   await expect(page.getByText("아직 생성한 이미지가 없어요.")).toBeVisible();
   await page.getByRole("link", { name: "캐릭터 생성하기", exact: true }).click();
@@ -33,16 +33,16 @@ test("images fit their actual aspect ratio; gallery keeps prior generations thro
   await page.getByRole("link", { name: "갤러리", exact: true }).click();
   const gallery = page.getByRole("main", { name: "생성 이미지 갤러리" });
   await expect(gallery.getByRole("article")).toHaveCount(1);
+  await expect(gallery.getByRole("article").first()).toHaveText("");
+  await expect(gallery.locator("a[download]")).toHaveCount(0);
   await gallery.getByRole("button", { name: "이미지 보기: 가로 이미지", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
   await expect(viewer.getByRole("img")).toBeVisible();
+  await expect(viewer.locator("a[download]")).toHaveCount(0);
   await page.keyboard.press("Escape");
   await expect(viewer).not.toBeVisible();
   await expect(gallery.getByRole("button", { name: "이미지 보기: 가로 이미지", exact: true })).toBeFocused();
-  const downloadEvent = page.waitForEvent("download");
-  await gallery.getByRole("link", { name: "다운로드: 가로 이미지", exact: true }).click();
-  expect((await downloadEvent).suggestedFilename()).toBe("가로_이미지.jpg");
-  await page.getByRole("link", { name: "캐릭터 생성", exact: true }).click();
+  await page.getByRole("link", { name: "뉴페이스", exact: true }).click();
   await generate.click();
   const second = page.getByAltText("세로 이미지 — 생성된 2D 캐릭터 일러스트", { exact: true });
   await expect(second).toBeVisible();

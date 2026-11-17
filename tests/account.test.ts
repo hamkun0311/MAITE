@@ -9,16 +9,62 @@ import { createStudioSessions } from "../lib/chat/session.ts";
 import { verifyAdmob } from "../lib/server/admob.ts";
 import { verifyPurchase, playAccountId } from "../lib/server/play.ts";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { completedNovelListings, isPublishedNovel, listingId } from "../lib/server/publishing.ts";
+import { novelComplete, libraryNovels } from "../lib/account/library.ts";
+import { emptyStoryState } from "../lib/novel/state.ts";
+import { userProfileSchema } from "../lib/account/profile.ts";
+
+test("public profile accepts only a bounded nickname, gender and age", () => {
+  const profile = { nickname: "별빛", gender: "여성", age: 27 };
+  assert.equal(userProfileSchema.safeParse(profile).success, true);
+  for (const invalid of [{ ...profile, nickname: " " }, { ...profile, nickname: "x".repeat(33) }, { ...profile, age: 0 }, { ...profile, age: 121 }, { ...profile, age: 25.5 }, { ...profile, userId: "someone-else" }, { ...profile, admin: true }]) assert.equal(userProfileSchema.safeParse(invalid).success, false);
+});
 const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const job = "33333333-3333-4333-8333-333333333333";
+
+test("novels publish every chapter atomically from a saved complete work and trusted final generation", () => {
+  const sessions = createStudioSessions();
+  const archive = Array.from({ length: 5 }, (_, index) => [{ role: "user", content: "비공개 지시" }, { role: "assistant", content: `회차 ${index + 1}의 원고` }]).flat();
+  const state = { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content, nextChapterGoal: "" };
+  const snapshot = snapshotSchema.parse({ version: 1, id: job, art: { title: "서하", summary: "", prompt: "비공개 프롬프트", style: "neutral", description: "서점", profile: { name: "서하", age: 25, personality: "다정함", concept: "서점" }, width: 72, height: 128, jobId: job },
+    chat: { ...sessions.chat, committed: [{ role: "user", content: "비공개 대화" }] }, story: { ...sessions.story, documentId: B, lastJobId: job, archive, storyState: state }, timeline: sessions.chat.timeline.state });
+  const finalEvent = { type: "chapter", text: state.previousProse, state };
+  const options = { payload: snapshot, result: { events: [finalEvent, { type: "done" }] }, owner: A, documentId: B, title: "서점에서의 약속", description: "완결된 이야기" };
+  const rows = completedNovelListings(options);
+  assert.equal(novelComplete(snapshot), true);
+  assert.equal(rows.length, 5);
+  assert.deepEqual(rows.map(row => row.content.chapter), [1, 2, 3, 4, 5]);
+  assert.equal(rows[0].title, "서점에서의 약속 #1");
+  assert.equal(rows[4].content.novel.chapters, 5);
+  assert.equal(isPublishedNovel(rows[0].content.novel), true);
+  assert.equal(isPublishedNovel(undefined), false);
+  assert.equal(isPublishedNovel({ id: B, title: "미완결", chapters: 3 }), false);
+  assert.equal(rows[0].id, listingId(A, B, 1));
+  assert.notEqual(rows[0].id, listingId(B, B, 1));
+  assert.ok(!JSON.stringify(rows).includes("비공개"));
+  assert.deepEqual(completedNovelListings(options), rows);
+  // An edited client completion flag cannot substitute for the server's result.
+  assert.throws(() => completedNovelListings({ ...options, result: { events: [{ ...finalEvent, state: { ...state, nextChapterGoal: "다음 사건" } }] } }), /완결/);
+  assert.throws(() => completedNovelListings({ ...options, result: { events: [] } }), /완결/);
+  assert.throws(() => completedNovelListings({ ...options, payload: { ...snapshot, story: { ...snapshot.story, archive: archive.slice(2) } } }), /완결/);
+  assert.throws(() => completedNovelListings({ ...options, result: { events: [{ ...finalEvent, text: "다른 원고" }] } }), /완결/);
+  assert.equal(sessionSnapshotForTest(snapshot).lastJobId, job);
+  const novels = libraryNovels([{ id: A, kind: "studio", title: "캐릭터", chapter: "5", novel_id: B }, { id: B, kind: "chapter", title: "소설", chapter: "5" }]);
+  assert.deepEqual(novels.map(doc => doc.id), [B]);
+});
+
+function sessionSnapshotForTest(snapshot: ReturnType<typeof snapshotSchema.parse>) {
+  return restoreSessions(snapshot).story;
+}
 test("cloud snapshot restores full completed history while keeping model context compact and timeline shared", () => {
   const sessions = createStudioSessions();
   const archive = ["one", "two", "three"].flatMap(content => [{role:"user",content},{role:"assistant",content:`reply-${content}`}]);
   const snapshot = snapshotSchema.parse({ version:1,id:job,
     art:{title:"서하",summary:"",prompt:"",style:"neutral",description:"서점",profile:{name:"서하",age:25,personality:"다정함",concept:"서점의 친구"},width:72,height:128,jobId:job},
-    chat:{...sessions.chat,committed:archive.slice(-2),archive},story:sessions.story,timeline:sessions.chat.timeline.state });
+    chat:{...sessions.chat,committed:archive.slice(-2),archive},story:{...sessions.story,storyPage:1},timeline:sessions.chat.timeline.state });
   const restored=restoreSessions(snapshot);
+  assert.equal(restored.story.storyPage,1);
   assert.equal(restored.chat.messages.length,6); assert.equal(restored.chat.committed.length,2);
   assert.equal(restored.chat.timeline,restored.story.timeline);
   restored.chat.timeline.state.revision++; assert.equal(restored.story.timeline.state.revision,1);
@@ -176,7 +222,7 @@ test("AdMob grants only a correctly signed allowed reward, never a tampered call
 test("Play validation rejects pending/foreign-account purchases and grants before consuming",async()=>{
   const originalFetch=globalThis.fetch;
   const names=["GOOGLE_PLAY_BILLING_ENABLED","GOOGLE_PLAY_PACKAGE_NAME","GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL","GOOGLE_PLAY_PRIVATE_KEY","NEXT_PUBLIC_SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY"];
-  const env=Object.fromEntries(names.map(name=>[name,process.env[name]]));const calls:string[]=[];let state=0;let account=playAccountId(A);
+  const env=Object.fromEntries(names.map(name=>[name,process.env[name]]));const calls:string[]=[];let state=0;let account=playAccountId(A);let productId="hearts_100";let grantedProduct="";
   try{
     const pair=generateKeyPairSync("rsa",{modulusLength:2048});
     Object.assign(process.env,{GOOGLE_PLAY_BILLING_ENABLED:"true",GOOGLE_PLAY_PACKAGE_NAME:"com.oestewdio.maite",GOOGLE_PLAY_SERVICE_ACCOUNT_EMAIL:"unit@example.test",GOOGLE_PLAY_PRIVATE_KEY:pair.privateKey.export({type:"pkcs8",format:"pem"}),NEXT_PUBLIC_SUPABASE_URL:"https://database.example",SUPABASE_SERVICE_ROLE_KEY:"test-key"});
@@ -184,15 +230,26 @@ test("Play validation rejects pending/foreign-account purchases and grants befor
       const url=String(input);
       if(url.includes("oauth2.googleapis.com"))return Response.json({access_token:"test-google-token"});
       if(url.endsWith(":consume")){calls.push("consume");return new Response(null,{status:204});}
-      if(url.includes("androidpublisher.googleapis.com"))return Response.json({purchaseState:state,quantity:1,obfuscatedExternalAccountId:account,productId:"hearts_100",consumptionState:0,orderId:"order-a"});
-      if(url.includes("/rpc/grant_purchase")){calls.push("grant");return Response.json(true);}
+      if(url.includes("androidpublisher.googleapis.com")){
+        assert.ok(url.includes(`/products/${productId}/`));
+        return Response.json({purchaseState:state,quantity:1,obfuscatedExternalAccountId:account,productId,consumptionState:0,orderId:"order-a"});
+      }
+      if(url.includes("/rpc/grant_purchase")){calls.push("grant");grantedProduct=JSON.parse(String(init?.body)).p_product;return Response.json(true);}
       if(url.includes("/payment_purchases"))return Response.json([]);
       throw new Error(`Unexpected request method ${init?.method}`);
     };
     assert.deepEqual(await verifyPurchase(A,"hearts_100","purchase-token"),{granted:true,settled:true});
     assert.deepEqual(calls,["grant","consume"]);
+    assert.equal(grantedProduct,"hearts_100");
+    productId="hearts_700";
+    assert.deepEqual(await verifyPurchase(A,"hearts_700","purchase-original-700"),{granted:true,settled:true});
+    assert.equal(grantedProduct,"hearts_700");
+    productId="heart_700";
+    assert.deepEqual(await verifyPurchase(A,"heart_700","purchase-700"),{granted:true,settled:true});
+    assert.equal(grantedProduct,"hearts_700");
+    productId="hearts_100";
     state=2;await assert.rejects(verifyPurchase(A,"hearts_100","pending"),/완료된 본인/);
     state=0;account=playAccountId(B);await assert.rejects(verifyPurchase(A,"hearts_100","foreign"),/완료된 본인/);
-    assert.equal(calls.length,2);
+    assert.equal(calls.length,6);
   }finally{globalThis.fetch=originalFetch;for(const[key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
