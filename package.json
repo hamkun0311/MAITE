@@ -10,10 +10,24 @@
     "typecheck": "tsc --noEmit",
     "prepare:cad": "node scripts/prepare-cad.mjs",
     "postinstall": "npm run prepare:cad",
-    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts tests/novel.test.ts",
-    "test:e2e": "playwright test"
+    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts tests/novel.test.ts tests/usage.test.ts tests/account.test.ts",
+    "test:e2e": "playwright test",
+    "mobile:dev": "vite apps/mobile --config apps/mobile/vite.config.ts",
+    "mobile:build": "vite build apps/mobile --config apps/mobile/vite.config.ts",
+    "mobile:sync": "npm run mobile:build && cd apps/mobile && cap sync android",
+    "mobile:open": "cd apps/mobile && cap open android",
+    "test:mobile": "playwright test --config playwright.mobile.config.ts"
   },
   "dependencies": {
+    "@capacitor-community/admob": "^8.4.1",
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3",
+    "@capgo/native-purchases": "^8.9.16",
+    "@supabase/supabase-js": "^2.119.0",
     "lucide-react": "^0.577.0",
     "next": "16.4.6",
     "react": "^19.2.0",
@@ -25,13 +39,17 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "@electric-sql/pglite": "^0.5.16",
     "@playwright/test": "^1.58.2",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/three": "^0.183.0",
+    "@vitejs/plugin-react": "^6.3.0",
     "tailwindcss": "^4.2.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
   }
 }

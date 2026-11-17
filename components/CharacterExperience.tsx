@@ -8,8 +8,8 @@ import CharacterBackgroundPicker from "./CharacterBackgroundPicker";
 import { CharacterImageViewer } from "./CharacterImage";
 import type { CharacterGalleryImage, CharacterImageJob, VisualKind } from "@/lib/characters/gallery";
 
-export default function CharacterExperience({ mode, imageUrl, imageDescription, profile, active, onEdit, onBack, session, gallery, backgroundId, onBackground, onGenerateVisual, imageJob, imageError, onCancelImage }: {
-  mode: "chat" | "story"; imageUrl: string; imageDescription: string; profile: CharacterProfile; active: boolean; onEdit: () => void; onBack: () => void; session?: ChatSession;
+export default function CharacterExperience({ mode, imageUrl, backgroundHidden = false, imageDescription, profile, active, onEdit, onBack, session, gallery, backgroundId, onBackground, onGenerateVisual, imageJob, imageError, onCancelImage }: {
+  mode: "chat" | "story"; imageUrl: string; backgroundHidden?: boolean; imageDescription: string; profile: CharacterProfile; active: boolean; onEdit: () => void; onBack: () => void; session?: ChatSession;
   gallery: CharacterGalleryImage[]; backgroundId?: string; onBackground: (id: string) => void;
   onGenerateVisual: (kind: VisualKind, context: string) => Promise<CharacterGalleryImage | null>;
   imageJob?: CharacterImageJob; imageError: string; onCancelImage: () => void;
@@ -31,8 +31,8 @@ export default function CharacterExperience({ mode, imageUrl, imageDescription, 
     <button className="character-background-button" type="button" disabled={!!imageJob} onClick={() => setPickerOpen(true)}>배경 변경</button>
     <button className="character-reader-settings" type="button" onClick={onEdit}>캐릭터 설정</button>
   </div>;
-  return <section className={`character-experience character-${mode}-experience`} aria-label={mode === "chat" ? "대화하기" : "이야기 만들기"}>
-    <img className="character-backdrop" src={imageUrl} alt="" />
+  return <section className={`character-experience character-${mode}-experience${backgroundHidden ? " character-no-background" : ""}`} aria-label={mode === "chat" ? "대화하기" : "이야기 만들기"}>
+    {!backgroundHidden && <img className="character-backdrop" src={imageUrl} alt="" />}
     <div className="character-experience-content">
       <LiveChat character={character} active={active} session={session} headingContent={readerHeading} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} />
     </div>

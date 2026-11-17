@@ -3,16 +3,204 @@ import assert from "node:assert/strict";
 import { readEvents } from "../lib/chat/stream.ts";
 import { POST } from "../app/api/chat/route.ts";
 import { CHARACTER_GENRES, characterContextSchema, characterInstructions } from "../lib/chat/character.ts";
-import { illustrationContext, mentionsClothing, plainDialogue, visualContext, outfitContext } from "../lib/chat/presentation.ts";
+import { illustrationContext, changedCharacterLocation, mentionsClothing, plainDialogue, visualContext, outfitContext } from "../lib/chat/presentation.ts";
 import { explicitSpeechRequest, speechInstructions, resolveSpeechStyle } from "../lib/chat/speech.ts";
 import { detectClothing } from "../lib/chat/clothing.ts";
 import { dialogueSchema, streamedDialogue } from "../lib/chat/dialogue.ts";
-import { characterDialogueSchema, chatMemorySchema, emptyChatMemory, mergeChatMemory, type ChatMemoryPatch } from "../lib/chat/memory.ts";
+import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, mergeChatMemory, type ChatMemoryPatch } from "../lib/chat/memory.ts";
+import { promptTable } from "../lib/prompt-table.ts";
+import { advanceTimeline, emptyTimeline, timelineChatMemory, timelineCovers, timelineSchema } from "../lib/chat/timeline.ts";
+import { createStudioSessions } from "../lib/chat/session.ts";
+import { emptyStoryState } from "../lib/novel/state.ts";
+import { unsupportedFollowUp } from "../lib/chat/capabilities.ts";
+import { proposalOnlySceneChange } from "../lib/chat/continuity.ts";
 
 const encoder = new TextEncoder();
 const wire = (event: object) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
 const emptyPatch = (): ChatMemoryPatch => ({ participants: [], updates: [], mood: null });
-const verdict = { actorId: null, targetId: null, premise: "consistent", factIds: [] };
+
+test("visual location changes use current character arrivals, not unchanged or user-only locations", () => {
+  const old = emptyChatMemory("희진");
+  const update = { subjectId: "character", objectId: null, action: "location", value: "카페", certainty: "simulated" as const, evidence: "카페에 도착했어", replaces: [] };
+  const arrived = mergeChatMemory(old, { ...emptyPatch(), updates: [update] }, "어디야?", "카페에 도착했어");
+  assert.equal(changedCharacterLocation(old, arrived), true);
+  const unchanged = mergeChatMemory(arrived, { ...emptyPatch(), updates: [update] }, "어디야?", "카페에 도착했어");
+  assert.equal(changedCharacterLocation(arrived, unchanged), false);
+  const proposed = mergeChatMemory(old, { ...emptyPatch(), updates: [{ ...update, evidence: "카페에 가자" }] }, "가자", "카페에 가자");
+  assert.equal(changedCharacterLocation(old, proposed), false);
+  const userOnly = mergeChatMemory(old, { ...emptyPatch(), updates: [{ ...update, subjectId: "user", certainty: "asserted", evidence: "나는 카페에 도착했어" }] }, "나는 카페에 도착했어", "난 아직 집이야");
+  assert.equal(changedCharacterLocation(old, userOnly), false);
+});
+
+test("proposals preserve arrangements without fabricating arrival; current fictional actions can advance", () => {
+  for (const [action, source] of [["location", "카페에 가자"], ["current_location", "도서관에 갈게"], ["arrival_status", "우리 먼저 출발하자"]])
+    assert.equal(proposalOnlySceneChange(action, source), true);
+  assert.equal(proposalOnlySceneChange("location", "카페에 도착했어"), false);
+  assert.equal(proposalOnlySceneChange("promise_homework", "카페에 가자"), false);
+  const state = emptyChatMemory("희진");
+  const invalidArrival = { subjectId: "character", objectId: null, action: "location", value: "카페에 도착함", certainty: "simulated" as const, evidence: "카페에 가자", replaces: [] };
+  const next = mergeChatMemory(state, { ...emptyPatch(), updates: [invalidArrival,
+    { ...invalidArrival, action: "promise_homework", value: "카페에서 당신의 과제를 돕기로 약속" },
+  ] }, "같이 과제하자", "카페에 가자");
+  assert.equal(next.facts.length, 1);
+  assert.equal(next.facts[0].action, "promise_homework");
+  assert.equal(next.facts[0].subjectId, "character");
+  const arrived = mergeChatMemory(next, { ...emptyPatch(), updates: [{ ...invalidArrival, evidence: "카페에 도착했어" }] }, "어디야?", "카페에 도착했어");
+  assert.ok(arrived.facts.some(f => f.action === "location"));
+});
+
+test("intent and actor checks remain private for requests, complaints and proposals", () => {
+  for (const intent of ["proposal", "request", "complaint", "refusal"] as const) {
+    const result = characterDialogueSchema.parse({ speechStyle: "casual", continuity: { intent, actorId: "character", targetId: "user", premise: "consistent", factIds: [] },
+      utterances: ["내가 도와주기로 했지."], clothingMentioned: false, locationChanged: false, memory: emptyPatch() });
+    const json = JSON.stringify(result);
+    for (let offset = 0; offset <= json.length; offset++) {
+      const visible = streamedDialogue(json.slice(0, offset));
+      assert.ok(result.utterances[0].startsWith(visible));
+    }
+    assert.equal(streamedDialogue(json), result.utterances[0]);
+  }
+});
+
+test("reply-only characters cannot retain unsolicited follow-up promises, including old memory", () => {
+  for (const phrase of ["끝나면 바로 말할게", "나중에 먼저 연락할게", "내일 메시지 보내줄게", "정리되면 알려주기로 약속"])
+    assert.equal(unsupportedFollowUp(phrase), true, phrase);
+  assert.equal(unsupportedFollowUp("다음에 물어보면 이어서 답할게"), false);
+  assert.equal(unsupportedFollowUp("먼저 연락할 수 없어"), false);
+  assert.equal(unsupportedFollowUp("내일 만나면 말할게"), false);
+  const memory = emptyChatMemory("희진");
+  memory.turn = 1;
+  memory.facts.push({ id: "fact_1_0", subjectId: "character", objectId: "user", action: "promise_notify", value: "끝나면 바로 말할게", certainty: "simulated", sourceTurnId: "character_1", evidence: "끝나면 바로 말할게" });
+  const before = structuredClone(memory);
+  const next = mergeChatMemory(memory, { ...emptyPatch(), updates: [
+    { subjectId: "character", objectId: "user", action: "promise_notify", value: "나중에 먼저 연락할게", certainty: "simulated", evidence: "나중에 먼저 연락할게", replaces: [] },
+    { subjectId: "user", objectId: "character", action: "promise_call", value: "내일 먼저 연락할게", certainty: "asserted", evidence: "내일 먼저 연락할게", replaces: [] },
+  ] }, "내일 먼저 연락할게", "나중에 먼저 연락할게");
+  assert.deepEqual(memory, before);
+  assert.equal(next.facts.length, 1);
+  assert.equal(next.facts[0].subjectId, "user");
+  const character = { mode: "chat" as const, name: "희진", age: 25, personality: "다정함", concept: "정리 중", genre: "막장드라마" as const, imageDescription: "은발" };
+  const instructions = characterInstructions(character);
+  assert.match(instructions, /reply-only/);
+  assert.match(instructions, /acknowledge that promise was wrong/);
+  assert.doesNotMatch(characterInstructions({ ...character, mode: "story" }), /reply-only/);
+  const shared = { ...emptyTimeline(), participants: [{ id: "user", name: "당신" }, { id: "character", name: "희진" }], promises: [{ subjectId: "character", key: "promise_notify", text: "끝나면 바로 말할게" }] };
+  const input = conversationInstructions(character, memory, "끝났어?", shared);
+  const payload = JSON.parse(input.slice(input.lastIndexOf("\n") + 1));
+  assert.deepEqual(payload.confirmedClaims, []);
+  assert.deepEqual(payload.sharedTimeline.promises, []);
+  assert.deepEqual(advanceTimeline(shared, "희진", next).promises.map(p => p.subjectId), ["user"]);
+});
+
+test("shared continuity advances from validated changes, keeps identities and closes promises", () => {
+  const sessions = createStudioSessions();
+  assert.equal(sessions.chat.timeline, sessions.story.timeline);
+  assert.notEqual(sessions.chat.timeline, createStudioSessions().chat.timeline);
+  const before = emptyTimeline();
+  const memory = mergeChatMemory(emptyChatMemory("서하"), { ...emptyPatch(), updates: [
+    { subjectId: "user", objectId: null, action: "location", value: "서점에 도착", certainty: "asserted", evidence: "나는 서점에 도착했어", replaces: [] },
+    { subjectId: "user", objectId: null, action: "promise_contract", value: "내일 계약서를 함께 확인하기로 약속", certainty: "asserted", evidence: "내일 계약서를 확인하자", replaces: [] },
+  ] }, "나는 서점에 도착했어. 내일 계약서를 확인하자", "좋아");
+  const shared = advanceTimeline(before, "서하", memory);
+  assert.equal(before.revision, 0);
+  assert.equal(shared.scene[0].text, "서점에 도착");
+  assert.equal(shared.promises.length, 1);
+  assert.equal(timelineCovers(shared, { ...memory.facts[0], action: "time" }), false);
+  const instructions = conversationInstructions({ mode: "chat", name: "서하", age: 25, personality: "다정함", concept: "서점", genre: "막장드라마", imageDescription: "은발" }, memory, "안녕", shared);
+  const payload = JSON.parse(instructions.slice(instructions.lastIndexOf("\n") + 1));
+  assert.deepEqual(payload.confirmedClaims, []);
+  assert.deepEqual(payload.participants, []);
+  assert.equal(payload.sharedTimeline.promises[0].text, shared.promises[0].text);
+  const story = { ...emptyStoryState(), chapter: 1, currentSituation: "다음 날 서점에서 계약서를 확인했다", previousProse: "서하는 민수와 계약서를 확인했다.", characters: [{ name: "민수", goal: "", knowledge: ["비밀 범인"], relationships: ["서하와 동료가 됨"] }] };
+  const afterStory = advanceTimeline(shared, "서하", undefined, story, undefined, [shared.promises[0].text]);
+  assert.equal(afterStory.promises.length, 0);
+  assert.ok(!JSON.stringify(afterStory).includes("비밀 범인"));
+  assert.equal(afterStory.participants.find(p => p.name === "민수")?.id, "npc_1");
+  assert.equal(timelineChatMemory(memory, afterStory).participants.find(p => p.name === "민수")?.id, "npc_1");
+  const fulfilled = mergeChatMemory(memory, { ...emptyPatch(), updates: [
+    { subjectId: "user", objectId: null, action: "promise_contract", value: "fulfilled: 계약서 확인 완료", certainty: "asserted", evidence: "나는 계약서 확인을 마쳤어", replaces: [] },
+  ] }, "나는 계약서 확인을 마쳤어", "확인했구나");
+  assert.equal(advanceTimeline(shared, "서하", fulfilled).promises.length, 0);
+  assert.equal(timelineSchema.safeParse({ ...shared, participants: [...shared.participants, shared.participants[0]] }).success, false);
+  const sameName = advanceTimeline(emptyTimeline(), "당신", emptyChatMemory("당신"));
+  assert.deepEqual(sameName.participants.map(p => p.id), ["user", "character"]);
+});
+
+test("chat publishes a shared timeline in its existing single call only on completion", async t => {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  t.after(() => { if (previousKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = previousKey; });
+  let calls = 0, complete = true;
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    calls++;
+    assert.match(JSON.parse(String(init.body)).instructions, /sharedTimeline/);
+    const result = { speechStyle: "polite", continuity: { actorId: null, targetId: null, intent: "other", premise: "consistent", factIds: [] }, utterances: ["카페에 도착했어요"], clothingMentioned: false, locationChanged: true, memory: emptyPatch() };
+    return new Response(`data: ${JSON.stringify({ type: "response.output_text.delta", delta: JSON.stringify(result) })}\n\ndata: ${JSON.stringify({ type: complete ? "response.completed" : "response.incomplete" })}\n\n`);
+  });
+  const timeline = emptyTimeline();
+  const request = () => new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timeline,
+    character: { mode: "chat", name: "서하", age: 25, personality: "다정함", concept: "서점", imageDescription: "은발" }, messages: [{ role: "user", content: "안녕" }] }) });
+  const output = await (await POST(request())).text();
+  assert.match(output, /"type":"timeline"/);
+  assert.match(output, /"expectedRevision":0/);
+  assert.match(output, /"type":"location","changed":true/);
+  assert.equal(calls, 1);
+  assert.equal(timeline.revision, 0);
+  complete = false;
+  const failed = await (await POST(request())).text();
+  assert.doesNotMatch(failed, /"type":"timeline"/);
+  assert.doesNotMatch(failed, /"type":"done"/);
+});
+
+test("prompt tables preserve every field and row while shrinking repeated metadata", () => {
+  const facts = Array.from({ length: 24 }, (_, index) => ({
+    id: `fact_${index}_0`, subjectId: "user", action: "location", objectId: null,
+    value: `약속 장소 ${index}`, certainty: "asserted", sourceTurnId: `user_${index}`, evidence: `나는 약속 장소 ${index}에 도착했어.`,
+  }));
+  const columns = ["id", "subjectId", "action", "objectId", "value", "certainty", "sourceTurnId", "evidence"] as const;
+  const packed = promptTable(facts, columns);
+  assert.ok(!Array.isArray(packed));
+  if ("rows" in packed) {
+    assert.deepEqual(packed.rows.map(row => Object.fromEntries(packed.columns.map((column, index) => [column, row[index]]))), facts);
+  }
+  assert.ok(JSON.stringify(packed).length < JSON.stringify(facts).length);
+  assert.deepEqual(promptTable([], columns), []);
+  const extended = facts.map(fact => ({ ...fact, extra: "새 근거 필드" }));
+  assert.deepEqual(promptTable(extended, columns), extended);
+});
+
+test("chat requests and usage metadata follow OPENAI_MODEL on each request", async t => {
+  const oldModel = process.env.OPENAI_MODEL, oldKey = process.env.OPENAI_API_KEY;
+  t.after(() => {
+    if (oldModel === undefined) delete process.env.OPENAI_MODEL; else process.env.OPENAI_MODEL = oldModel;
+    if (oldKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = oldKey;
+  });
+  process.env.OPENAI_API_KEY = "test-key";
+  let expected = "gpt-5.4-nano";
+  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+    assert.equal(JSON.parse(String(init.body)).model, expected);
+    return new Response('data: {"type":"response.output_text.delta","delta":"안녕"}\n\ndata: {"type":"response.completed"}\n\n');
+  });
+  for (const model of ["gpt-5.4-nano", "gpt-5.4-mini"]) {
+    expected = model;
+    process.env.OPENAI_MODEL = model;
+    const response = await POST(new Request("http://localhost/api/chat", {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Track-Usage": "1" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "안녕" }] }),
+    }));
+    const events = await response.text();
+    assert.ok(events.includes(`"model":"${model}"`));
+    assert.ok(events.includes('"type":"done"'));
+  }
+});
+
+test("the interacting person's display name is 당신 while stable identity IDs remain unchanged", () => {
+  const state = emptyChatMemory("서하");
+  assert.deepEqual(state.participants[0], { id: "user", name: "당신" });
+  state.participants[0].name = "사용자";
+  assert.equal(mergeChatMemory(state, emptyPatch(), "안녕", "안녕").participants[0].name, "당신");
+});
+const verdict = { actorId: null, targetId: null, intent: "other", premise: "consistent", factIds: [] };
 
 test("conversation memory separates participants, preserves sources and applies explicit actor corrections", () => {
   const state = emptyChatMemory("유나");
@@ -114,7 +302,7 @@ test("chat API returns grounded memory alongside speech and reuses it when older
       assert.deepEqual(body.input, [{ role: "user", content: "그럼 둘이 놀자. 반말해줘" }]);
     }
     const memory = generation === 1 ? { ...emptyPatch(), participants: [{ id: "npc_1", name: "민수", evidence: "민수 만나기로 했는데" }], updates: [{ subjectId: "user", objectId: null, action: "arrival_status", value: "오늘 늦음", certainty: "asserted", evidence: "내가 늦어", replaces: [] }] } : emptyPatch();
-    const result = { continuity: verdict, utterances: [generation === 1 ? "늦는 건 너구나." : "잠깐, 늦는 건 너잖아. 민수는 아직 오는 거고. ㅋㅋ"], memory };
+    const result = { speechStyle: "polite", continuity: verdict, utterances: [generation === 1 ? "늦는 건 너구나." : "잠깐, 늦는 건 너잖아. 민수는 아직 오는 거고. ㅋㅋ"], clothingMentioned: false, locationChanged: false, memory };
     return new Response(new ReadableStream({ start(controller) {
       controller.enqueue(wire({ type: "response.output_text.delta", delta: JSON.stringify(result) }));
       controller.enqueue(wire({ type: "response.completed" })); controller.close();
@@ -149,7 +337,7 @@ test("dialogue-only streaming decodes utterances across every escape/chunk bound
   assert.equal(streamedDialogue('카페의 조명이 흔들렸다.'), "");
   assert.equal(dialogueSchema.safeParse({ utterances: ["안녕"], narration: "미소 지었다" }).success, false);
   assert.equal(dialogueSchema.safeParse({ utterances: [] }).success, false);
-  const privateJson = JSON.stringify({ continuity: verdict, utterances: ["늦는 건 너잖아 😏"], memory: emptyPatch() });
+  const privateJson = JSON.stringify({ speechStyle: "polite", continuity: verdict, utterances: ["늦는 건 너잖아 😏"], clothingMentioned: false, locationChanged: false, memory: emptyPatch() });
   let decoded = "";
   for (let index = 0; index <= privateJson.length; index++) {
     const next = streamedDialogue(privateJson.slice(0, index));
@@ -285,14 +473,14 @@ test("chat API forwards validated character data as role instructions, not conve
     if (body.text?.format?.name === "clothing_mention")
       return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: '{"mentioned":false}' }] }] });
     assert.match(body.instructions, /first person/);
-    assert.match(body.instructions, /존댓말 \(polite\)/);
+    assert.match(body.instructions, /select speechStyle/);
     assert.match(body.instructions, /검은 코트/);
     assert.match(body.instructions, /서하/);
     assert.deepEqual(body.input, [{ role: "user", content: "첫 장면" }]);
     assert.equal(body.text.format.name, "character_dialogue");
     assert.match(body.instructions, /"gender":"여성"/);
     return new Response(new ReadableStream({ start(c) {
-      c.enqueue(wire({ type: "response.output_text.delta", delta: JSON.stringify({ continuity: verdict, utterances: ["반가워요 😊 ^_^~"], memory: emptyPatch() }) }));
+      c.enqueue(wire({ type: "response.output_text.delta", delta: JSON.stringify({ speechStyle: "polite", continuity: verdict, utterances: ["반가워요 😊 ^_^~"], clothingMentioned: false, locationChanged: false, memory: emptyPatch() }) }));
       c.enqueue(wire({ type: "response.completed" })); c.close();
     } }));
   });
@@ -305,7 +493,7 @@ test("chat API forwards validated character data as role instructions, not conve
   assert.match(output, /반가워요 😊 \^_\^~/);
   assert.ok(!output.includes("utterances"));
   assert.match(output, /"speechStyle":"polite"/);
-  assert.equal(calls, 3);
+  assert.equal(calls, 1);
 });
 
 test("speech selection uses durable register, concept and latest request; failures do not silently switch", async t => {
@@ -338,9 +526,9 @@ test("character dialogue streams only utterance values and malformed outputs nev
   const request = () => new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character: { mode: "chat", name: "서하", age: 25, gender: "여성", personality: "차분함", concept: "재벌가의 비밀과 폭풍 속 재회", imageDescription: "성인 여성" }, messages: [{ role: "user", content: "유카타 입고 반말해줘" }] }) });
   const response = await POST(request());
   const events = readEvents(response.body!);
-  source.enqueue(wire({ type: "response.output_text.delta", delta: '{"continuity":'+JSON.stringify(verdict)+',"utterances":["유카타 입었어 😊' }));
+  source.enqueue(wire({ type: "response.output_text.delta", delta: '{"speechStyle":"casual","continuity":'+JSON.stringify(verdict)+',"utterances":["유카타 입었어 😊' }));
   assert.deepEqual((await events.next()).value, { type: "delta", text: "유카타 입었어 😊" });
-  source.enqueue(wire({ type: "response.output_text.delta", delta: ' 어때?","몰래 만나자 ㅎㅎ"],"memory":{"participants":[],"updates":[],"mood":null}}' }));
+  source.enqueue(wire({ type: "response.output_text.delta", delta: ' 어때?","몰래 만나자 ㅎㅎ"],"clothingMentioned":true,"locationChanged":false,"memory":{"participants":[],"updates":[],"mood":null}}' }));
   source.enqueue(wire({ type: "response.completed" }));
   const rest = []; for await (const event of events) rest.push(event);
   assert.equal(rest[0].text, " 어때?\n\n몰래 만나자 ㅎㅎ");

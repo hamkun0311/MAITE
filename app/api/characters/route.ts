@@ -1,9 +1,13 @@
+import { textModel } from "../../../lib/ai-model.ts";
+import { withGeneration, preflight } from "../../../lib/server/generation.ts";
+import { allowedOrigin } from "../../../lib/server/http.ts";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
+import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
 import { characterProfileSchema } from "../../../lib/chat/character.ts";
-import { ILLUSTRATION_DIRECTION, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
+import { ILLUSTRATION_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
   characterBrief,
@@ -62,9 +66,10 @@ async function readForm(request: Request) {
     headers: { "Content-Type": request.headers.get("content-type") || "" },
   }).formData();
 }
-async function checked(response: Response) {
-  if (response.ok) return response.json();
-  const data = await response.json().catch(() => null);
+async function checked(response: Response, finish?: ReturnType<typeof trackUsage>) {
+  const data = response.ok ? await response.json() : await response.json().catch(() => null);
+  finish?.(data, response.ok && (!data?.status || data.status === "completed") ? "completed" : "failed");
+  if (response.ok) return data;
   const code = data?.error?.code;
   if (code === "content_policy_violation" || code === "moderation_blocked")
     throw new RequestError(
@@ -81,10 +86,19 @@ async function checked(response: Response) {
     502,
   );
 }
-export async function POST(request: Request) {
+export const OPTIONS = preflight;
+export const POST = withGeneration(handle, true);
+async function handle(request: Request) {
+  const records = new Map<string, UsageRecord>();
+  const usageHeaders = (): Record<string, string> => request.headers.get("X-Track-Usage") === "1" ? { "X-Token-Usage": JSON.stringify([...records.values()]) } : {};
+  async function measured(feature: string, model: string, url: string, init: RequestInit) {
+    const finish = trackUsage(feature, model, record => { records.set(record.id, record); });
+    try { return await checked(await fetch(url, init), finish); }
+    catch (error) { finish(undefined, "unknown"); throw error; }
+  }
   try {
     const origin = request.headers.get("origin");
-    if (origin && origin !== new URL(request.url).origin)
+    if (origin && !allowedOrigin(request))
       throw new RequestError("허용되지 않은 요청입니다.", 403);
     const key = process.env.OPENAI_API_KEY;
     if (!key)
@@ -164,14 +178,14 @@ export async function POST(request: Request) {
         ? Buffer.from(await prior.arrayBuffer()).toString("base64")
         : null;
     const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
-    const briefResponse = await checked(
-      await fetch("https://api.openai.com/v1/responses", {
+    const briefResponse = await measured("image.description", textModel(),
+      "https://api.openai.com/v1/responses", {
         method: "POST",
         headers,
         signal,
         body: JSON.stringify({
-          model: process.env.OPENAI_MODEL || "gpt-6.1-sol",
-          ...((process.env.OPENAI_MODEL || "gpt-6.1-sol").startsWith("gpt-6")
+          model: textModel(),
+          ...((textModel()).startsWith("gpt-6")
             ? { reasoning: { effort: "low" } }
             : {}),
           store: false,
@@ -180,8 +194,9 @@ export async function POST(request: Request) {
             (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
             " Reference style analysis: " +
             JSON.stringify(CHARACTER_STYLES) +
+            (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features. For scene images retain those identity features while current scene clothing, pose and location take precedence over any initial outfit or setting in that field. " : "") +
             " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
-            (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene),
+            (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : ""),
           input: [
             {
               role: "user",
@@ -208,7 +223,7 @@ export async function POST(request: Request) {
             },
           },
         }),
-      }),
+      },
     );
     if (briefResponse.status !== "completed")
       throw new RequestError(
@@ -229,7 +244,7 @@ export async function POST(request: Request) {
       quality: process.env.OPENAI_IMAGE_QUALITY || "low",
       output_format: "jpeg", output_compression: 85, n: 1,
     };
-    const useStyleImage = brief.styleProfile === "female";
+    const useStyleImage = brief.styleProfile === "female" && !scene;
     const useEdit = useStyleImage || prior instanceof File;
     let imageBody: FormData | string;
     if (useEdit) {
@@ -242,8 +257,8 @@ export async function POST(request: Request) {
       }
       imageBody = imageForm;
     } else imageBody = JSON.stringify(parameters);
-    const generated = await checked(
-      await fetch(`https://api.openai.com/v1/images/${useEdit ? "edits" : "generations"}`, {
+    const generated = await measured("image.generate", parameters.model,
+      `https://api.openai.com/v1/images/${useEdit ? "edits" : "generations"}`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${key}`,
@@ -251,7 +266,7 @@ export async function POST(request: Request) {
         },
         body: imageBody,
         signal,
-      }),
+      },
     );
     const encoded = generated.data?.[0]?.b64_json;
     if (typeof encoded !== "string" || encoded.length > 16_000_000)
@@ -278,8 +293,10 @@ export async function POST(request: Request) {
         "X-Character-Summary": encodeURIComponent(brief.summary),
         "X-Character-Prompt": prompt,
         "X-Character-Style": brief.styleProfile,
+        ...(scene ? { "X-Character-Composition": encodeURIComponent(JSON.stringify(compositionSchema.strip().parse(brief))) } : {}),
         "X-Character-Width": String(info.width),
         "X-Character-Height": String(info.height),
+        ...usageHeaders(),
       },
     });
   } catch (error) {
@@ -303,7 +320,7 @@ export async function POST(request: Request) {
                 ? "이미지 생성 시간이 초과되었거나 취소되었습니다. 다시 시도해주세요."
                 : "이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.",
       },
-      { status, headers: { "Cache-Control": "no-store" } },
+      { status, headers: { "Cache-Control": "no-store", ...usageHeaders() } },
     );
   }
 }

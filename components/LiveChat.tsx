@@ -1,15 +1,18 @@
 "use client";
+import { apiFetch } from "@/lib/platform/api";
+import { timelineSchema, type Timeline } from "@/lib/chat/timeline";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, ArrowUp, LoaderCircle, MessageCircle, Square } from "lucide-react";
 import { readEvents } from "@/lib/chat/stream";
 import type { CharacterContext } from "@/lib/chat/character";
 import { createChatSession, type ChatSession } from "@/lib/chat/session";
-import { illustrationContext, mentionsClothing, plainDialogue, outfitContext } from "@/lib/chat/presentation";
+import { illustrationContext, changedCharacterLocation, mentionsClothing, plainDialogue, outfitContext } from "@/lib/chat/presentation";
 import type { CharacterImageJob, VisualKind } from "@/lib/characters/gallery";
 import { storyStateSchema, type StoryState } from "@/lib/novel/state";
 import { speechStyleSchema, type SpeechStyle } from "@/lib/chat/speech";
 import { STORY_CHAPTER_LIMIT, storyComplete, storyProgress } from "@/lib/novel/series";
 import { chatMemorySchema, type ChatMemory } from "@/lib/chat/memory";
+import { startUsageTask, addUsageRecord, readUsageHeaders, finishUsageTask } from "@/lib/usage-store";
 
 const storyPhases: Record<string, string> = { planning: "다음 전개 구상 중…", writing: "이야기 작성중", reviewing: "이야기 흐름 확인 중…", rewriting: "이야기 다듬는 중…", remembering: "이야기 마무리 중…" };
 
@@ -30,13 +33,17 @@ export default function LiveChat({ character, active = true, headingContent, ses
   const [notice, setNotice] = useState(saved.notice);
   const committed = useRef<Message[]>(saved.committed);
   // Only the latest completed user/character exchange may enable an outfit job.
-  const outfitAvailable = saved.latestClothingMentioned ?? mentionsClothing(committed.current.slice(-2));
+  const imageAvailable = saved.latestVisualChange ?? saved.latestClothingMentioned ?? mentionsClothing(committed.current.slice(-2));
   const controller = useRef<AbortController | null>(null);
   const pendingStoryConcept = useRef("");
   const sequence = useRef(0), stopped = useRef(false);
   const log = useRef<HTMLDivElement>(null);
   const followOutput = useRef(true);
   const previousTurnLength = useRef(0);
+  useEffect(() => {
+    const stop = () => { stopped.current = true; controller.current?.abort(); };
+    window.addEventListener("maite-stop-chat", stop); return () => window.removeEventListener("maite-stop-chat", stop);
+  }, []);
   useEffect(() => {
     saved.messages = messages; saved.input = input; saved.notice = notice;
   }, [saved, messages, input, notice]);
@@ -74,7 +81,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
     controller.current?.abort();
     controller.current = null;
     committed.current = [];
-    Object.assign(saved, { messages: [], committed: [], input: "", notice: "", storyState: undefined, speechStyle: undefined, chatMemory: undefined, clothingDetected: undefined, latestClothingMentioned: undefined });
+    Object.assign(saved, { messages: [], committed: [], archive: [], input: "", notice: "", storyState: undefined, speechStyle: undefined, chatMemory: undefined, clothingDetected: undefined, latestClothingMentioned: undefined, visualDetected: undefined, latestVisualChange: undefined });
     followOutput.current = true;
     previousTurnLength.current = 0;
     setMessages([]); setInput(""); setNotice(""); setBusy(false);
@@ -85,6 +92,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
     const additionalConcept = isStory ? input.trim() : "";
     if (controller.current || !text || (isStory && storyComplete(saved.storyState) && !additionalConcept)) return;
     const storyState = saved.storyState;
+    const timeline = saved.timeline?.state;
     pendingStoryConcept.current = additionalConcept;
     const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => message.role === "assistant" ? { ...message, content: isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content, "chat") } : message), { role: "user", content: text }];
     while (history.length > 1 && history.reduce((n, m) => n + m.content.length, 0) > 24000)
@@ -101,17 +109,22 @@ export default function LiveChat({ character, active = true, headingContent, ses
     let nextSpeech: SpeechStyle | undefined;
     let nextMemory: ChatMemory | undefined;
     let clothingDetected: boolean | undefined;
+    let locationChanged = false;
+    let nextTimeline: Timeline | undefined;
+    const usageTask = startUsageTask(isStory ? `이야기 ${(storyState?.chapter ?? 0) + 1}회차` : "대화");
+    let usageCompleted = false;
     const timeout = setTimeout(() => abort.abort(), 160000);
     try {
-      const requestBody = { messages: history, character, ...(isStory && storyState ? { storyState } : {}),
+      const requestBody = { messages: history, character, ...(timeline ? { timeline } : {}), ...(isStory && storyState ? { storyState } : {}),
         ...(additionalConcept ? { additionalConcept } : {}),
         ...(!isStory && character && saved.chatMemory ? { chatMemory: saved.chatMemory } : {}),
         ...(!isStory && character && saved.speechStyle ? { speechStyle: saved.speechStyle } : {}) };
       while (history.length > 1 && new TextEncoder().encode(JSON.stringify(requestBody)).length > 100000) history.splice(0, 2);
-      const response = await fetch("/api/chat", {
-        method: "POST", headers: { "Content-Type": "application/json" },
+      const response = await apiFetch("/api/chat", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Track-Usage": "1" },
         body: JSON.stringify(requestBody), signal: abort.signal,
       });
+      readUsageHeaders(usageTask, response);
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(data?.error || "AI에 연결하지 못했습니다.");
@@ -119,8 +132,13 @@ export default function LiveChat({ character, active = true, headingContent, ses
       if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream"))
         throw new Error("응답 형식이 올바르지 않습니다.");
       for await (const event of readEvents(response.body)) {
+        if (event.type === "usage") { addUsageRecord(usageTask, event.record); continue; }
         if (id !== sequence.current) return;
-        if (isStory && event.type === "phase" && typeof event.phase === "string") {
+        if (event.type === "timeline") {
+          if (!timeline || nextTimeline || event.expectedRevision !== timeline.revision) throw new Error("Invalid shared timeline");
+          nextTimeline = timelineSchema.parse(event.state);
+          if (nextTimeline.revision !== timeline.revision + 1) throw new Error("Invalid shared timeline revision");
+        } else if (isStory && event.type === "phase" && typeof event.phase === "string") {
           setStoryPhase(storyPhases[event.phase] || "이야기 작성중");
         } else if (isStory && event.type === "chapter") {
           if (nextChapter || typeof event.text !== "string" || !event.text.trim() || event.text.length > 8000)
@@ -131,6 +149,8 @@ export default function LiveChat({ character, active = true, headingContent, ses
           if ((state.seriesStartChapter ?? 0) !== (additionalConcept ? storyState?.chapter ?? 0 : storyState?.seriesStartChapter ?? 0))
             throw new Error("이야기 계획이 일치하지 않습니다. 다시 시도해주세요.");
           nextChapter = { text: event.text, state };
+        } else if (!isStory && event.type === "location" && typeof event.changed === "boolean") {
+          locationChanged = event.changed;
         } else if (!isStory && event.type === "clothing" && typeof event.mentioned === "boolean") {
           clothingDetected = event.mentioned;
         } else if (!isStory && event.type === "memory") {
@@ -151,24 +171,34 @@ export default function LiveChat({ character, active = true, headingContent, ses
       }
       const prose = plainDialogue(isStory ? nextChapter?.text ?? "" : answer, isStory ? "prose" : "chat").trim();
       if (!completed || !prose) throw new Error("응답이 중단되었습니다. 다시 시도해주세요.");
+      if (timeline && saved.timeline?.state.revision !== timeline.revision) throw new Error("공통 시간선이 변경되었습니다. 다시 시도해주세요.");
+      if (nextTimeline && saved.timeline) saved.timeline.state = nextTimeline;
       if (isStory && nextChapter) {
         saved.storyState = nextChapter.state;
         setMessages([...displayed, { role: "assistant", content: prose }]);
       }
       committed.current = [...history, { role: "assistant", content: prose }];
+      saved.archive = [...(saved.archive ?? saved.committed), { role: "user", content: text }, { role: "assistant", content: prose }];
       saved.committed = committed.current;
       if (!isStory && nextSpeech) saved.speechStyle = nextSpeech;
+      locationChanged ||= changedCharacterLocation(saved.chatMemory, nextMemory);
       if (!isStory && nextMemory) saved.chatMemory = nextMemory;
       if (!isStory) {
         saved.latestClothingMentioned = clothingDetected ?? mentionsClothing(committed.current.slice(-2));
+        saved.latestVisualChange = saved.latestClothingMentioned || locationChanged;
+        if (saved.latestVisualChange) saved.visualDetected = true;
         if (saved.latestClothingMentioned) saved.clothingDetected = true;
       }
+      usageCompleted = true;
+      window.dispatchEvent(new Event("maite-session-committed"));
+      window.dispatchEvent(new Event("maite-account-refresh"));
     } catch (error) {
       if (id !== sequence.current) return;
       setNotice(stopped.current ? "응답을 중지했습니다." : abort.signal.aborted ? "응답 시간이 초과되었습니다. 다시 시도해주세요." : error instanceof Error ? error.message : "대화 중 오류가 발생했습니다.");
       if (!answer) { setMessages(messages); setInput(isStory ? additionalConcept : text); }
       // Partial replies remain visible, but incomplete turns are not sent as history.
     } finally {
+      finishUsageTask(usageTask, usageCompleted ? "completed" : abort.signal.aborted ? "cancelled" : "failed");
       clearTimeout(timeout);
       abort.abort();
       if (id === sequence.current) { controller.current = null; setBusy(false); }
@@ -178,7 +208,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
     <section className="live-chat" aria-label="AI 실시간 대화">
       <div className="live-chat-heading">
         {headingContent ?? <div><h2><MessageCircle size={18} /> {character ? character.mode === "story" ? "함께 쓰는 이야기" : `${character.name}와 대화하기` : "AI와 대화하기"}</h2>{character?.mode !== "story" && <p>{character ? "그림 속 캐릭터와 나만의 장면을 이어가세요." : "궁금한 점이나 떠오르는 이야기를 나눠보세요."}</p>}</div>}
-        <button type="button" onClick={reset} aria-label="AI 대화 초기화">{character?.mode === "story" ? "새 이야기" : "새 대화"}</button>
+        <button type="button" onClick={reset} aria-label="AI 대화 초기화" title={saved.timeline ? "이 화면의 기록을 초기화합니다. 공통 시간선은 유지됩니다." : undefined}>{character?.mode === "story" ? "새 이야기" : "새 대화"}</button>
       </div>
       <div className="live-chat-log" ref={log} role="log" aria-label="AI 대화 기록" aria-live="polite" aria-relevant="additions text" onScroll={event => {
         const element = event.currentTarget;
@@ -188,12 +218,12 @@ export default function LiveChat({ character, active = true, headingContent, ses
         {messages.map((m, i) => character?.mode === "story" && m.role === "user" ? null : <article className={`chat-message ${m.role}`} key={i}><span>{m.role === "user" ? "나" : character?.mode === "story" ? "이야기" : character?.name || "AI"}</span><p>{(m.role === "assistant" ? plainDialogue(m.content, character?.mode === "story" ? "prose" : "chat") : m.content) || (character?.mode === "story" ? storyPhase : "대화 작성중")}</p></article>)}
       </div>
       {notice && <p className="chat-error" role="status">{notice}</p>}
-      {imageJob && <div className="character-visual-status" role="status"><span><LoaderCircle className="spin" size={15} />{imageJob.kind === "illustration" ? "삽화 생성 중…" : "의상 변경 이미지 생성 중…"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
+      {imageJob && <div className="character-visual-status" role="status"><span><LoaderCircle className="spin" size={15} />{imageJob.kind === "illustration" ? "삽화 생성 중…" : "이미지 생성 중…"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
       {imageError && <p className="character-visual-error" role="alert">{imageError}</p>}
-      {onGenerateVisual && character && (character.mode === "story" || saved.clothingDetected || mentionsClothing(committed.current)) && <button className="character-visual-button" type="button" disabled={busy || !!imageJob || (character.mode === "chat" && !outfitAvailable) || !committed.current.some(message => message.role === "assistant" && message.content.trim())} onClick={() => {
-        if (busy || imageJob || (character.mode === "chat" && !outfitAvailable)) return;
+      {onGenerateVisual && character && (character.mode === "story" || saved.visualDetected || saved.clothingDetected || mentionsClothing(committed.current)) && <button className="character-visual-button" type="button" disabled={busy || !!imageJob || (character.mode === "chat" && !imageAvailable) || !committed.current.some(message => message.role === "assistant" && message.content.trim())} onClick={() => {
+        if (busy || imageJob || (character.mode === "chat" && !imageAvailable)) return;
         void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", character.mode === "story" ? illustrationContext(committed.current, saved.storyState) : outfitContext(committed.current, saved.chatMemory));
-      }}>{character.mode === "story" ? "삽화 생성" : "의상 변경하기"}</button>}
+      }}>{character.mode === "story" ? "삽화 생성" : "이미지 생성"}</button>}
       {character?.mode === "story" && <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="추가하고 싶은 사건이나 설정 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? "추가 컨셉을 반영해 다음 회차부터 10편으로 다시 구성합니다." : ""}</small></label>}
       {character?.mode === "story" ? <button className="story-next-button" type="button" disabled={busy || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
         void submit(committed.current.length

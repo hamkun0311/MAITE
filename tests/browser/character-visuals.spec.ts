@@ -19,7 +19,7 @@ test("outfit button requires clothing in the latest completed exchange and persi
   await page.route("**/api/characters", route => { imageRequests++; return route.abort(); });
   await enterCharacterMode(page);
   const chat = page.getByRole("region", { name: "대화하기", exact: true });
-  const button = chat.getByRole("button", { name: "의상 변경하기", exact: true });
+  const button = chat.getByRole("button", { name: "이미지 생성", exact: true });
   await expect(button).toHaveCount(0);
   const send = async (text: string) => {
     await chat.getByLabel("AI에게 보낼 메시지").fill(text);
@@ -51,10 +51,12 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await generateCharacter(page);
   const originalUrl = await page.getByAltText("은발 탐정 — 생성된 2D 캐릭터 일러스트").getAttribute("src");
   const imageBodies: { kind: string; context: string }[] = [];
+  const composition = { pose: "Seated leaning right, hands on knees, legs angled left.", framing: "Wide side view." };
   const image = await jpeg();
   await page.route("**/api/characters", async route => {
     const form = await new Request(route.request().url(), { method: "POST", headers: route.request().headers(), body: new Uint8Array(route.request().postDataBuffer()!) }).formData();
     const scene = JSON.parse(String(form.get("scene")));
+    expect(scene.previousCompositions).toEqual(imageBodies.length ? [composition] : []);
     imageBodies.push(scene);
     const message = JSON.parse(String(form.get("messages")))[0].content;
     expect(message).toContain(scene.kind === "outfit" ? "현재 실제 장소" : "실제 현재 장소");
@@ -62,7 +64,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
     expect((form.get("image") as File).name).toBe("original-character.jpg");
     expect(JSON.parse(String(form.get("profile"))).name).toBe("서하");
     expect(scene.context).not.toContain("**");
-    await route.fulfill({ contentType: "image/jpeg", headers: { "X-Character-Title": encodeURIComponent(scene.kind === "outfit" ? "유카타의 서하" : "카페에서의 대화") }, body: image });
+    await route.fulfill({ contentType: "image/jpeg", headers: { "X-Character-Composition": encodeURIComponent(JSON.stringify(composition)), "X-Character-Title": encodeURIComponent(scene.kind === "outfit" ? "유카타의 서하" : "카페에서의 대화") }, body: image });
   });
   const latestStory = "창가에서\n\n유카타를 입은 서하는 커피잔을 내려놓고 작업실에서 있었던 사건을 떠올렸다. 내일은 서점에서 친구를 만나기로 했다.";
   const storyChapter = chapterEvent({}, latestStory);
@@ -91,13 +93,13 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   }, storyChapter);
   await enterCharacterMode(page);
   const chat = page.getByRole("region", { name: "대화하기", exact: true });
-  await expect(chat.getByRole("button", { name: "의상 변경하기", exact: true })).toHaveCount(0);
+  await expect(chat.getByRole("button", { name: "이미지 생성", exact: true })).toHaveCount(0);
   await chat.getByLabel("AI에게 보낼 메시지").fill("작업실을 나와 백화점 의류 매장에 도착했어. 여기서 유카타를 입어줘.");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await expect(chat.getByRole("log").getByText("대화 작성중", { exact: true })).toBeVisible();
   await page.evaluate(() => (window as typeof window & { finishVisualChat?: () => void }).finishVisualChat!());
   await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
-  await chat.getByRole("button", { name: "의상 변경하기", exact: true }).click();
+  await chat.getByRole("button", { name: "이미지 생성", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
   await expect(viewer.getByAltText("유카타의 서하 — 전체화면 이미지")).toBeVisible();
   const outfitUrl = await chat.locator(".character-backdrop").getAttribute("src");
@@ -109,7 +111,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await viewer.getByRole("button", { name: "전체화면 닫기" }).click();
   await chat.getByRole("button", { name: "배경 변경", exact: true }).click();
   let picker = page.getByRole("dialog", { name: "배경 변경", exact: true });
-  await expect(picker.locator(".background-picker-grid > button")).toHaveCount(2);
+  await expect(picker.locator(".background-picker-grid > button")).toHaveCount(3);
   await picker.getByRole("button", { name: "배경 선택: 은발 탐정", exact: true }).click();
   await expect(chat.locator(".character-backdrop")).toHaveAttribute("src", originalUrl!);
   await enterCharacterMode(page, "이야기 만들기");
@@ -127,7 +129,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await page.keyboard.press("Escape");
   await story.getByRole("button", { name: "배경 변경", exact: true }).click();
   picker = page.getByRole("dialog", { name: "배경 변경", exact: true });
-  await expect(picker.locator(".background-picker-grid > button")).toHaveCount(3);
+  await expect(picker.locator(".background-picker-grid > button")).toHaveCount(4);
   await picker.getByRole("button", { name: "배경 선택: 유카타의 서하", exact: true }).click();
   await expect(story.locator(".character-backdrop")).toHaveAttribute("src", outfitUrl!);
   await page.screenshot({ path: ".verification/story-illustration-background.png" });
@@ -174,7 +176,7 @@ test("cancelled and failed illustrations preserve the gallery and a late respons
   await expect(story.locator(".character-backdrop")).toHaveAttribute("src", original!);
   await story.getByRole("button", { name: "배경 변경", exact: true }).click();
   const picker = page.getByRole("dialog", { name: "배경 변경", exact: true });
-  await expect(picker.locator(".background-picker-grid > button")).toHaveCount(1);
+  await expect(picker.locator(".background-picker-grid > button")).toHaveCount(2);
   await picker.getByRole("button", { name: "배경 선택 닫기", exact: true }).click();
   await page.unroute("**/api/characters");
   let finish!: () => void;

@@ -9,7 +9,7 @@ export const dialogueSchema = z.object({
 export function streamedDialogue(json: string): string {
   // The optional private verdict contains only IDs, enums and a flat ID list.
   // Wait until it closes, then expose only utterance values, never metadata.
-  const opening = /^\s*\{\s*(?:"continuity"\s*:\s*\{[^{}]*\}\s*,\s*)?"utterances"\s*:\s*\[/.exec(json);
+  const opening = /^\s*\{\s*(?:"speechStyle"\s*:\s*"(?:polite|casual)"\s*,\s*)?(?:"continuity"\s*:\s*\{[^{}]*\}\s*,\s*)?"utterances"\s*:\s*\[/.exec(json);
   if (!opening) return "";
   let offset = opening[0].length;
   const utterances: string[] = [];

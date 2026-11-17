@@ -2,6 +2,12 @@ import type { ChatMessage } from "./session.ts";
 import type { StoryState } from "../novel/state.ts";
 import type { ChatMemory } from "./memory.ts";
 
+export function changedCharacterLocation(previous: ChatMemory | undefined, next: ChatMemory | undefined): boolean {
+  return !!next?.facts.some(fact => fact.subjectId === "character" && /^(?:current_)?location$/i.test(fact.action) &&
+    fact.sourceTurnId === `character_${next.turn}` && !previous?.facts.some(old => old.subjectId === "character" &&
+      /^(?:current_)?location$/i.test(old.action) && old.value === fact.value));
+}
+
 export function plainDialogue(text: string, mode: "prose" | "chat" = "prose") {
   const source = mode === "chat" ? text.replace(/__([^_\n]+)__/g, "$1") : text;
   return source

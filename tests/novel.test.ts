@@ -5,6 +5,7 @@ import { emptyStoryState, mergeMemory, repeatsPrevious, storyStateSchema } from 
 import { POST } from "../app/api/chat/route.ts";
 import { manuscriptSources, resolveSources } from "../lib/novel/sources.ts";
 import { seriesArcSchema, seriesSchedule, storyComplete, storyProgress } from "../lib/novel/series.ts";
+import { emptyTimeline } from "../lib/chat/timeline.ts";
 
 const character = { mode: "story" as const, name: "서하", age: 25, personality: "다정함", concept: "친구와 서점 복구", genre: "막장드라마" as const, imageDescription: "서점의 탐정" };
 const prose = "서하는 서랍에서 계약서를 찾았다. 그가 약속한 수리 날짜가 문서에 적혀 있었다. " + "그녀는 친구에게 전화를 걸어 내일 함께 서점을 정리하자고 말했다. 망설이던 친구가 수화기 너머에서 웃었다. " + "둘은 닫힌 서점 문을 열고 먼지 쌓인 책을 창가로 옮겼다. 새로 비워진 진열대 사이로 햇빛이 들어왔다. 오래 미뤄 두었던 일이 드디어 시작되었다. " + "친구가 가져온 달력에 수리 날짜를 표시했다. 내일 아침에는 창문을 닦기로 했다.";
@@ -17,6 +18,7 @@ const patch = { summary: "서하가 계약서를 찾아 친구와 서점 정리�
   newEvents: [fact], resolvedEvents: [fact], openedThreads: [], closedThreads: [], worldFacts: [fact],
   characters: [{ name: "서하", goal: null, knowledge: [fact], relationships: [] }], nextChapterGoal: "창문을 닦는다" };
 const response = (value: unknown, init?: RequestInit) => {
+  if (value && typeof value === "object" && "pass" in value) value = { memoryPatch: patch, ...value };
   const input = init ? JSON.parse(JSON.parse(String(init.body)).input) : {};
   const cite = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(cite);
@@ -33,7 +35,7 @@ test("additional concepts replan ten future chapters without resetting actual hi
     const old = { ...emptyStoryState(), chapter, seriesArc, summary: "서점 정리를 시작했다", longTermGoal: "예전 목표" };
     const before = structuredClone(old);
     const newArc = { ...seriesArc, endingPromise: "라이벌과 함께 새로운 서점을 연다" };
-    const values: unknown[] = [{ ...plan, seriesArc: newArc, longTermGoal: "라이벌과 서점 운영" }, prose, review, patch];
+    const values: unknown[] = [{ ...plan, seriesArc: newArc, longTermGoal: "라이벌과 서점 운영" }, prose, review];
     let calls = 0;
     const mock = t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
       calls++;
@@ -61,7 +63,7 @@ test("additional concepts replan ten future chapters without resetting actual hi
     assert.equal(storyComplete(result.state), false);
     assert.deepEqual(old, before);
     await assert.rejects(generateChapter({ ...options, additionalConcept: undefined, state: { ...result.state, chapter: chapter + 10 } }), /already complete/);
-    assert.equal(calls, 4);
+    assert.equal(calls, 3);
     mock.mock.restore();
   }
 });
@@ -81,7 +83,7 @@ test("a ten-part arc is stored once and follows the remaining chapter schedule",
   void omitted;
   for (let chapter = 1; chapter <= 9; chapter++) {
     const distinctPassage = Array.from({ length: 500 }, (_, index) => String.fromCharCode(0xac00 + chapter * 600 + index)).join("");
-    const values: unknown[] = [chapter === 1 ? plan : nextPlan, prose + distinctPassage, review, patch];
+    const values: unknown[] = [chapter === 1 ? plan : nextPlan, prose + distinctPassage, review];
     const mocked = t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body));
       const input = JSON.parse(body.input);
@@ -91,7 +93,8 @@ test("a ten-part arc is stored once and follows the remaining chapter schedule",
         assert.equal(context.schedule.totalChapters, 10);
         assert.equal(context.schedule.remainingAfterThis, 10 - chapter);
         assert.equal(body.text.format.schema.required.includes("seriesArc"), chapter === 1);
-        if (chapter > 1) assert.deepEqual(context.memory.seriesArc, seriesArc);
+        if (chapter > 1) assert.equal(context.seriesArc.endingPromise, seriesArc.endingPromise);
+        if (chapter > 1) assert.deepEqual(context.seriesArc.installments.rows, seriesArc.installments.map(({ chapter, goal, payoff }) => [chapter, goal, payoff]));
       }
       return response(values.shift(), init);
     });
@@ -115,7 +118,7 @@ test("the tenth chapter must resolve the story, permits one repair, and cannot g
   const resolution = { centralConflictResolved: true, protagonistOutcomeShown: true, relationshipOutcomeShown: true, hasSequelHook: false, evidence: fact.evidence, fix: "해결됨" };
   const finalReview = { ...review, resolution };
   const unfinished = { ...finalReview, resolution: { ...resolution, centralConflictResolved: false, hasSequelHook: true, fix: "핵심 갈등을 해결하고 후속편 암시를 없앤다" } };
-  let values: unknown[] = [nextPlan, prose, unfinished, prose, finalReview, patch];
+  let values: unknown[] = [nextPlan, prose, unfinished, prose, finalReview];
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
@@ -128,13 +131,13 @@ test("the tenth chapter must resolve the story, permits one repair, and cannot g
   const before = structuredClone(state);
   const options = { character, state, direction: "다음 장면", key: "test", signal: new AbortController().signal, phase: () => {} };
   const result = await generateChapter(options);
-  assert.equal(calls, 6);
+  assert.equal(calls, 5);
   assert.equal(result.state.chapter, 10);
   assert.equal(result.state.nextChapterGoal, "");
   assert.equal(storyComplete(result.state), true);
   assert.deepEqual(state, before);
   await assert.rejects(generateChapter({ ...options, state: result.state }), /already complete/);
-  assert.equal(calls, 6);
+  assert.equal(calls, 5);
   values = [nextPlan, prose, unfinished, prose, unfinished]; calls = 0;
   await assert.rejects(generateChapter(options), /review failed/);
   assert.equal(calls, 5);
@@ -152,11 +155,16 @@ test("the API rejects requests beyond chapter ten before any model call", async 
 
 test("a passing review with source IDs commits the first chapter without a quotation rewrite", async t => {
   let calls = 0;
-  const values: unknown[] = [plan, prose, review, patch];
+  const values: unknown[] = [plan, prose, review];
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     const input = JSON.parse(body.input);
     if (["chapter_review", "memory_patch"].includes(body.text?.format?.name)) {
+      assert.equal(input.context.sharedTimeline.revision, 3);
+      assert.equal(input.context.memory.currentSituation, undefined);
+      assert.equal(input.draft, undefined);
+      assert.equal(input.context.memory.seriesArc, undefined);
+      assert.ok(body.text.format.schema.required.includes("memoryPatch"));
       assert.ok(input.sourceUnits.length > 0);
       assert.deepEqual(body.text.format.schema.properties.newEvents.items.properties.evidence.enum, input.sourceUnits.map((unit: { id: string }) => unit.id));
       assert.doesNotMatch(body.instructions, /You are writing immersive fictional character roleplay/);
@@ -164,15 +172,22 @@ test("a passing review with source IDs commits the first chapter without a quota
     calls++;
     return response(values.shift(), init);
   });
-  const result = await generateChapter({ character, direction: "첫 장면", key: "test", signal: new AbortController().signal, phase: () => {} });
-  assert.equal(result.state.chapter, 1); assert.equal(calls, 4);
+  const timeline = { ...emptyTimeline(), revision: 3, scene: [{ subjectId: "character", text: "서점에서 재회" }], participants: [{ id: "user", name: "당신" }, { id: "character", name: "서하" }] };
+  const result = await generateChapter({ character, timeline, direction: "첫 장면", key: "test", signal: new AbortController().signal, phase: () => {} });
+  assert.equal(result.state.chapter, 1); assert.equal(calls, 3);
 });
 
 test("novel pipeline plans, writes, reviews and merges only grounded events; writer gets compact memory", async t => {
+  const previousModel = process.env.OPENAI_MODEL;
+  process.env.OPENAI_MODEL = "gpt-5.4-mini";
+  t.after(() => {
+    if (previousModel === undefined) delete process.env.OPENAI_MODEL;
+    else process.env.OPENAI_MODEL = previousModel;
+  });
   const old = { ...emptyStoryState(), chapter: 3, summary: "친구와 약속했다", worldFacts: ["서점은 도시 안에 있다"], resolvedEvents: ["친구와 화해함"], previousProse: "이전 전체 원고", previousEnding: "문 앞에 섰다", nextChapterGoal: "문을 연다" };
   const before = structuredClone(old);
   const bodies: Record<string, unknown>[] = [];
-  const values = [plan, prose, review, patch];
+  const values = [plan, prose, review];
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)); bodies.push(body);
     assert.equal(body.model, "gpt-5.4-mini"); assert.equal(body.store, false);
@@ -192,13 +207,13 @@ test("novel pipeline plans, writes, reviews and merges only grounded events; wri
 
 test("grounded repetition permits one rewrite; repeated failure never advances memory", async t => {
   const bad = { ...review, pass: false, blockingIssues: [{ type: "no_progress", evidence: fact.evidence, fix: "정리를 실제로 진행하라" }] };
-  let values: unknown[] = [plan, prose, bad, prose, review, patch];
+  let values: unknown[] = [plan, prose, bad, prose, review];
   let calls = 0;
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => { calls++; return response(values.shift(), init); });
   const state = emptyStoryState();
   const options = { character, state, direction: "이어줘", key: "test", signal: new AbortController().signal, phase: () => {} };
   assert.equal((await generateChapter(options)).state.chapter, 1);
-  assert.equal(calls, 6);
+  assert.equal(calls, 5);
   values = [plan, prose, bad, prose, bad]; calls = 0;
   await assert.rejects(generateChapter(options), /review failed/);
   assert.equal(calls, 5); assert.equal(state.chapter, 0);
@@ -209,11 +224,11 @@ test("partial beat completion and advisory missing beats do not reject meaningfu
     { ...review, completedBeats: [1, 2] },
     { ...review, pass: false, completedBeats: [1, 2], blockingIssues: [{ type: "missing_beat", evidence: fact.evidence, fix: "나머지 장면은 다음 화에 이어간다" }] },
   ]) {
-    const values: unknown[] = [{ ...plan, beats: [...plan.beats, plan.beats[0]] }, prose, critique, patch];
+    const values: unknown[] = [{ ...plan, beats: [...plan.beats, plan.beats[0]] }, prose, critique];
     let calls = 0;
     const mocked = t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => { calls++; return response(values.shift(), init); });
     const result = await generateChapter({ character, direction: "다음 장면", key: "test", signal: new AbortController().signal, phase: () => {} });
-    assert.equal(result.state.chapter, 1); assert.equal(calls, 4);
+    assert.equal(result.state.chapter, 1); assert.equal(calls, 3);
     mocked.mock.restore();
   }
 });
@@ -224,7 +239,7 @@ test("ungrounded criticism cannot trigger a rewrite and unsupported memory canno
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => { calls++; return response(values.shift(), init); });
   const options = { character, direction: "이어줘", key: "test", signal: new AbortController().signal, phase: () => {} };
   await assert.rejects(generateChapter(options)); assert.equal(calls, 3);
-  values = [plan, prose, review, { ...patch, worldFacts: [{ text: "왕이 죽었다", evidence: "왕이 쓰러졌다" }] }];
+  values = [plan, prose, { ...review, memoryPatch: { ...patch, worldFacts: [{ text: "왕이 죽었다", evidence: "왕이 쓰러졌다" }] } }];
   await assert.rejects(generateChapter(options));
   assert.throws(() => mergeMemory(emptyStoryState(), { ...patch, characters: [{ name: "친구", goal: { text: "복수", evidence: "나는 복수한다" }, knowledge: [], relationships: [] }] }, prose, "서점"), /Unsupported/);
 });
@@ -263,7 +278,7 @@ test("memory stays bounded, detects copied prose and rejects excessive client st
 test("story API publishes no draft or memory when extraction fails", async t => {
   const old = process.env.OPENAI_API_KEY; process.env.OPENAI_API_KEY = "test-key";
   t.after(() => { if (old === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = old; });
-  const values = [plan, prose, review, { wrong: true }];
+  const values = [plan, prose, { ...review, memoryPatch: { wrong: true } }];
   t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => response(values.shift(), init));
   const result = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character, messages: [{ role: "user", content: "첫 장면" }] }) }));
   const wire = await result.text();

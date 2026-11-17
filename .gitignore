@@ -1,4 +1,12 @@
 node_modules/
+apps/mobile/dist/
+*.jks
+*.keystore
+apps/mobile/android/.gradle/
+apps/mobile/android/local.properties
+apps/mobile/android/app/build/
+apps/mobile/android/build/
+apps/mobile/android/capacitor-cordova-android-plugins/
 .next/
 .next-test/
 out/

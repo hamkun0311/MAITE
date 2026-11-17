@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { visualInstructions, type visualRequestSchema } from "./visual.ts";
+import { visualInstructions, compositionSchema, COMPOSITION_DIRECTION, type visualRequestSchema } from "./visual.ts";
 export const characterStyleProfile = z.enum(["female", "male", "neutral", "mixed"]);
 export const characterMessages = z
   .array(
@@ -25,10 +25,12 @@ export const characterBrief = z
   })
   .strict();
 export const illustrationBrief = characterBrief.extend({
+  ...compositionSchema.shape,
   sceneLocation: z.string().trim().min(1).max(300).regex(/^[\x20-\x7E]+$/),
   locationSource: z.enum(["narrative", "reference"]),
 }).strict();
 export const outfitBrief = characterBrief.extend({
+  ...compositionSchema.shape,
   sceneLocation: z.string().trim().min(1).max(300).regex(/^[\x20-\x7E]+$/),
   locationSource: z.enum(["conversation", "reference"]),
   outfit: z.string().trim().min(1).max(400).regex(/^[\x20-\x7E]+$/),
@@ -62,7 +64,9 @@ export function buildCharacterPrompt(brief: z.infer<typeof characterBrief> | z.i
   const setting = location ? ` REQUIRED CURRENT SCENE LOCATION: ${JSON.stringify(location.sceneLocation)}. Location basis: ${location.locationSource}. Depict the character physically in this setting with recognizable environmental cues, not the reference room with just one new prop. Rebuild the environment for this specific location. Remove incompatible workplace scenery, uniforms and props carried over from the original portrait. A phone, cup or document alone does not establish a location. Use framing wide enough to make the current location recognizable. This location takes precedence over any conflicting background in the reference image, original character concept or subject description. Keep the action, pose, clothing and props consistent with this current location. Do not depict an earlier location, recollection or future destination instead.` : "";
   const outfit = scene?.kind === "outfit" ? outfitBrief.parse(brief) : undefined;
   const wardrobe = outfit ? ` REQUIRED CURRENT OUTFIT: ${JSON.stringify(outfit.outfit)}. Outfit basis: ${outfit.outfitSource}. REQUIRED CURRENT SCENE LOCATION: ${JSON.stringify(outfit.sceneLocation)}. Location basis: ${outfit.locationSource}. These concrete requirements override the reference image's outfit, background, props, pose, original concept and any conflicting subject description. REDRAW the character wearing this outfit AT this location. Replace original clothes incompatible with the required outfit, including work aprons when changing into a dress; do not layer the new dress over the old uniform. When the location changes, remove incompatible old workplace props such as a coffee drink and cafe counter. A reference location source retains only the setting, never overrides the required outfit. Show the outfit's silhouette and recognizable shop/fitting-room surroundings when a clothing store is established. Do not return the original portrait with a new title or only minor color changes. Use a new natural pose and framing appropriate to the current scene, while preserving face, age, hair, eyes and body type.` : "";
-  return `Create the character described below in a vertical 9:16 portrait composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Transfer rendering style only. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. Subject: ${brief.prompt}${visualInstructions(scene)}${setting}${wardrobe}`
+  const composition = scene ? compositionSchema.strip().parse(brief) : undefined;
+  const staging = composition ? ` REQUIRED NEW BODY STAGING: ${JSON.stringify(composition.pose)}. REQUIRED CAMERA: ${JSON.stringify(composition.framing)}. ${COMPOSITION_DIRECTION} Identity means the same facial features, not the exact head angle, gaze, smile or facial pixels. Expression must fit the current scene, not a fixed open-mouth smile. The first image is identity only: compare its visible pose with the required staging and redraw the body, hands, legs and camera rather than tracing that silhouette. Previous compositions to avoid (not scene content): ${JSON.stringify(scene?.previousCompositions ?? [])}.` : "";
+  return `Create the character described below in a vertical 9:16 portrait composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Transfer rendering style only. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. Subject: ${brief.prompt}${visualInstructions(scene)}${setting}${wardrobe}${staging}`
     .replace(/\s+/g, " ")
     .trim();
 }

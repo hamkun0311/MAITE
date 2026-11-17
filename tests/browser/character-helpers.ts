@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 import sharp from "sharp";
 import { emptyStoryState, type StoryState } from "../../lib/novel/state";
 
@@ -16,6 +16,7 @@ export async function fillCharacterProfile(page: Page) {
   await page.getByLabel("캐릭터 이름").fill("서하");
   await page.getByLabel("나이", { exact: true }).fill("25");
   await page.getByRole("combobox", { name: "성별", exact: true }).selectOption("여성");
+  await page.getByLabel("외모", { exact: true }).fill("긴 은발, 보라색 눈동자, 갸름한 얼굴");
   await page.getByLabel("성격", { exact: true }).fill("도도하지만 다정한 성격");
   await page.getByLabel("컨셉", { exact: true }).fill("재회한 라이벌과 도시의 비밀을 추적한다");
 }
@@ -33,7 +34,14 @@ export async function generateCharacter(page: Page) {
 
 export async function enterCharacterMode(page: Page, mode: "대화하기" | "이야기 만들기" = "대화하기") {
   const back = page.getByRole("button", { name: "캐릭터 이미지로 돌아가기", exact: true });
-  if (await back.isVisible()) await back.click();
+  // The URL may already be /ideal while the old screen is being unmounted.
+  // Avoid a second back click on that stale screen during client-side routing.
+  if (!/\/ideal$/.test(page.url()) && await back.isVisible()) {
+    await back.click({ noWaitAfter: true });
+    await expect(page).toHaveURL(/\/ideal$/);
+  }
   await page.getByRole("group", { name: "캐릭터와 함께하기" }).getByRole("button", { name: mode, exact: true }).click();
-  await page.waitForURL(mode === "대화하기" ? "**/ideal/chat" : "**/ideal/story");
+  // Client-side routing may have an intentionally open SSE response. Assert
+  // the route itself rather than waiting for an unrelated document load event.
+  await expect(page).toHaveURL(mode === "대화하기" ? /\/ideal\/chat$/ : /\/ideal\/story$/);
 }

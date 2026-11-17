@@ -1,0 +1,5 @@
+package com.oestewdio.maite;
+
+import com.getcapacitor.BridgeActivity;
+
+public class MainActivity extends BridgeActivity {}

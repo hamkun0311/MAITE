@@ -37,7 +37,7 @@ test("outfit requests retain a clothing-store move and dress from memory after t
   for (let index = 0; index < 11; index++) await send(`잡담 ${index}`);
   await send("이 원피스로 보여줘.");
   expect(bodies.at(-1)!.messages.some(message => message.content.includes("옷가게"))).toBe(false);
-  await chat.getByRole("button", { name: "의상 변경하기", exact: true }).click();
+  await chat.getByRole("button", { name: "이미지 생성", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true }).getByRole("img")).toBeVisible();
   expect(imageContext).toContain("옷가게 피팅룸");
   expect(imageContext).toContain("카페 앞치마를 벗고 파란 원피스");

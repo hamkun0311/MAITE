@@ -1,0 +1,16 @@
+{
+  "name": "maite-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3",
+    "@capacitor-community/admob": "^8.4.1",
+    "@capgo/native-purchases": "^8.9.16"
+  }
+}

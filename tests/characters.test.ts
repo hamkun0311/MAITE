@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 import { POST } from "../app/api/characters/route.ts";
-import { visualInstructions, visualRequestSchema } from "../lib/characters/visual.ts";
+import { visualInstructions, visualRequestSchema, compositionSchema } from "../lib/characters/visual.ts";
 import {
   MAX_CHARACTER_REQUEST,
   buildCharacterPrompt,
@@ -10,6 +10,26 @@ import {
   illustrationBrief,
   outfitBrief,
 } from "../lib/characters/schema.ts";
+
+const composition = { pose: "Standing with torso turned left, gaze toward the doorway, both hands holding a folded coat, feet apart.", framing: "Eye-level side view, full figure with environment." };
+
+test("scene composition is explicit and recent pose metadata is bounded", () => {
+  const scene = { kind: "illustration" as const, context: "마차 안에 앉아 대화", previousCompositions: [composition] };
+  assert.equal(visualRequestSchema.safeParse({ ...scene, previousCompositions: Array(4).fill(composition) }).success, false);
+  assert.equal(compositionSchema.safeParse({ ...composition, pose: "x".repeat(241) }).success, false);
+  const brief = { title: "마차", summary: "마차 안의 대화", prompt: "Seated in a carriage.", styleProfile: "female" as const,
+    sceneLocation: "Inside a carriage.", locationSource: "narrative" as const,
+    pose: "Seated facing right, leaning toward a companion, left hand on seat, right palm open, feet braced.",
+    framing: "Wide interior shot from the opposite seat." };
+  const prompt = buildCharacterPrompt(brief, scene);
+  assert.ok(prompt.includes(`REQUIRED NEW BODY STAGING: ${JSON.stringify(brief.pose)}`));
+  assert.ok(prompt.includes(`REQUIRED CAMERA: ${JSON.stringify(brief.framing)}`));
+  assert.match(prompt, /at least TWO unconstrained axes/);
+  assert.match(prompt, /when sitting\/riding is required/);
+  assert.ok(prompt.includes(composition.pose));
+  assert.match(prompt, /AVOIDANCE metadata only/);
+  assert.equal(illustrationBrief.safeParse({ ...brief, pose: undefined }).success, false);
+});
 
 test("GPT Image route sends separate style and revision references and returns a real 720x1280 JPEG", async (t) => {
   const names = [
@@ -105,6 +125,7 @@ test("GPT Image route sends separate style and revision references and returns a
                     summary: "설명에 맞춰 새로 그리는 구성입니다.",
                     prompt: profile === "female" ? "Adult woman with long hair in an elegant dress." : "A man wearing a blue coat, cheerful expression.",
                     styleProfile: profile,
+                    ...(sceneKind ? composition : {}),
                     ...(sceneKind === "illustration" ? { sceneLocation: "Inside a bookshop, bookshelves beside a reading table.", locationSource: "narrative" } : {}),
                     ...(sceneKind === "outfit" ? { sceneLocation: "Inside a clothing-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue coat with black trousers.", outfitSource: "conversation" } : {}),
                   }),
@@ -159,8 +180,8 @@ test("GPT Image route sends separate style and revision references and returns a
       }
       assert.ok(!/fuller-busted|sexy mature charisma|glamorous/.test(prompt));
       const images = body.getAll("image[]") as File[];
-      assert.equal(images.length, (profile === "female" ? 1 : 0) + (includePrior ? 1 : 0));
-      if (profile === "female") {
+      assert.equal(images.length, (profile === "female" && !sceneKind ? 1 : 0) + (includePrior ? 1 : 0));
+      if (profile === "female" && !sceneKind) {
         assert.equal(images.at(-1)!.name, "style-reference.png");
         assert.equal(images.at(-1)!.type, "image/png");
         assert.ok(images.at(-1)!.size > 1000);
@@ -207,7 +228,7 @@ test("GPT Image route sends separate style and revision references and returns a
   assert.ok(first.headers.get("X-Character-Prompt")!.includes("STYLE ONLY"));
   const revision = form();
   sceneKind = "outfit";
-  revision.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 파란 코트를 입었다." }));
+  revision.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 파란 코트를 입었다.", previousCompositions: [composition] }));
   includePrior = true;
   revision.set("previousStyle", "female");
   revision.set(
@@ -215,7 +236,9 @@ test("GPT Image route sends separate style and revision references and returns a
     new Blob([result], { type: "image/jpeg" }),
     "previous.jpg",
   );
-  assert.equal((await POST(req(revision))).status, 200);
+  const revised = await POST(req(revision));
+  assert.equal(revised.status, 200);
+  assert.deepEqual(JSON.parse(decodeURIComponent(revised.headers.get("X-Character-Composition")!)), composition);
   sceneKind = undefined;
   blocks = true;
   const before = calls;
@@ -266,7 +289,7 @@ test("outfit changes prioritize the current store over an older workshop at both
   assert.match(instructions, /not a future destination, recollection/);
   assert.match(instructions, /retain the reference setting rather than inventing a move/);
   for (const styleProfile of ["female", "male", "neutral"] as const) {
-    const prompt = buildCharacterPrompt({ title: "백화점의 새 의상", summary: "의류 매장에서 갈아입었다", prompt: "A woman in a blue dress in a department-store fitting area, mirrors and clothing racks.", styleProfile, sceneLocation: "Inside a department-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue one-piece dress without a work apron.", outfitSource: "conversation" }, scene);
+    const prompt = buildCharacterPrompt({ ...composition, title: "백화점의 새 의상", summary: "의류 매장에서 갈아입었다", prompt: "A woman in a blue dress in a department-store fitting area, mirrors and clothing racks.", styleProfile, sceneLocation: "Inside a department-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue one-piece dress without a work apron.", outfitSource: "conversation" }, scene);
     assert.match(prompt, /department-store fitting area/);
     assert.match(prompt, /reference background is NOT locked/);
     assert.doesNotMatch(prompt, /preserve its identity and unchanged details/i);
@@ -278,7 +301,7 @@ test("outfit briefs require both wardrobe and location and override a stale cafe
   const stale = { title: "카페 근무복", summary: "예전 설명", prompt: "Cafe worker wearing an apron and holding a coffee drink behind a cafe counter.", styleProfile: "female" as const };
   assert.equal(outfitBrief.safeParse(stale).success, false);
   assert.throws(() => buildCharacterPrompt(stale, scene));
-  const brief = outfitBrief.parse({ ...stale, sceneLocation: "Inside a clothing-store fitting room with mirrors and clothing racks.", locationSource: "conversation", outfit: "A blue one-piece dress, no work apron.", outfitSource: "conversation" });
+  const brief = outfitBrief.parse({ ...stale, ...composition, sceneLocation: "Inside a clothing-store fitting room with mirrors and clothing racks.", locationSource: "conversation", outfit: "A blue one-piece dress, no work apron.", outfitSource: "conversation" });
   const prompt = buildCharacterPrompt(brief, scene);
   assert.match(prompt, /REQUIRED CURRENT OUTFIT: "A blue one-piece dress/);
   assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a clothing-store/);
@@ -291,7 +314,7 @@ test("illustration location is required separately and carried to the final imag
   const brief = { title: "카페의 대화", summary: "카페 창가에서 나눈 대화", prompt: "A woman recalling an incident in her workshop.", styleProfile: "female" as const };
   assert.equal(illustrationBrief.safeParse(brief).success, false);
   assert.throws(() => buildCharacterPrompt(brief, scene));
-  const prompt = buildCharacterPrompt({ ...brief, sceneLocation: "Inside a cafe, seated at a window table with coffee cups and a pastry display.", locationSource: "narrative" }, scene);
+  const prompt = buildCharacterPrompt({ ...brief, ...composition, sceneLocation: "Inside a cafe, seated at a window table with coffee cups and a pastry display.", locationSource: "narrative" }, scene);
   assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a cafe/);
   assert.match(prompt, /takes precedence over any conflicting background/);
   assert.match(prompt, /not an earlier scene in the chapter/);

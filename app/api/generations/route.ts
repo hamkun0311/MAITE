@@ -1,3 +1,4 @@
+import { textModel } from "../../../lib/ai-model.ts";
 import { z } from "zod";
 import {
   conversationSchema,
@@ -25,7 +26,7 @@ async function callAI(
     },
     signal,
     body: JSON.stringify({
-      model: process.env.OPENAI_MODEL || "gpt-4.1",
+      model: textModel(),
       store: false,
       instructions,
       input,
@@ -62,6 +63,7 @@ async function callAI(
 }
 
 export async function POST(request: Request) {
+  if (process.env.ACCOUNT_FEATURES_ENABLED === "true") return Response.json({ error: "계정 모드에서는 CAD 기술 검증 API를 사용할 수 없습니다." }, { status: 403 });
   const origin = request.headers.get("origin");
   if (origin && origin !== new URL(request.url).origin)
     return Response.json(
