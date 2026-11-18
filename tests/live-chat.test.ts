@@ -15,15 +15,127 @@ import { createStudioSessions } from "../lib/chat/session.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { unsupportedFollowUp } from "../lib/chat/capabilities.ts";
 import { actionTimingInstructions, proposalOnlySceneChange } from "../lib/chat/continuity.ts";
+import {personalityState,mergePersonality} from "../lib/chat/personality.ts";
+import {timelineForChat} from "../lib/chat/timeline.ts";
+import {restoreSessions,snapshotSchema} from "../lib/platform/snapshot.ts";
+import {completeCharacterReply,completedDialogueText} from "../lib/chat/completion.ts";
 
 const encoder = new TextEncoder();
 const wire = (event: object) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
 const emptyPatch = (): ChatMemoryPatch => ({ participants: [], updates: [], mood: null });
 
-test("older-user register stays polite unless a deliberate concept or conversation preference exists",()=>{
+test("valid spoken replies survive invalid auxiliary state and preserve prior facts without a fabricated update",()=>{
+ const character=characterContextSchema.parse({name:"지수",age:25,personality:"다정함",concept:"친구",mode:"chat",imageDescription:"카페"});
+ const memory=mergeChatMemory(emptyChatMemory(character.name),{...emptyPatch(),updates:[{subjectId:"user",objectId:null,action:"location",value:"카페",certainty:"asserted",evidence:"user_1_1",replaces:[]}]},"나는 카페에 도착했어.","나도 여기야.");
+ const before=structuredClone(memory),timeline=advanceTimeline(emptyTimeline(),character.name,memory);
+ const base={speechStyle:"casual",utterances:["커피 다 마셨으면 산책할까?"],clothingMentioned:false,locationChanged:false,continuity:{intent:"proposal",actorId:"character",targetId:"user",premise:"consistent",factIds:["fact_999_0"]},memory:emptyPatch()};
+ const dangling=completeCharacterReply(base,memory,character,"커피 맛있네.",timeline);
+ assert.equal(dangling.degraded,"unsupported_continuity");assert.equal(dangling.text,base.utterances[0]);
+ assert.deepEqual(dangling.memory?.facts,memory.facts);assert.equal(dangling.memory?.turn,memory.turn+1);assert.equal(dangling.timeline,undefined);assert.deepEqual(memory,before);
+ const malformed=completeCharacterReply({...base,memory:{...emptyPatch(),personality:{wrong:true}}},memory,character,"커피 맛있네.",timeline);
+ assert.equal(malformed.degraded,"invalid_metadata");assert.deepEqual(malformed.memory?.facts,memory.facts);
+ const missingHints=completeCharacterReply({utterances:base.utterances,continuity:{...base.continuity,factIds:[]},memory:emptyPatch()},memory,character,"응",timeline);
+ assert.equal(missingHints.text,base.utterances[0]);assert.equal(missingHints.reply.speechStyle,undefined);assert.equal(missingHints.reply.clothingMentioned,false);assert.equal(missingHints.degraded,"invalid_reply_hints");
+ assert.throws(()=>completeCharacterReply({...base,utterances:[]},memory,character,"응",timeline));
+});
+
+
+
+test("personality is derived from explicit settings, persists causally, and resets derived traits after an edit",()=>{
+ const character=characterContextSchema.parse({name:"지호",age:25,personality:"애정 확인 욕구가 크지만 장난스럽다",concept:"소꿉친구",mode:"chat",imageDescription:"검은 머리"});
+ const user="오늘도 네 생각 많이 했어",reply="그 말 들으니까 안심돼. 나도 보고 싶었어.";
+ const patch={...emptyPatch(),personality:{profile:{traits:["장난스럽다"],motivations:["관심을 확인하고 싶다"],vulnerabilities:["잊히는 것이 걱정됨"],speechHabits:["농담 뒤에 진심을 말함"]},profileEvidence:"애정 확인 욕구",reaction:{feelings:{joy:0.9,anxiety:0,jealousy:0,affection:0.9},closeness:99,trust:99,currentGoal:"관심에 안도하며 함께 이야기하기",evidence:"그 말 들으니까 안심돼"}}};
+ const old=emptyChatMemory(character.name),next=mergeChatMemory(old,patch,user,reply,character);
+ assert.equal(old.personality,undefined);assert.ok(next.personality?.profile);
+ assert.equal(next.personality!.feelings.joy,0.5);assert.equal(next.personality!.trust,60);
+ const stable=mergeChatMemory(next,emptyPatch(),"응", "응, 듣고 있어.",character);
+ assert.deepEqual(stable.personality,next.personality);
+ const invalid=mergePersonality(character,next.personality,{...patch.personality,reaction:{...patch.personality.reaction,evidence:"존재하지 않는 감정 근거"}},user,reply);
+ assert.deepEqual(invalid,next.personality);
+ const edited={...character,personality:"활발하고 독립적이다"};
+ assert.equal(personalityState(edited,next.personality).profile,null);
+ assert.deepEqual(personalityState(edited,next.personality).feelings,next.personality!.feelings);
+ const prompt=conversationInstructions(character,stable,"응");
+ assert.match(prompt,/PERSONALITY IN ACTION/);assert.match(prompt,/관심을 확인하고 싶다/);assert.match(prompt,/안심돼/);
+ const other=conversationInstructions(edited,stable,"응");assert.doesNotMatch(other,/관심을 확인하고 싶다/);
+ const sessions=createStudioSessions();sessions.chat.chatMemory=stable;
+ const saved=snapshotSchema.parse({version:1,id:"11111111-1111-4111-8111-111111111111",art:{title:"지호",summary:"친구",prompt:"친구",style:"neutral",description:"친구",profile:{name:"지호",age:25,personality:character.personality,concept:character.concept},width:720,height:1280},chat:sessionSnapshot(sessions.chat),story:sessionSnapshot(sessions.story),timeline:sessions.chat.timeline.state});
+ const restored=restoreSessions(JSON.parse(JSON.stringify(saved)));
+ assert.deepEqual(restored.chat.chatMemory?.personality,stable.personality);
+ assert.equal(restored.chat.timeline,restored.story.timeline);
+});
+
+test("shared canon keeps distinct relationships and completed events, excludes hypotheses and narrator secrets",()=>{
+ let memory=emptyChatMemory("서하");
+ memory=mergeChatMemory(memory,{...emptyPatch(),updates:[{subjectId:"user",objectId:"character",action:"event_rescue",value:"completed: 서하를 구함",certainty:"asserted",evidence:"user_1_1",replaces:[]}]},"나는 서하를 구했어.","구해줘서 고마워.");
+ let timeline=advanceTimeline(emptyTimeline(),"서하",memory,undefined,undefined,[],"햄군");
+ assert.equal(timeline.canon?.[0].status,"completed");assert.equal(timeline.canon?.[0].sourceId,"user_1");
+ const hypothetical=mergeChatMemory(memory,{...emptyPatch(),updates:[{subjectId:"user",objectId:null,action:"event_king",value:"completed: 왕이 됨",certainty:"asserted",evidence:"user_2_1",replaces:[]}]},"만약 내가 왕이라면 어떨까?","재밌는 상상이네.");
+ timeline=advanceTimeline(timeline,"서하",hypothetical);
+ assert.equal(timeline.canon?.length,1);
+ const story={...emptyStoryState(),chapter:1,currentSituation:"서점에서 대화 중",previousProse:"서하와 햄군은 화해했다. 민수는 남몰래 서하를 배신했다. 서하는 유나의 동료였다.",characters:[{name:"서하",goal:"서점 복구",knowledge:[],relationships:["비밀 관계"]},{name:"민수",goal:"배신",knowledge:["배신"],relationships:["비밀 관계"]}]};
+ const changes=[{subjectName:"서하",targetName:"햄군",key:"relationship_user",kind:"relationship" as const,status:"completed" as const,visibility:"character" as const,text:"햄군과 화해함",evidence:"서하와 햄군은 화해했다."},{subjectName:"민수",targetName:"서하",key:"event_betrayal",kind:"event" as const,status:"completed" as const,visibility:"reader" as const,text:"민수가 몰래 배신함",evidence:"민수는 남몰래 서하를 배신했다."},{subjectName:"서하",targetName:"유나",key:"relationship_yuna",kind:"relationship" as const,status:"ongoing" as const,visibility:"character" as const,text:"유나의 동료임",evidence:"서하는 유나의 동료였다."}];
+ timeline=advanceTimeline(timeline,"서하",undefined,story,undefined,[],"햄군",changes);
+ assert.equal(timeline.relationships.length,2);
+ assert.equal(timeline.canon?.length,4);assert.ok(timeline.canon?.some(e=>e.visibility==="reader"));
+ const visible=timelineForChat(timeline);
+ assert.doesNotMatch(JSON.stringify(visible),/배신|민수|비밀 관계/);
+ assert.match(JSON.stringify(visible),/화해함/);assert.match(JSON.stringify(visible),/동료임/);
+ const repeated=advanceTimeline(timeline,"서하",undefined,story,story,[],"햄군",changes);
+ assert.equal(repeated.canon?.length,4);
+ const unsupported=advanceTimeline(timeline,"서하",undefined,story,story,[],"햄군",[{...changes[0],text:"햄군과 결혼함",evidence:"원고에 없는 결혼"}]);
+ assert.doesNotMatch(JSON.stringify(unsupported),/결혼/);
+});
+
+test("chat's single model call hides novel secrets and commits personality and canon only on completion",async t=>{
+ const before=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY="test";
+ t.after(()=>{if(before===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=before;});
+ const character={name:"지호",age:25,personality:"장난스럽지만 애정을 확인하고 싶어한다",concept:"소꿉친구",mode:"chat",imageDescription:"검은 머리"};
+ const timeline=advanceTimeline(emptyTimeline(),character.name,emptyChatMemory(character.name));
+ timeline.canon=[{id:"novel:1:character:relationship_user",source:"novel",sourceId:"chapter_1",subjectId:"character",objectId:"user",key:"relationship_user",kind:"relationship",status:"completed",visibility:"character",text:"당신과 화해함",evidence:"둘은 화해했다"},{id:"novel:1:npc_1:event_secret",source:"novel",sourceId:"chapter_1",subjectId:"character",objectId:null,key:"event_secret",kind:"event",status:"completed",visibility:"reader",text:"비밀 금고 암호는 7942",evidence:"7942"}];
+ let calls=0,success=true;
+ const result={speechStyle:"casual",continuity:{intent:"assertion",actorId:"character",targetId:"user",premise:"consistent",factIds:[]},utterances:["화해하길 잘했어. 나도 보고 싶었어."],clothingMentioned:false,locationChanged:false,memory:{...emptyPatch(),personality:{profile:{traits:["장난스럽다"],motivations:["애정 확인"],vulnerabilities:[],speechHabits:[]},profileEvidence:"장난스럽지만",reaction:null},updates:[{subjectId:"character",objectId:"user",action:"relationship_user",value:"completed: 당신과 화해함",certainty:"simulated",evidence:"화해하길 잘했어",replaces:[]}]}};
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init?.body));
+  assert.doesNotMatch(body.instructions,/7942|비밀 금고/);assert.match(body.instructions,/당신과 화해함/);
+  assert.match(body.instructions,/PERSONALITY IN ACTION/);assert.match(body.instructions,/장난스럽지만/);
+  assert.ok(body.text.format.schema.properties.memory.required.includes("personality"));
+  return new Response(`data: ${JSON.stringify({type:"response.output_text.delta",delta:JSON.stringify(result)})}\n\ndata: ${JSON.stringify({type:success?"response.completed":"response.incomplete"})}\n\n`);
+ });
+ const request=()=>new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,timeline,messages:[{role:"user",content:"나도 보고 싶었어"}]})});
+ const accepted=await(await POST(request())).text();
+ assert.match(accepted,/"type":"memory"/);assert.match(accepted,/"type":"timeline"/);assert.match(accepted,/"profileKey"/);assert.equal(calls,1);
+ const visible=accepted.split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6))).filter(e=>e.type==="delta").map(e=>e.text).join("");
+ assert.equal(visible,result.utterances[0]);assert.doesNotMatch(visible,/profile|personality|7942/);
+ success=false;const failed=await(await POST(request())).text();
+ assert.doesNotMatch(failed,/"type":"memory"|"type":"timeline"|"type":"done"/);assert.equal(calls,2);
+ assert.equal(timeline.revision,1);
+});
+
+test("unseen novel participants reserve IDs without revealing names or taking a new chat participant's facts",()=>{
+ const character=characterContextSchema.parse({name:"서하",age:25,personality:"쾌활함",concept:"친구",mode:"chat",imageDescription:"서점"});
+ const timeline=advanceTimeline(emptyTimeline(),character.name,emptyChatMemory(character.name));
+ timeline.participants.push({id:"npc_1",name:"비밀남"});
+ timeline.canon=[{id:"novel:1:npc_1:event_secret",source:"novel",sourceId:"chapter_1",subjectId:"npc_1",objectId:null,key:"event_secret",kind:"event",status:"completed",visibility:"reader",text:"비밀남이 편지를 숨김",evidence:"그는 편지를 숨겼다"}];
+ const visible=timelineForChat(timeline),memory=timelineChatMemory(emptyChatMemory(character.name),visible);
+ const prompt=conversationInstructions(character,memory,"민수가 도착했어.",timeline);
+ assert.match(prompt,/reservedParticipantIds/);assert.doesNotMatch(prompt,/비밀남|편지를 숨김/);
+ const patch={...emptyPatch(),participants:[{id:"npc_1",name:"민수",evidence:"user_1_1"}],updates:[{subjectId:"npc_1",objectId:null,action:"arrival_status",value:"completed: 도착",certainty:"asserted" as const,evidence:"user_1_1",replaces:[]}]};
+ const blocked=mergeChatMemory(memory,patch,"민수가 도착했어.","잘됐네.",character,timeline);
+ assert.equal(blocked.facts.length,0);assert.equal(blocked.participants.length,2);
+ const accepted=mergeChatMemory(memory,{...patch,participants:[{...patch.participants[0],id:"npc_2"}],updates:[{...patch.updates[0],subjectId:"npc_2"}]},"민수가 도착했어.","잘됐네.",character,timeline);
+ const updated=advanceTimeline(timeline,character.name,accepted);
+ assert.equal(updated.participants.find(p=>p.id==="npc_1")?.name,"비밀남");assert.equal(updated.participants.find(p=>p.id==="npc_2")?.name,"민수");
+ const named=timelineForChat(timeline,"비밀남은 어디 있어?");
+ assert.ok(named.participants.some(p=>p.id==="npc_1"));assert.doesNotMatch(JSON.stringify(named),/편지를 숨/);
+});
+
+test("personality initializes speech in the reply call without an age default or resetting saved speech",()=>{
  const character=characterContextSchema.parse({name:"현아",age:21,userAge:26,personality:"다정함",concept:"카페",mode:"chat",imageDescription:"카페"});
  const messages=[{role:"user" as const,content:"네가 탄 커피 맛있다"}];
- assert.equal(replySpeechPolicy(character,messages,"casual").style,"polite");
+ assert.equal(replySpeechPolicy(character,messages).style,undefined);
+ assert.equal("userAge" in character,false);
+ assert.equal(replySpeechPolicy(character,messages,"casual").style,"casual");
  assert.equal(replySpeechPolicy(character,[{role:"user",content:"보고 싶었어 ㅋㅋ"}],"polite").style,"polite");
  assert.deepEqual(replySpeechPolicy(character,[{role:"user",content:"말 놓자"}],"polite"),{style:"casual",remember:true});
  assert.equal(replySpeechPolicy(character,messages,"polite","casual").style,"casual");
@@ -524,10 +636,10 @@ test("chat API forwards validated character data as role instructions, not conve
     assert.deepEqual(body.input, [{ role: "user", content: "첫 장면" }]);
     assert.equal(body.text.format.name, "character_dialogue");
     assert.match(body.instructions, /"gender":"여성"/);
-    assert.match(body.instructions, /"userAge":32/);
-    assert.match(body.instructions, /account user is older than the character/);
-    assert.equal(body.text.format.schema.properties.speechStyle.const,"polite");
-    assert.match(body.instructions,/Never slip into 반말/);
+    assert.doesNotMatch(body.instructions, /"userAge":32|account user is older than the character/);
+    assert.equal(body.text.format.schema.properties.speechStyle.const,undefined);
+    assert.deepEqual(body.text.format.schema.properties.speechStyle.enum,["polite","casual"]);
+    assert.match(body.instructions,/personality, concept and relationship/);
     return new Response(new ReadableStream({ start(c) {
       c.enqueue(wire({ type: "response.output_text.delta", delta: JSON.stringify({ speechStyle: "polite", continuity: verdict, utterances: ["반가워요 😊 ^_^~"], clothingMentioned: false, locationChanged: false, memory: emptyPatch() }) }));
       c.enqueue(wire({ type: "response.completed" })); c.close();
@@ -680,21 +792,18 @@ test("chat route streams before completion, bounds input, hides errors and cance
 });
 
 
-test("age-based register is a fallback below concept and contextual agreements", () => {
-  assert.match(speechPreferenceInstructions({ age: 23, userAge: 32 }), /account user is older.*default to polite/);
-  for (const userAge of [undefined, 23, 18]) {
-    assert.doesNotMatch(speechPreferenceInstructions({ age: 23, userAge }), /account user is older/);
-  }
-  const instructions = speechPreferenceInstructions({ age: 23, userAge: 32 });
-  assert.match(instructions, /latest contextual request\/agreement.*explicit concept.*established current register.*age default/);
-  assert.match(instructions, /Never reset agreed casual speech/);
-  assert.match(instructions, /Conceptual roles\/ages may override/);
+test("the model chooses an initial register from personality and retains contextual agreements", () => {
+  const instructions = speechPreferenceInstructions();
+  assert.match(instructions, /latest contextual request\/agreement.*explicit concept.*established current register.*personality/);
+  assert.match(instructions, /Do not apply a fixed keyword-to-register rule/);
+  assert.match(instructions, /Do not compare the account user's age/);
+  assert.doesNotMatch(instructions, /default to polite|account user is older/);
   for (const text of ["말 놓자", "우리 말 놓자", "편하게 말해줘"]) assert.equal(explicitSpeechRequest(text), "casual");
   for (const text of ["내가 말 놓자고 했어?", "말 놓지 마", "‘말 놓자’는 대사야"]) assert.equal(explicitSpeechRequest(text), undefined);
   assert.equal(explicitSpeechRequest("존댓말 해줘"), "polite");
 });
 
-test("chat fixes an older user's register in the single response schema and persists deliberate changes",async t=>{
+test("chat lets the model choose initial speech and then fixes the saved register in the single reply",async t=>{
  const names=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED"];
  const old=names.map(name=>process.env[name]);
  process.env.OPENAI_API_KEY="test-key";process.env.ACCOUNT_FEATURES_ENABLED="false";process.env.NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED="false";
@@ -703,16 +812,48 @@ test("chat fixes an older user's register in the single response schema and pers
  let calls=0;
  t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{
   calls++;const body=JSON.parse(String(init.body));
-  const style=body.text.format.schema.properties.speechStyle.const;
-  assert.equal(style,calls===1?"polite":"casual");
-  const result={speechStyle:style,continuity:{intent:"other",actorId:null,targetId:null,premise:"consistent",factIds:[]},utterances:[style==="polite"?"입맛에 맞아서 다행이에요.":"그래, 편하게 말할게."],clothingMentioned:false,locationChanged:false,memory:emptyPatch()};
+  const fixed=body.text.format.schema.properties.speechStyle.const;
+  assert.equal(fixed,calls===1?undefined:"casual");
+  assert.doesNotMatch(JSON.stringify(body),/"userAge"|age default|default to polite/);
+  const style=fixed??"casual";
+  const result={speechStyle:style,continuity:{intent:"other",actorId:null,targetId:null,premise:"consistent",factIds:[]},utterances:["그래, 편하게 말할게."],clothingMentioned:false,locationChanged:false,memory:emptyPatch()};
   return new Response(new ReadableStream({start(controller){controller.enqueue(wire({type:"response.output_text.delta",delta:JSON.stringify(result)}));controller.enqueue(wire({type:"response.completed"}));controller.close();}}));
  });
- for(const [index,text] of ["네가 탄 커피 맛있다","말 놓자","오늘 뭐 했어?"].entries()){
-  const response=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character:{name:"현아",age:21,userAge:26,personality:"다정함",concept:"카페",mode:"chat",imageDescription:"카페"},messages:[{role:"user",content:text}],speechStyle:"casual",...(index===2?{speechPreference:"casual"}:{})})}));
+ for(const [index,text] of ["네가 탄 커피 맛있다","말 놓자","오늘 뭐 했어?","오랜만이야"].entries()){
+  const response=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character:{name:"현아",age:21,userAge:26,personality:"다정함",concept:"카페",mode:"chat",imageDescription:"카페"},messages:[{role:"user",content:text}],...(index?{speechStyle:"casual"}:{}),...(index===2?{speechPreference:"casual"}:{})})}));
   assert.equal(response.status,200);const events=[];for await(const event of readEvents(response.body!))events.push(event);
-  assert.equal(events.find(event=>event.type==="speech")?.speechStyle,index===0?"polite":"casual");
-  assert.equal(events.find(event=>event.type==="speech")?.preference,index===0?undefined:"casual");
+  assert.equal(events.find(event=>event.type==="speech")?.speechStyle,"casual");
+  assert.equal(events.find(event=>event.type==="speech")?.preference,index===1||index===2?"casual":undefined);
  }
- assert.equal(calls,3);
+ assert.equal(calls,4);
+});
+
+
+test("chat completes displayed dialogue despite auxiliary validation errors, and recovers missing final deltas without a paid retry",async t=>{
+ const now=Date.now();t.mock.method(Date,"now",()=>now+600000);
+ const key=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY="test";
+ t.after(()=>{if(key===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=key;});
+ const character={name:"지수",age:25,personality:"다정함",concept:"친구",mode:"chat",imageDescription:"카페"};
+ const timeline=advanceTimeline(emptyTimeline(),character.name,emptyChatMemory(character.name));
+ const value={speechStyle:"casual",continuity:{intent:"other",actorId:"npc_999",targetId:"user",premise:"consistent",factIds:[]},utterances:["오랜만이야. 잘 지냈어?"],clothingMentioned:false,locationChanged:false,memory:emptyPatch()};
+ let calls=0,sendDeltas=true,incomplete=false;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const schema=JSON.parse(String(init?.body)).text.format.schema;
+  assert.equal(schema.properties.continuity.properties.factIds.maxItems,0);
+  calls++;const text=JSON.stringify(value);
+  const response={status:incomplete?"incomplete":"completed",incomplete_details:incomplete?{reason:"max_output_tokens"}:undefined,output:[{type:"message",content:[{type:"output_text",text}]}]};
+  return new Response((sendDeltas?`data: ${JSON.stringify({type:"response.output_text.delta",delta:text})}\n\n`:"")+`data: ${JSON.stringify({type:incomplete?"response.incomplete":"response.completed",response})}\n\n`);
+ });
+ const request=()=>new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,timeline,messages:[{role:"user",content:"안녕"}]})});
+ const events=(text:string)=>text.split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
+ for(const deltas of [true,false]){
+  sendDeltas=deltas;const result=events(await(await POST(request())).text());
+  assert.equal(result.at(-1).type,"done");assert.equal(result.filter(e=>e.type==="error").length,0);
+  assert.equal(result.filter(e=>e.type==="delta").map(e=>e.text).join(""),value.utterances[0]);
+  assert.equal(result.find(e=>e.type==="memory").state.turn,1);assert.equal(result.filter(e=>e.type==="timeline").length,0);
+ }
+ assert.equal(calls,2);
+ incomplete=true;const failed=events(await(await POST(request())).text());
+ assert.equal(failed.at(-1).type,"error");assert.equal(failed.at(-1).code,"output_token_limit");assert.equal(failed.filter(e=>e.type==="done").length,0);assert.equal(calls,3);
+ assert.equal(completedDialogueText({output:[{type:"reasoning",content:[]}]},"fallback"),"fallback");
 });

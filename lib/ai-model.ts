@@ -10,6 +10,19 @@ export function reasoningOptions(model = textModel()) {
   return { reasoning: { effort } };
 }
 
+// Separate novel experiments from conversation speech/continuity settings.
+export function novelReasoningOptions(model = textModel()) {
+  return configuredReasoning("OPENAI_NOVEL_REASONING_EFFORT",model,reasoningOptions(model));
+}
+export function novelPlanReasoningOptions(model = textModel()) {
+  return configuredReasoning("OPENAI_NOVEL_PLAN_REASONING_EFFORT",model,novelReasoningOptions(model));
+}
+function configuredReasoning(key:string,model:string,fallback:ReturnType<typeof reasoningOptions>) {
+  if(!reasoningOptions(model).reasoning)return fallback;
+  const effort=process.env[key]?.trim();
+  return effort==="low"||effort==="medium"||effort==="high"?{reasoning:{effort}}:fallback;
+}
+
 export function imageQuality() {
   const quality = process.env.OPENAI_IMAGE_QUALITY?.trim();
   return quality === "low" || quality === "high" || quality === "auto" ? quality : "medium";
@@ -40,4 +53,11 @@ export function novelReviewMaxOutputTokens() {
 export function novelPlanMaxOutputTokens() {
   const configured = Number(process.env.OPENAI_NOVEL_PLAN_MAX_OUTPUT_TOKENS);
   return Number.isInteger(configured) && configured >= 4000 && configured <= 32000 ? configured : 12000;
+}
+
+// Independent review remains the quality-preserving default.
+export function novelGenerationMode(){return process.env.OPENAI_NOVEL_GENERATION_MODE?.trim()==="integrated"?"integrated":"reviewed";}
+export function novelIntegratedMaxOutputTokens(){
+ const value=Number(process.env.OPENAI_NOVEL_INTEGRATED_MAX_OUTPUT_TOKENS);
+ return Number.isInteger(value)&&value>=4000&&value<=32000?value:12000;
 }

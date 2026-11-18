@@ -100,6 +100,56 @@ test("initial anonymous launch requires Google login before showing the creation
   await expect(page).toHaveURL(/auth\/v1\/authorize/);
 });
 
+test("bookshop character and novel cards show their main character covers",async({page})=>{
+ await signIn(page);await accountRoutes(page);
+ const characterListing="77777777-7777-4777-8777-777777777777",novelListing="88888888-8888-4888-8888-888888888888";
+ await page.route("**/api/store",route=>route.fulfill({json:{owned:[],listings:[
+  {id:characterListing,seller_id:jobId,kind:"character",title:"서하",description:"새 친구",active:true,thumbnailUrl:"https://example.test/character-cover.webp"},
+  {id:novelListing,seller_id:jobId,kind:"chapter",title:"약속 #1",description:"완결",active:true,chapter:1,novel:{id:novelId,title:"마지막 약속",chapters:5},thumbnailUrl:"https://example.test/novel-cover.webp"},
+ ]}}));
+  await page.goto("/ideal/bookshop");await expect(page.getByAltText("서하 캐릭터 이미지")).toBeVisible();await expect(page.getByRole("button",{name:"신고",exact:true})).toHaveCount(0);
+  await page.getByRole("tab",{name:"소설",exact:true}).click();await expect(page.getByAltText("마지막 약속 메인 캐릭터 이미지")).toBeVisible();await expect(page.getByRole("button",{name:"신고",exact:true})).toHaveCount(0);
+ await page.screenshot({path:".verification/bookshop-main-covers.png"});
+});
+
+test("login warms character thumbnails into the shared cache without downloading the original",async({page})=>{
+ await signIn(page);await accountRoutes(page);let thumbnails=0,originals=0;
+ await page.route("**/api/account",route=>route.fulfill({json:{userId,email:"test@example.com",profile:{display_name:"테스트"},wallet:{transferable:1000,bonus:5,free_chats:5},documents:[{id:characterId,title:"희진",kind:"studio",character_name:"희진",job_id:jobId}],jobs:[]}}));
+ await page.route("**/api/account?previews=1",route=>route.fulfill({json:{images:{[jobId]:"https://example.test/warm-thumb.webp"}}}));
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ await page.route("https://example.test/warm-thumb.webp",async route=>{thumbnails++;await gate;await route.fulfill({contentType:"image/svg+xml",body:'<svg xmlns="http://www.w3.org/2000/svg" width="72" height="128"/>'});});
+ page.on("request",request=>{if(request.url().includes("original.jpg"))originals++;});
+ try{
+  await page.goto("/ideal/characters");await expect(page.getByRole("status")).toContainText("캐릭터 이미지를 준비");
+  await expect.poll(()=>thumbnails).toBe(1);release();await expect(page.getByRole("heading",{name:"나의 캐릭터",exact:true})).toBeVisible();
+  await expect(page.getByAltText("희진",{exact:true})).toBeVisible();expect(thumbnails).toBe(1);expect(originals).toBe(0);
+ }finally{release();}
+});
+
+test("each character retains their saved register through switching and a full page reload",async({page})=>{
+ await signIn(page);await accountRoutes(page);
+ const otherId="99999999-9999-4999-8999-999999999999";
+ const first=structuredClone(snapshot),second=structuredClone(snapshot);first.chat.speechStyle="casual";second.id=otherId;second.art.profile.name="민수";second.art.title="민수";second.chat.speechStyle="polite";
+ const documents=new Map([[characterId,first],[otherId,second]]);
+ await page.route("**/api/account**",route=>{
+  const url=new URL(route.request().url()),id=url.searchParams.get("document");
+  if(route.request().method()==="POST"){
+   const body=route.request().postDataJSON();if(body.action==="save"&&body.kind==="studio")documents.set(body.id,body.payload);
+   return route.fulfill({json:{ok:true}});
+  }
+  if(id)return route.fulfill({json:{id,title:documents.get(id)!.art.title,payload:documents.get(id),media:{original:"https://example.test/image.jpg",gallery:{}}}});
+  if(url.search)return route.fallback();
+  return route.fulfill({json:{userId,email:"test@example.com",profile:{display_name:"테스트",age:30},wallet:{transferable:1000,bonus:0,free_chats:0},documents:[...documents.values()].map(saved=>({id:saved.id,title:saved.art.title,kind:"studio",character_name:saved.art.profile.name})),jobs:[]}});
+ });
+ const bodies:any[]=[];await page.route("**/api/chat",route=>{const body=route.request().postDataJSON();bodies.push(body);const speechStyle=body.speechStyle;return route.fulfill({contentType:"text/event-stream",body:`data: ${JSON.stringify({type:"delta",text:speechStyle==="casual"?"다시 만나서 좋아!":"다시 만나서 좋아요!"})}\n\ndata: ${JSON.stringify({type:"speech",speechStyle})}\n\ndata: {"type":"done"}\n\n`});});
+ const open=async(id:string)=>{await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"캐릭터",exact:true}).click();await page.locator(`a[href="/ideal/characters/${id}"]`).click();await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"대화하기",exact:true}).click();};
+ const send=async()=>{await page.getByLabel("AI에게 보낼 메시지").fill("오랜만이야");await page.getByRole("button",{name:"AI 메시지 보내기"}).click();await expect(page.getByLabel("AI에게 보낼 메시지")).toBeEnabled();};
+ await page.goto("/ideal/characters");await open(characterId);await send();await open(otherId);await send();await open(characterId);await send();
+ expect(bodies.map(body=>body.speechStyle)).toEqual(["casual","polite","casual"]);
+ await expect.poll(()=>documents.get(characterId)!.chat.archive?.length).toBe(4);
+ await page.reload();await open(characterId);await send();expect(bodies.at(-1).speechStyle).toBe("casual");
+});
+
 test("character deletion requires confirmation and removes the private library entry", async ({ page }) => {
   const deleted: string[] = [];
   await signIn(page); await accountRoutes(page, true, deleted);
@@ -126,7 +176,7 @@ test("signed-in launch shows creation, footer navigation, account details and ch
   const footer = page.getByRole("navigation", { name: "하단 메뉴" });
   await expect(footer.getByRole("link")).toHaveText(["캐릭터", "서고", "서점", "스토어", "마이페이지"]);
   await footer.getByRole("link", { name: "마이페이지", exact: true }).click();
-  await expect(page.getByText("test@example.com", { exact: true })).toBeVisible();
+  await expect(page.getByText("test@example.com", { exact: true })).toBeVisible();await expect(page.locator(".native-settings-list dt").filter({hasText:/^나이$/})).toHaveCount(0);
   await expect(page.locator(".heart-total")).toContainText("1,005");
   await page.screenshot({ path: ".verification/account-mypage.png", fullPage: true });
   await footer.getByRole("link", { name: "캐릭터", exact: true }).click();
@@ -186,8 +236,7 @@ test("scene keywords appear in image confirmation dialogs rather than generation
  saved.story.started=true;saved.story.storyPage=0;saved.story.committed=saved.story.archive!;saved.story.archive![1].content="희진은 이곳에 없었다. 햄군은 민수와 카페에서 마주 앉았다. 민수는 검은 코트를 입었다.";saved.story.storyState!.characters.push({name:"민수",goal:"대화",knowledge:[],relationships:[]});
  await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({json:{id:characterId,title:"희진",payload:saved,media:{original:"https://example.test/image.jpg",gallery:{}}}}));
  let images=0;await page.route("**/api/characters",route=>{images++;return route.abort();});
- await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"대화하기",exact:true}).click();
+ await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
  const button=page.getByRole("button",{name:"이미지 생성",exact:true});await expect(button.locator("small")).toHaveCount(0);await button.click();
  const popup=page.getByRole("dialog");await expect(popup.locator(".scene-details-list dt")).toHaveText(["장소","의상","등장인물"]);await expect(popup.getByLabel("장면 장소")).toHaveValue("떡볶이집");await expect(popup.getByLabel("장면 의상")).toHaveValue("흰 셔츠");await expect(popup.locator(".scene-details-list dd").last()).toHaveText("희진 (이미지 대상)");await expect(popup.getByText("부적절한 내용은 AI가 정상적으로 생성하지 않습니다.",{exact:true})).toBeVisible();
  await popup.getByRole("button",{name:"취소",exact:true}).click();expect(images).toBe(0);
@@ -206,8 +255,7 @@ test("chat images can be requested before the first dialogue with user-selected 
   images++;const form=await new Request(route.request().url(),{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();selection=JSON.parse(String(form.get("scene"))).selection;
   return route.fulfill({status:503,json:{error:"검증용 생성 중단"}});
  });
- await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"대화하기",exact:true}).click();
+ await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
  const button=page.getByRole("button",{name:"이미지 생성",exact:true});await expect(button).toBeEnabled();await button.click();
  const popup=page.getByRole("dialog");await popup.getByLabel("장면 장소").fill("해변 산책로");await popup.getByLabel("장면 의상").fill("흰 원피스");expect(images).toBe(0);
  await popup.getByRole("button",{name:"그림 만들기",exact:true}).click();await expect(page.locator(".character-visual-error")).toContainText("검증용 생성 중단");
@@ -325,11 +373,14 @@ test("novel detail carries the nearest previous illustration forward and never u
   await expect(background).toBeVisible();
 });
 
-test("incomplete novels cannot be published", async ({ page }) => {
+test("an ongoing novel can publish its generated chapters", async ({ page }) => {
   await signIn(page); await accountRoutes(page, false);
+  let published:any;await page.route("**/api/store",route=>{published=route.request().postDataJSON();return route.fulfill({json:{ok:true}});});
   await page.goto(`/ideal/novels/${novelId}`);
-  await expect(page.getByRole("button", { name: "서점에 판매 등록", exact: true })).toBeDisabled();
-  await expect(page.getByText("완결된 소설만 판매할 수 있습니다. 모든 회차를 완성하고 저장해주세요.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "서점에 판매 등록", exact: true }).click();
+  const dialog=page.getByRole("dialog",{name:"소설 판매 등록"});await expect(dialog).toContainText("연재 중인 소설도 판매");
+  await dialog.getByRole("button",{name:"판매 등록하기"}).click();await expect(page.getByText("서점에 판매 등록했습니다.",{exact:true})).toBeVisible();
+  expect(published.action).toBe("publishNovel");
 });
 
 test("logging out hides private library data and returns to the login screen", async ({ page }) => {
@@ -370,7 +421,7 @@ test("first login collects a profile and restores it on the next launch", async 
   await page.route("**/api/account**", async route => {
     if (route.request().method() === "POST") {
       const body = route.request().postDataJSON();
-      if (body.action === "profile") { expect(body).toEqual({ action: "profile", nickname: "별빛", gender: "여성", age: 27 }); profile = { display_name: body.nickname, gender: body.gender, age: body.age, onboarded: true }; }
+      if (body.action === "profile") { expect(body).toEqual({ action: "profile", nickname: "별빛", gender: "여성" }); profile = { display_name: body.nickname, gender: body.gender, onboarded: true }; }
       return route.fulfill({ json: { ok: true } });
     }
     if (new URL(route.request().url()).searchParams.has("previews")) return route.fulfill({ json: { images: {} } });
@@ -378,7 +429,7 @@ test("first login collects a profile and restores it on the next launch", async 
   });
   await page.goto("/ideal");
   await expect(page.getByRole("heading", { name: "당신을 알려주세요" })).toBeVisible();
-  await page.getByLabel("사용자 닉네임").fill("별빛"); await page.getByLabel("사용자 성별").selectOption("여성"); await page.getByLabel("사용자 나이").fill("27");
+  await page.getByLabel("사용자 닉네임").fill("별빛"); await page.getByLabel("사용자 성별").selectOption("여성"); await expect(page.getByLabel("사용자 나이")).toHaveCount(0);
   await page.screenshot({ path: ".verification/native-onboarding.png", caret: "initial" });
   await page.getByRole("button", { name: "시작하기", exact: true }).click();
   await expect(page.getByRole("heading", { name: "나의 캐릭터", exact: true })).toBeVisible();
@@ -452,7 +503,7 @@ test("notification switches persist account-wide push and quiet-hour preferences
     return route.fulfill({json:settings});
   });
   await page.goto("/ideal/mypage");
-  const push=page.getByRole("switch",{name:"앱 알림",exact:true}),quiet=page.getByRole("switch",{name:"야간 알림 제한",exact:true});
+  const push=page.getByRole("switch",{name:"안부 대화",exact:true}),quiet=page.getByRole("switch",{name:"야간 알림 제한",exact:true});
   await expect(push).toHaveAttribute("aria-checked","false");await expect(quiet).toHaveAttribute("aria-checked","true");
   await push.click();await expect(push).toHaveAttribute("aria-checked","true");
   await quiet.click();await expect(quiet).toHaveAttribute("aria-checked","false");
@@ -460,13 +511,27 @@ test("notification switches persist account-wide push and quiet-hour preferences
   expect(saved).toEqual([{action:"settings",pushEnabled:true,quietHours:true},{action:"settings",pushEnabled:true,quietHours:false}]);
 });
 
+test("web greeting settings recover from a failed read and enable without browser notification permission",async({page})=>{
+ await signIn(page);await accountRoutes(page);let fail=true,enabled=false;
+ await page.addInitScript(()=>{Object.defineProperty(window,"Notification",{configurable:true,value:class{static permission="denied";static requestPermission(){throw new Error("Browser notification permission must not be requested");}}});});
+ await page.route("**/api/notifications",route=>{
+  if(route.request().method()==="POST"){enabled=route.request().postDataJSON().pushEnabled;return route.fulfill({json:{ok:true}});}
+  if(fail)return route.fulfill({status:503,json:{error:"안부 설정 연결을 확인해주세요."}});
+  return route.fulfill({json:{pushEnabled:enabled,quietHours:true,available:true}});
+ });
+ await page.goto("/ideal/mypage");const toggle=page.getByRole("switch",{name:"안부 대화",exact:true});
+ await expect(page.getByRole("status")).toContainText("안부 설정 연결을 확인해주세요.");await expect(toggle).toBeDisabled();
+ fail=false;await page.getByRole("button",{name:"설정 다시 불러오기"}).click();await expect(toggle).toBeEnabled();
+ await toggle.click();await expect(toggle).toHaveAttribute("aria-checked","true");expect(enabled).toBe(true);
+ await expect(page.locator(".notification-settings")).toContainText("브라우저 알림 권한 없이");
+});
+
 test("stored check-ins appear in their character chat once without generating an AI reply",async({page})=>{
  await signIn(page);await accountRoutes(page);
  let aiCalls=0;let requestBody:any;await page.route("**/api/chat",route=>{aiCalls++;requestBody=route.request().postDataJSON();return route.fulfill({contentType:"text/event-stream",body:'data: {"type":"delta","text":"반가워!"}\n\ndata: {"type":"done"}\n\n'});});
  await page.route(`**/api/notifications?document=${characterId}`,route=>route.fulfill({json:{messages:[{id:novelId,body:"나 안 보고 싶어?",user_turns:0,created_at:new Date().toISOString()}]}}));
  await page.goto(`/ideal/characters/${characterId}`);
- await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"대화하기",exact:true}).click();
+ await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
  const greeting=page.getByRole("log").getByText("나 안 보고 싶어?",{exact:true});await expect(greeting).toBeVisible();
  await page.evaluate(()=>window.dispatchEvent(new Event("maite-checkins-refresh")));await expect(greeting).toHaveCount(1);expect(aiCalls).toBe(0);
  await page.getByLabel("AI에게 보낼 메시지").fill("나도 보고 싶어");await page.getByRole("button",{name:"AI 메시지 보내기"}).click();
@@ -488,13 +553,10 @@ test("an open local web chat receives its three-minute greeting once without an 
   const last=receipts.at(-1);
   return route.fulfill({json:{pushEnabled:true,quietHours:false,available:true,nickname:"햄군",activities:[{documentId:characterId,userTurns:1,lastUserAt:now.toISOString(),characterName:"희진"}],lastDelivered:last??null}});
  });
- await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"대화하기",exact:true}).click();
+ await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
  await expect.poll(()=>page.evaluate(key=>JSON.parse(localStorage.getItem(key)||"{}").pending?.dueAt,`maite-local-checkins:${userId}`)).toBe(new Date(now.getTime()+180000).toISOString());
- await page.clock.fastForward(179000);expect(receipts).toHaveLength(0);
- // A recent empty poll must not hide a newly delivered greeting behind the document read cache.
- await expect.poll(()=>messageReads).toBeGreaterThan(1);
- await page.clock.fastForward(2000);await expect(page.getByRole("log").getByText("나 안 보고 싶어?",{exact:true})).toBeVisible();
+ await page.clock.fastForward(150000);expect(receipts).toHaveLength(0);
+ await page.clock.fastForward(40000);await expect(page.getByRole("log").getByText("나 안 보고 싶어?",{exact:true})).toBeVisible();
  expect(receipts).toHaveLength(1);expect(aiCalls).toBe(0);
  await page.clock.fastForward(240000);expect(receipts).toHaveLength(1);
  await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"마이페이지",exact:true}).click();
@@ -640,4 +702,57 @@ test("one bundled read opens a character before slow gallery downloads and prese
     release();
     await expect(page.locator('.generated-gallery-grid img[src^="blob:"]')).toHaveCount(3);
   } finally {release();}
+});
+
+
+test("each character has an unread greeting marker; only opening its visible chat clears it",async({page})=>{
+ await signIn(page);await accountRoutes(page);
+ const otherId="55555555-5555-4555-8555-555555555555",greetingId="66666666-6666-4666-8666-666666666666";
+ const unread:Record<string,number>={[characterId]:1,[otherId]:1};let reads=0;
+ await page.route("**/api/account",route=>{
+  if(route.request().method()==="POST")return route.fulfill({json:{ok:true}});
+  return route.fulfill({json:{userId,email:"test@example.com",profile:{display_name:"테스트"},wallet:{transferable:1000,bonus:5,free_chats:5},documents:[{id:characterId,title:"희진",kind:"studio",character_name:"희진"},{id:otherId,title:"수아",kind:"studio",character_name:"수아"}],jobs:[]}});
+ });
+ await page.route("**/api/notifications**",route=>{
+  const url=new URL(route.request().url());
+  if(route.request().method()==="POST"){
+   const body=route.request().postDataJSON();expect(body.action).toBe("read");expect(body.documentId).toBe(characterId);expect(body.ids).toEqual([greetingId]);
+   reads++;delete unread[characterId];return route.fulfill({json:{ok:true}});
+  }
+  if(url.searchParams.has("inbox"))return route.fulfill({json:{unread}});
+  if(url.searchParams.has("document"))return route.fulfill({json:{messages:[{id:greetingId,body:"뭐해?",user_turns:0,created_at:new Date().toISOString(),read_at:unread[characterId]?null:new Date().toISOString()}]}});
+  return route.fulfill({json:{pushEnabled:false,quietHours:true,activities:[],lastDeliveredByCharacter:[]}});
+ });
+ await page.goto("/ideal/characters");
+ const footer=page.getByRole("navigation",{name:"하단 메뉴"});
+ await expect(footer.locator(".checkin-footer-dot")).toBeVisible();
+ await expect(page.locator(".native-character-card .checkin-arrival-badge")).toHaveCount(2);
+ await page.getByRole("link",{name:/희진.*안부 도착/}).click();
+ await expect(page.locator(".character-detail .checkin-arrival-badge")).toBeVisible();expect(reads).toBe(0);
+ await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
+ await expect(page.getByRole("log").getByText("뭐해?",{exact:true})).toBeVisible();await expect.poll(()=>reads).toBe(1);
+ await footer.getByRole("link",{name:"캐릭터",exact:true}).click();
+ await expect(page.locator(".native-character-card .checkin-arrival-badge")).toHaveCount(1);
+ await expect(page.getByRole("link",{name:/수아.*안부 도착/})).toBeVisible();await expect(footer.locator(".checkin-footer-dot")).toBeVisible();
+ await page.reload();await expect(page.locator(".native-character-card .checkin-arrival-badge")).toHaveCount(1);
+ delete unread[otherId];await page.evaluate(()=>window.dispatchEvent(new Event("maite-checkins-refresh")));
+ await expect(footer.locator(".checkin-footer-dot")).toHaveCount(0);
+});
+
+test("all characters send their own three-minute greeting while another menu is open",async({page})=>{
+ await signIn(page);await accountRoutes(page);
+ const now=new Date("2026-11-19T12:00:00+09:00");await page.clock.install({time:now});
+ const otherId="55555555-5555-4555-8555-555555555555",receipts:any[]=[];
+ await page.route("**/api/notifications**",route=>{
+  const url=new URL(route.request().url());
+  if(route.request().method()==="POST"){const body=route.request().postDataJSON();expect(body.action).toBe("delivered");receipts.push(body);return route.fulfill({json:{ok:true}});}
+  if(url.searchParams.has("inbox"))return route.fulfill({json:{unread:Object.fromEntries(receipts.map(row=>[row.documentId,1]))}});
+  return route.fulfill({json:{pushEnabled:true,quietHours:false,available:true,nickname:"햄군",activities:[{documentId:characterId,userTurns:1,lastUserAt:now.toISOString(),characterName:"희진"},{documentId:otherId,userTurns:2,lastUserAt:now.toISOString(),characterName:"희진"}],lastDeliveredByCharacter:receipts}});
+ });
+ await page.goto("/ideal/mypage");
+ await expect.poll(()=>page.evaluate(key=>{const state=JSON.parse(localStorage.getItem(key)||"{}");return Number(!!state.pending)+(state.pendingOthers?.length??0);},`maite-local-checkins:${userId}`)).toBe(2);
+ await page.clock.fastForward(190000);await expect.poll(()=>receipts.length).toBe(2);
+ expect(new Set(receipts.map(row=>row.documentId))).toEqual(new Set([characterId,otherId]));
+ await expect(page.locator(".checkin-footer-dot")).toBeVisible();
+ await page.clock.fastForward(86400000);expect(receipts).toHaveLength(2);
 });

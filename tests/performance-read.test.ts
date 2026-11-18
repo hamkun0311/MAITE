@@ -4,6 +4,23 @@ import {createClient} from "@supabase/supabase-js";
 import {ReadCache} from "../lib/platform/read-cache.ts";
 import {documentMedia} from "../lib/server/document-media.ts";
 import {responseTimings} from "../lib/server/timing.ts";
+import {listingCoverPaths,listingPreviews} from "../lib/server/listing-covers.ts";
+
+test("store covers batch signing and verify the novel seller's image ownership before exposing a preview",async()=>{
+ const seller="11111111-1111-4111-8111-111111111111",other="22222222-2222-4222-8222-222222222222",novel="33333333-3333-4333-8333-333333333333",job="44444444-4444-4444-8444-444444444444";
+ let signs=0,foreign=false;
+ const db=createClient("https://covers.test","mock-service-key",{auth:{persistSession:false,autoRefreshToken:false},global:{fetch:async(input,init)=>{
+  const url=new URL(String(input));
+  if(url.pathname.includes("documents"))return Response.json([{id:novel,user_id:seller,art:{jobId:job}}]);
+  if(url.pathname.includes("generation_jobs"))return Response.json([{id:job,user_id:foreign?other:seller,storage_path:"seller/cover.jpg"}]);
+  if(url.pathname.includes("storage")){signs++;const paths=JSON.parse(String(init?.body)).paths;assert.deepEqual(paths,["seller/cover.jpg","seller/cover.thumb.webp"]);return Response.json(paths.map((path:string)=>({path,signedURL:`/object/sign/maite-private/${path}?token=preview` })));}
+  throw new Error("Unexpected lookup");
+ }}});
+ const rows=[{id:"character",seller_id:seller,kind:"character",storage_path:"seller/cover.jpg"},{id:"chapter-one",seller_id:seller,kind:"chapter",novel:{id:novel}},{id:"chapter-two",seller_id:seller,kind:"chapter",novel:{id:novel}}];
+ const previews=await listingPreviews(db,other,rows);assert.equal(signs,1);assert.match(previews.get("character")!,/cover.thumb.webp/);assert.equal(previews.get("chapter-one"),previews.get("chapter-two"));
+ foreign=true;assert.equal((await listingCoverPaths(db,rows.slice(1))).size,0);
+ assert.equal((await listingCoverPaths(db,[{...rows[1],seller_id:other}])).size,0);
+});
 
 test("concurrent scoped reads share one request and callers cannot mutate another caller's data", async () => {
   const cache = new ReadCache(); let calls = 0; let release!: () => void;

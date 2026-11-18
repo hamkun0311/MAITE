@@ -57,6 +57,7 @@ export default function LiveChat({ character, characterDocumentId, active = true
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const [input, setInput] = useState(saved.input);
   const [busy, setBusy] = useState(false);
+  const [unreadGreetingIds,setUnreadGreetingIds]=useState<string[]>([]);
   const busyRef = useRef(busy); busyRef.current = busy;
   useEffect(() => {
     if (!accountEnabled() || !characterDocumentId || character?.mode !== "chat" || !active || busyRef.current) return;
@@ -72,12 +73,30 @@ export default function LiveChat({ character, characterDocumentId, active = true
         committed.current = mergeCheckins(committed.current, pendingGreeting);
         saved.committed = committed.current;
         setMessages(current => mergeCheckins(current, rows));
+        setUnreadGreetingIds(rows.filter(row=>row.read_at===null).map(row=>row.id));
       }).catch(() => undefined);
     };
     refresh(); const timer = setInterval(refresh, 60000);
-    window.addEventListener("maite-checkins-refresh", refresh); window.addEventListener("maite-foreground", refresh);
-    return () => { alive = false; clearInterval(timer); window.removeEventListener("maite-checkins-refresh", refresh); window.removeEventListener("maite-foreground", refresh); };
+    const visible=()=>{if(!document.hidden)refresh();};
+    window.addEventListener("maite-checkins-refresh", refresh); window.addEventListener("maite-foreground", refresh);document.addEventListener("visibilitychange",visible);
+    return () => { alive = false; clearInterval(timer); window.removeEventListener("maite-checkins-refresh", refresh); window.removeEventListener("maite-foreground", refresh);document.removeEventListener("visibilitychange",visible); };
   }, [characterDocumentId, active, character?.mode, busy]);
+  useEffect(()=>{
+    if(!characterDocumentId||!active||busy||character?.mode!=="chat"||document.hidden)return;
+    const ids=unreadGreetingIds.filter(id=>messages.some(message=>message.checkinId===id)).slice(0,200);
+    if(!ids.length)return;
+    // Acknowledge only greetings rendered in this visible character chat. New arrivals
+    // are excluded from the receipt, so a concurrent arrival retains its marker.
+    let cancelled=false;
+    const frame=requestAnimationFrame(()=>{
+      if(cancelled||document.hidden)return;
+      void jsonApi("/api/notifications",{action:"read",documentId:characterDocumentId,ids}).then(()=>{
+        setUnreadGreetingIds(current=>current.filter(id=>!ids.includes(id)));
+        window.dispatchEvent(new Event("maite-checkins-read"));
+      }).catch(()=>undefined);
+    });
+    return()=>{cancelled=true;cancelAnimationFrame(frame);};
+  },[unreadGreetingIds,messages,active,busy,characterDocumentId,character?.mode]);
   const [storyPhase, setStoryPhase] = useState("이야기 작성중");
   const [notice, setNotice] = useState(saved.notice);
   const committed = useRef<Message[]>(saved.committed);

@@ -13,6 +13,7 @@ import { unregisterPush } from "@/lib/platform/push";
 import { apiFetch } from "@/lib/platform/api";
 import { imageBlobs } from "@/lib/platform/image-cache";
 import { persistentImages } from "@/lib/platform/persistent-images";
+import { preloadCharacterPreviews } from "@/lib/platform/preload-images";
 
 type User = { id: string; email?: string };
 type AccountContext = { user?: User; account?: AccountData; refresh: () => Promise<void>; logout: () => Promise<void>; editProfile: () => void };
@@ -23,8 +24,21 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(!enabled); const [user, setUser] = useState<User>();
   const [account, setAccount] = useState<AccountData>(); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [imagePreparation,setImagePreparation]=useState<{owner:string;ready:boolean;loaded:number;total:number}>();
   const active = useRef<string | undefined>(undefined); const pending = useRef<Promise<void> | undefined>(undefined);
   const checkedDay = useRef(""); const dailyPending = useRef(false);
+  const hasAccount=!!account,profileReady=account?.profile?.onboarded!==false;
+  useEffect(()=>{
+    if(!enabled||!user||!hasAccount||!profileReady)return;
+    const owner=user.id;let alive=true;
+    const ids=(account?.documents??[]).filter(doc=>doc.kind==="studio"||doc.kind==="character").flatMap(doc=>doc.job_id?[doc.job_id]:[]);
+    setImagePreparation({owner,ready:!ids.length,loaded:0,total:Math.min(new Set(ids).size,60)});
+    const reveal=()=>{if(alive)setImagePreparation(current=>current?.owner===owner?{...current,ready:true}:current);};
+    // Slow/offline storage must never prevent access to text or account settings.
+    const timeout=setTimeout(reveal,1200);
+    void preloadCharacterPreviews(owner,ids,()=>alive,(loaded,total)=>{if(alive)setImagePreparation(current=>current?.owner===owner?{...current,loaded,total}:current);}).catch(()=>undefined).finally(()=>{clearTimeout(timeout);reveal();});
+    return()=>{alive=false;clearTimeout(timeout);};
+  },[enabled,user?.id,hasAccount,profileReady]);
   async function refresh() {
     if (!active.current) return;
     if (pending.current) return pending.current;
@@ -117,5 +131,6 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
   }
   if (enabled && user && !account) return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">{error || "당신의 이야기를 준비하고 있어요"}</p>{error && <button onClick={() => { setError(""); void refresh().catch(() => setError("계정 연결을 확인해주세요.")); }}>다시 시도</button>}</main>;
   if (enabled && user && account?.profile?.onboarded === false) return <ProfileSetup initial={{ nickname: account.profile.display_name }} onSave={saveProfile}/>;
+  if(enabled&&user&&account?.documents.some(doc=>(doc.kind==="studio"||doc.kind==="character")&&doc.job_id)&&(imagePreparation?.owner!==user.id||!imagePreparation.ready))return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">캐릭터 이미지를 준비하고 있어요{imagePreparation?.owner===user.id?` · ${imagePreparation.loaded}/${imagePreparation.total}`:""}</p></main>;
   return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal avatarUrl={account?.avatarUrl} initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"], age: account?.profile?.age }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
 }

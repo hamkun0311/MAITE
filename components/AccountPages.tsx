@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode, type FormEvent } from "react";
+import {useCheckinInbox} from "./CheckinInbox";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAccount } from "./AccountProvider";
@@ -29,12 +30,13 @@ export function MyPageScreen() {
   return <main className="native-page account-page"><div className="native-page-title"><h1>마이페이지</h1></div><section className="native-profile-card"><div className="native-avatar large">{account?.avatarUrl ? <CachedImage src={account.avatarUrl} cacheKey={`profile:${account.avatarUrl.split("?")[0]}`} alt=""/> : <UserRound size={36}/>}</div><h2>{account?.profile?.display_name || "당신"}</h2><p>{account?.email ?? user?.email ?? "나만의 이야기를 만들어보세요"}</p><button className="native-outline" disabled={!account} onClick={editProfile}><Pencil size={14}/>프로필 수정</button></section>
     <Link className="native-reward-entry" href="/ideal/rewards">출석보상 <ChevronRight size={18}/></Link>
     <section className="native-wallet"><span>보유 하트</span><strong className="heart-total"><Heart size={28} fill="currentColor"/>{account ? (account.wallet.transferable + account.wallet.bonus).toLocaleString() : "0"}</strong><small>구매·판매 {account?.wallet.transferable ?? 0} · 보상 {account?.wallet.bonus ?? 0}</small><Link href="/ideal/store">하트 충전 <ChevronRight size={16}/></Link></section>
-    <section className="native-settings-list"><h2>내 계정정보</h2><dl><div><dt>닉네임</dt><dd>{account?.profile?.display_name || "당신"}</dd></div><div><dt>성별</dt><dd>{account?.profile?.gender || "선택 안 함"}</dd></div><div><dt>나이</dt><dd>{account?.profile?.age ? `${account.profile.age}세` : "미설정"}</dd></div><div><dt>무료 대화</dt><dd>{account?.wallet.free_chats ?? 0}회</dd></div></dl><p>대화와 소설은 캐릭터를 선택하면 볼 수 있어요.</p></section>
+    <section className="native-settings-list"><h2>내 계정정보</h2><dl><div><dt>닉네임</dt><dd>{account?.profile?.display_name || "당신"}</dd></div><div><dt>성별</dt><dd>{account?.profile?.gender || "선택 안 함"}</dd></div><div><dt>무료 대화</dt><dd>{account?.wallet.free_chats ?? 0}회</dd></div></dl><p>대화와 소설은 캐릭터를 선택하면 볼 수 있어요.</p></section>
     <NotificationSettings/>
     {!accountEnabled() && <DemoNotice/>}<div className="native-account-actions"><button disabled={busy || !account} onClick={() => void run(refresh)}>계정 새로고침</button><button disabled={busy || !account} onClick={() => void run(logout)}><LogOut size={16}/>로그아웃</button></div>{notice && <p role="alert">{notice}</p>}</main>;
 }
 
 export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
+  const unread=useCheckinInbox();
   const path = usePathname(); const id = path.split("/").at(-1)!;
   const { loadDocument, deleteCharacter } = useStudioSession(); const { refresh, account, user } = useAccount(); const router = useRouter(); const confirm = useActionConfirm();
   const [saleOpen, setSaleOpen] = useState(false);
@@ -70,21 +72,21 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
   }
   const chapters = snapshot ? novelChapters(snapshot) : [];
   const complete = !!snapshot && novelComplete(snapshot);
-  const canPublish = kind === "character" ? !!snapshot?.art.jobId : complete;
+  const canPublish = kind === "character" ? !!snapshot?.art.jobId : chapters.length > 0;
   const price = STORE_PRICE[kind === "character" ? "character" : "chapter"];
   const novels = libraryNovels(account?.documents ?? []).filter(doc => doc.source_id === snapshot?.id || (!!snapshot?.story.documentId && (doc.id === snapshot.story.documentId || doc.novel_id === snapshot.story.documentId)));
   return <main className={`account-page native-page${kind === "novel" ? " novel-detail-page" : ""}`}><div className="library-detail-toolbar"><Link className="native-back native-library-back" href={kind === "novel" ? "/ideal/library" : "/ideal/characters"}><ChevronLeft size={18} aria-hidden="true" /><span>{kind === "novel" ? "서고" : "나의 캐릭터"}</span></Link>{kind === "novel" && <button type="button" className="novel-sale-trigger" aria-label="서점에 판매 등록" disabled={busy || !canPublish} onClick={() => setSaleOpen(true)}>판매 등록</button>}</div>
     {!accountEnabled() ? <DemoNotice/> : !snapshot ? <p role="status">{notice || "작품을 불러오는 중…"}</p> : <>
-      {kind === "character" ? <><section className="account-panel character-detail">{image && <CachedImage src={image} cacheKey={imageAssetKey(snapshot.art)} alt={snapshot.art.profile.name}/>}<div><h2>{snapshot.art.profile.name}</h2><p>{snapshot.art.profile.age}세 · {snapshot.art.profile.gender}</p><p>{snapshot.art.profile.personality}</p><p>{snapshot.art.profile.concept}</p><button className="native-primary" disabled={busy} onClick={() => void run(() => loadDocument(id), "캐릭터를 불러왔습니다.")}>이 캐릭터로 대화·이야기 시작</button></div></section>
+      {kind === "character" ? <><section className="account-panel character-detail">{image && <CachedImage src={image} cacheKey={imageAssetKey(snapshot.art)} alt={snapshot.art.profile.name}/>}<div><div className="character-name-row"><h2>{snapshot.art.profile.name}</h2>{unread[id]>0&&<small className="checkin-arrival-badge">안부 도착</small>}</div><p>{snapshot.art.profile.age}세 · {snapshot.art.profile.gender}</p><p>{snapshot.art.profile.personality}</p><p>{snapshot.art.profile.concept}</p></div></section>
       <div className="native-tabs" role="tablist" aria-label="캐릭터의 이야기"><button role="tab" aria-selected={tab === "chat"} onClick={() => setTab("chat")}>대화</button><button role="tab" aria-selected={tab === "novel"} onClick={() => setTab("novel")}>소설</button></div>
       {tab === "chat" ? <section className="native-session-list" role="tabpanel" aria-label="대화 목록"><button disabled={busy} onClick={() => void run(async () => { await loadDocument(id); router.push("/ideal/chat"); }, "대화를 열었습니다.")}><MessageCircle size={26}/><div><h3>{snapshot.art.profile.name}와의 대화</h3><p>{snapshot.chat.archive?.filter(message => message.role === "assistant").at(-1)?.content.slice(0, 70) || "첫마디로 둘만의 이야기를 시작해보세요."}</p></div><ChevronRight size={18}/></button></section>
       : <section className="native-session-list" role="tabpanel" aria-label="소설 목록">{novels.map(doc => <Link href={`/ideal/novels/${doc.id}`} key={doc.id}><BookOpen size={28}/><div><h3>{doc.title}</h3><p>{doc.chapter}편 · {doc.next_goal === "" ? "완결" : "연재 중"}</p></div><ChevronRight size={18}/></Link>)}<button disabled={busy} onClick={() => void run(async () => { await loadDocument(id); router.push("/ideal/story"); }, "이야기를 열었습니다.")}><BookOpen size={24}/><div><h3>{snapshot.story.storyState?.chapter ? "이야기 이어 쓰기" : "새 이야기 시작하기"}</h3><p>다음 이야기의 컨셉을 추가할 수 있어요.</p></div><ChevronRight size={18}/></button></section>}</>
       : <section className="account-panel novel-reading-panel"><h2>{title || "나의 소설"}</h2><p>{snapshot.art.profile.name}의 이야기 · {snapshot.story.storyState?.chapter ?? 0}편 · {complete ? "완결" : "연재 중"}</p>
         {chapters.length > 0 && <SavedNovelPages chapters={chapters} selected={selected} onSelect={chapter => { setSelected(chapter); saveChapter(user?.id ?? "demo",id,chapter); }} snapshot={snapshot} />}
-        {!complete && <p>완결된 소설만 판매할 수 있습니다. 모든 회차를 완성하고 저장해주세요.</p>}
+        {!chapters.length && <p>이야기를 한 회차 이상 생성하고 저장하면 판매할 수 있어요.</p>}
       </section>}
       {kind === "novel" ? saleOpen && <NovelSaleDialog busy={busy} onClose={() => setSaleOpen(false)}>
-        <h2 id="novel-sale-title">소설 판매 등록</h2><p>작품 제목과 소개를 정해 완결 소설을 서점에 등록해요.</p>
+        <h2 id="novel-sale-title">소설 판매 등록</h2><p>작품 제목과 소개를 정해 생성된 회차를 서점에 등록해요. 연재 중인 소설도 판매할 수 있어요.</p>
         <dl className="novel-sale-prices"><div><dt>회차별 판매금액</dt><dd>{price.price}하트</dd></div><div><dt>판매 수수료</dt><dd>−{price.sellerFee}하트</dd></div><div><dt>판매 후 수령</dt><dd>{price.proceeds}하트 / 회차</dd></div></dl>
         <form className="publish-form" onSubmit={event => void publish(event)}><label>{kind === "novel" ? "소설 제목" : "판매 제목"}<input required maxLength={100} value={title} onChange={event => setTitle(event.target.value)} disabled={busy}/></label><label>작품 소개<textarea maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} disabled={busy}/></label><button disabled={busy || !canPublish || !title.trim()}>{busy ? "등록 중…" : kind === "novel" ? "판매 등록하기" : "서점에 판매 등록"}</button></form>
         {notice && <p role="status">{notice}</p>}
@@ -137,7 +139,7 @@ function SavedNovelPages({ chapters, selected, onSelect, snapshot }: { chapters:
   </div>;
 }
 
-type Listing = { id: string; seller_id: string; kind: "character" | "chapter"; title: string; description: string; active: boolean; chapter?: number; novel?: { id: string; title: string; chapters: number } };
+type Listing = { id: string; seller_id: string; kind: "character" | "chapter"; title: string; description: string; active: boolean; thumbnailUrl?: string; chapter?: number; novel?: { id: string; title: string; chapters: number } };
 export function StoreScreen() {
   const { user, refresh } = useAccount(); const { importCharacter } = useStudioSession();
   const confirm = useActionConfirm(); const [filter, setFilter] = useState<"character" | "chapter">("character");
@@ -148,18 +150,17 @@ export function StoreScreen() {
   async function run(work: () => Promise<unknown>, success: string) { if (busy) return; setBusy(true); setNotice(""); try { await work(); await refresh(); setNotice(success); } catch (error) { setNotice(errorText(error)); } finally { setBusy(false); } }
   function listingCard(listing: Listing) {
     const price = STORE_PRICE[listing.kind]; const own = listing.seller_id === user?.id; const purchased = data?.owned.includes(listing.id);
-    return <article className="store-listing" key={listing.id}><h3>{listing.title}</h3><p>{listing.description}</p>
+    return <article className="store-listing" key={listing.id}>{listing.kind === "character" && <div className="store-cover">{listing.thumbnailUrl ? <CachedImage src={listing.thumbnailUrl} cacheKey={`listing-preview:${listing.id}:thumbnail`} loading="lazy" alt={`${listing.title} 캐릭터 이미지`}/> : <UserRound size={28} aria-hidden="true"/>}</div>}<h3>{listing.title}</h3><p>{listing.description}</p>
       {own ? <><span>{listing.active ? "판매 중" : "판매 중지"}</span><button disabled={busy || !listing.active} onClick={() => void run(async () => { await jsonApi("/api/store", { action: "unpublish", listingId: listing.id }); await load(); }, "판매를 중지했습니다.")}>판매 중지</button></>
         : purchased ? <button disabled={busy} onClick={() => void run(async () => { const result = await jsonApi(`/api/store?id=${listing.id}`); if (result.kind === "character") await importCharacter(result); else setReading({ title: result.title, text: result.content.text }); }, "구매한 콘텐츠를 열었습니다.")}>{listing.kind === "character" ? "내 캐릭터로 사용" : "회차 읽기"}</button>
         : <button disabled={busy || !listing.active} onClick={() => void (async () => { if (!await confirm({ title: "이 작품을 구매할까요?", description: listing.title, lines: [{ label: "구매금액", value: `${price.price}하트` }, { label: "구매 수수료", value: `+${price.buyerFee}하트` }, { label: "총 사용 하트", value: `${price.total}하트` }], confirmLabel: "구매하기" })) return; await run(async () => { await jsonApi("/api/store", { action: "buy", id: crypto.randomUUID(), listingId: listing.id }); await load(); }, "구매했습니다."); })()}>총 {price.total}하트로 구매</button>}
-      <button disabled={busy} onClick={() => { const reason = window.prompt("신고 사유를 입력해주세요."); if (reason?.trim()) void run(() => jsonApi("/api/account", { action: "report", listingId: listing.id, reason }), "신고를 접수했습니다."); }}>신고</button>
     </article>;
   }
   const groups = new Map<string, Listing[]>();
   for (const listing of data?.listings.filter(item => item.kind === "chapter") ?? []) { const id = listing.novel?.id ?? listing.id; groups.set(id, [...(groups.get(id) ?? []), listing]); }
   return <main className="account-page native-page"><div className="native-page-title"><div><h1>서점</h1><p>새로운 인연, 또 다른 이야기</p></div>{accountEnabled() ? <button type="button" className="native-title-icon" aria-label="서점 새로고침" title="서점 새로고침" disabled={busy} onClick={() => void run(() => load(true), "서점을 새로고침했습니다.")}><RefreshCw size={21} aria-hidden="true"/></button> : <BookOpen size={26}/>}</div><div className="native-tabs" role="tablist" aria-label="서점 분류"><button role="tab" aria-selected={filter === "character"} onClick={() => setFilter("character")}>캐릭터</button><button role="tab" aria-selected={filter === "chapter"} onClick={() => setFilter("chapter")}>소설</button></div>{!accountEnabled() ? <DemoNotice/> : <>
     {filter === "character" ? <section className="account-panel">{data?.listings.filter(item => item.kind === "character").map(listingCard)}{data && !data.listings.some(item => item.kind === "character") && <div className="native-empty"><UserRound size={38}/><p>새로운 캐릭터를 기다리고 있어요.</p></div>}</section>
-    : <section className="account-panel">{[...groups].map(([id, chapters]) => <details className="store-novel" key={id}><summary>{chapters[0].novel?.title ?? chapters[0].title} · {chapters[0].novel?.chapters ?? chapters.length}편</summary>{chapters.sort((a,b) => (a.chapter ?? 0) - (b.chapter ?? 0)).map(listingCard)}</details>)}{data && !groups.size && <div className="native-empty"><BookOpen size={38}/><p>첫 번째 이야기를 기다리고 있어요.</p></div>}</section>}
+    : <section className="account-panel">{[...groups].map(([id, chapters]) => <details className="store-novel" key={id}><summary><span className="store-cover">{chapters.find(chapter=>chapter.thumbnailUrl)?.thumbnailUrl ? <CachedImage src={chapters.find(chapter=>chapter.thumbnailUrl)!.thumbnailUrl!} cacheKey={`listing-preview:${chapters.find(chapter=>chapter.thumbnailUrl)!.id}:thumbnail`} loading="lazy" alt={`${chapters[0].novel?.title ?? chapters[0].title} 메인 캐릭터 이미지`}/> : <BookOpen size={28} aria-hidden="true"/>}</span><span>{chapters[0].novel?.title ?? chapters[0].title} · {chapters[0].novel?.chapters ?? chapters.length}편</span></summary>{chapters.sort((a,b) => (a.chapter ?? 0) - (b.chapter ?? 0)).map(listingCard)}</details>)}{data && !groups.size && <div className="native-empty"><BookOpen size={38}/><p>첫 번째 이야기를 기다리고 있어요.</p></div>}</section>}
     {reading && <section className="account-panel novel-reader"><button onClick={() => setReading(undefined)}>읽기 닫기</button><h2>{reading.title}</h2><p>{reading.text}</p></section>}
   </>}{notice && <p role="status">{notice}</p>}</main>;
 }

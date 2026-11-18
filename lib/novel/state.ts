@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { storedSeriesArcSchema } from "./series.ts";
+import {sharedChangeSchema} from "../chat/canon.ts";
 
 const short = z.string().trim().min(1).max(240);
 const facts = z.array(short).max(24);
@@ -76,6 +77,7 @@ export const createMemoryPatchSchema = (citation: z.ZodType<string> = quoteSchem
     relationships: z.array(evidence(citation)).max(4),
   }).strict()).max(6),
   nextChapterGoal: short,
+  sharedChanges:z.array(sharedChangeSchema(citation)).max(4).optional(),
 }).strict();
 export const memoryPatchSchema = createMemoryPatchSchema();
 

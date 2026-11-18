@@ -1,4 +1,4 @@
-export type Checkin = { id: string; body: string; user_turns: number; created_at: string };
+export type Checkin = { id: string; body: string; user_turns: number; created_at: string; read_at?:string|null };
 export type DisplayMessage = { role: "user" | "assistant"; content: string; checkinId?: string };
 /** Insert greetings after the completed exchange they followed; never duplicate persisted rows. */
 export function mergeCheckins<T extends DisplayMessage>(messages: T[], greetings: Checkin[]): (T | DisplayMessage)[] {

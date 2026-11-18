@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   distDir: process.env.MAITE_TEST_MODE === "1" ? ".next-test" : ".next",
   devIndicators: false,
   outputFileTracingIncludes: {
-    "/api/characters": ["./public/references/anime-style.png"],
+    "/api/characters": ["./public/references/anime-style.png", "./public/references/female-nurse-style.jpg"],
   },
   webpack(config) {
     config.resolve.fallback = {

@@ -235,6 +235,9 @@ async function handle(request: Request) {
       )
       .find((c: { type: string }) => c.type === "output_text")?.text;
     const brief = briefSchema.parse(JSON.parse(output || "null"));
+    // Explicit profile gender fixes new-character rendering; scene casts can differ.
+    if (!scene && brief.styleProfile !== "mixed" && profile?.gender === "여성") brief.styleProfile = "female";
+    if (!scene && brief.styleProfile !== "mixed" && profile?.gender === "남성") brief.styleProfile = "male";
     const target = confirmedIllustrationTarget(scene);
     // A manually selected counterpart must never inherit the original character's identity image.
     if (target && target !== profile?.name && "characterPresent" in brief) brief.characterPresent = false;
@@ -245,7 +248,7 @@ async function handle(request: Request) {
       quality: imageQuality(),
       output_format: "jpeg", output_compression: 85, n: 1,
     };
-    const useStyleImage = brief.styleProfile === "female" && !scene;
+    const useStyleImage = brief.styleProfile === "female" || brief.styleProfile === "mixed";
     const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
     const useEdit = useStyleImage || useIdentity;
     let imageBody: FormData | string;
@@ -254,8 +257,12 @@ async function handle(request: Request) {
       for (const [name, value] of Object.entries(parameters)) imageForm.set(name, String(value));
       if (useIdentity && prior instanceof File) imageForm.append("image[]", prior, "previous-character.jpg");
       if (useStyleImage) {
-        const reference = await readFile(path.join(process.cwd(), "public/references/anime-style.png"));
-        imageForm.append("image[]", new Blob([reference], { type: "image/png" }), "style-reference.png");
+        const references = await Promise.all([
+          readFile(path.join(process.cwd(), "public/references/anime-style.png")),
+          readFile(path.join(process.cwd(), "public/references/female-nurse-style.jpg")),
+        ]);
+        imageForm.append("image[]", new Blob([references[0]], { type: "image/png" }), "style-reference.png");
+        imageForm.append("image[]", new Blob([references[1]], { type: "image/jpeg" }), "style-nurse-reference.jpg");
       }
       imageBody = imageForm;
     } else imageBody = JSON.stringify(parameters);

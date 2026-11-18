@@ -41,8 +41,7 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (active) heading.current?.focus({ preventScroll: true }); }, [active]);
   const userName = account?.profile?.display_name;
-  const userAge = account?.profile?.age;
-  const character = useMemo(() => ({ ...profile, mode, imageDescription, ...(userName ? { userName } : {}), ...(userAge ? { userAge } : {}) }), [profile, mode, imageDescription, userName, userAge]);
+  const character = useMemo(() => ({ ...profile, mode, imageDescription, ...(userName ? { userName } : {}) }), [profile, mode, imageDescription, userName]);
   const readerHeading = <div className="character-screen-heading">
     <button type="button" onClick={onBack} aria-label="캐릭터 이미지로 돌아가기" title="캐릭터 이미지로 돌아가기"><ArrowLeft size={22} aria-hidden="true" /></button>
     {mode === "chat" && avatarUrl && <img className="reader-character-avatar" src={avatarUrl} alt=""/>}

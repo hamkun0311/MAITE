@@ -1,7 +1,8 @@
 import { userNamingInstructions } from "../chat/identity.ts";
 import { timelineRules, type Timeline } from "../chat/timeline.ts";
+import {personalityRules} from "../chat/personality.ts";
 import { promptTable } from "../prompt-table.ts";
-import { novelPlanMaxOutputTokens, novelReviewMaxOutputTokens, novelReviewReasoningOptions, reasoningOptions, textModel } from "../ai-model.ts";
+import { novelPlanMaxOutputTokens, novelReviewMaxOutputTokens, novelReviewReasoningOptions, novelReasoningOptions, novelPlanReasoningOptions, textModel,novelGenerationMode,novelIntegratedMaxOutputTokens } from "../ai-model.ts";
 import { z } from "zod";
 import { characterInstructions, conceptPriorityInstructions, makjangInstructions, type CharacterContext } from "../chat/character.ts";
 import { plainDialogue } from "../chat/presentation.ts";
@@ -9,8 +10,10 @@ import { createFinalReviewSchema, createMemoryPatchSchema, createReviewSchema, e
 import { manuscriptSources, resolveSources } from "./sources.ts";
 import { STORY_CHAPTER_LIMIT, seriesArcSchema, seriesSchedule, storyComplete, storyProgress } from "./series.ts";
 import { usageFetch, type UsageListener } from "../usage.ts";
+import {novelTimelineContext,sourceContext,promptTableInstructions} from "./context.ts";
+import {integratedEpisodeSchema,validateIntegratedEpisode} from "./integrated.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v13-bounded-review";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v15-lossless-context";
 
 export class NovelOutputLimitError extends Error {
   readonly stage: string;
@@ -32,6 +35,7 @@ type Options = {
 export async function generateChapter(options: Options) {
   const { character, key, signal, phase } = options;
   const MODEL = textModel();
+  const mode=novelGenerationMode(),started=Date.now();let calls=0,inputChars=0;
   const old = options.state ?? { ...emptyStoryState(), previousEnding: options.previous?.slice(-700) ?? "", previousProse: options.previous ?? "" };
   const additionalConcept = z.string().trim().max(1000).parse(options.additionalConcept ?? "");
   if (storyComplete(old) && !additionalConcept) throw new Error("Story already complete");
@@ -47,23 +51,26 @@ export async function generateChapter(options: Options) {
   const timeline = options.timeline;
   const promptMemory = timeline ? {
     ...memory,
+    recentEvents:memory.recentEvents.filter(text=>!timeline.canon?.some(e=>e.text===text)),
+    resolvedEvents:memory.resolvedEvents.filter(text=>!timeline.canon?.some(e=>e.text===text&&e.status==="completed")),
     currentSituation: timeline.scene.length ? undefined : memory.currentSituation,
     characters: memory.characters.map(p => ({ ...p,
       relationships: p.relationships.filter(text => !timeline.relationships.some(e => e.text === text)),
     })),
     openThreads: memory.openThreads.filter(text => !timeline.promises.some(e => e.text === text)),
   } : memory;
-  const context = JSON.stringify({ character, memory: promptMemory, ...(timeline ? { sharedTimeline: timeline } : {}), ...(existingArc ? { seriesArc: arcContext(existingArc) } : {}), seriesConcept,
+  const context = JSON.stringify({ character, memory: promptMemory, ...(timeline ? { sharedTimeline: novelTimelineContext(timeline) } : {}), ...(existingArc ? { seriesArc: arcContext(existingArc) } : {}), seriesConcept,
     ...(additionalConcept ? { additionalConcept, previousArc: arcContext(previousArc) } : {}), direction: options.direction, chapter: old.chapter + 1, schedule });
-  const base = characterInstructions(character) + "\n" + userNamingInstructions(character, seriesConcept) + (options.timeline ? "\n" + timelineRules : "");
+  const base = characterInstructions(character) + "\n" + personalityRules + "\n" + userNamingInstructions(character, seriesConcept) + "\n"+promptTableInstructions+(options.timeline ? "\n" + timelineRules : "");
   let proseCalls = 0;
   async function call(instructions: string, input: string, schema?: z.ZodType, name = "result", tokens = 2400) {
     signal.throwIfAborted();
+    calls++;inputChars+=instructions.length+input.length;
     const feature = name === "prose" ? (proseCalls++ ? "rewrite" : "write") : name;
     const { response, data } = await usageFetch(`novel.${feature}`, MODEL, "https://api.openai.com/v1/responses", {
       method: "POST", signal,
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: MODEL, store: false, ...(name === "chapter_review" ? novelReviewReasoningOptions(MODEL) : reasoningOptions(MODEL)),
+      body: JSON.stringify({ model: MODEL, store: false, ...(name === "chapter_review" ? novelReviewReasoningOptions(MODEL) : name === "chapter_plan" ? novelPlanReasoningOptions(MODEL) : novelReasoningOptions(MODEL)),
         max_output_tokens: tokens, instructions, input,
         ...(schema ? { text: { format: { type: "json_schema", name, strict: true,
           schema: novelJsonSchema(schema) } } } : {}),
@@ -86,7 +93,7 @@ export async function generateChapter(options: Options) {
   phase("planning");
   const arcInstruction = `This story arc has EXACTLY ${STORY_CHAPTER_LIMIT} chapters, ending at arc chapter ${STORY_CHAPTER_LIMIT}. Apply the story-content priority to schedule.direction and seriesArc (installments table: each row follows columns). A conflicting stored outline is fallible planning: correct its future milestones to fulfill the user requirements, never reinterpret a required outcome as an optional alternative. This chapter is ${schedule.chapter}/${STORY_CHAPTER_LIMIT} of the current arc, with ${schedule.remainingAfterThis} chapters left afterward. Global episode number is chapter; local arc position is schedule.chapter. Never reset global episode numbering. Future plans are NOT facts. ${additionalConcept ? "The user added a new concept: replan the NEXT 5 installments starting with this one, continuing existing events without erasing or replaying history. Replace only future plans, not established facts. Integrate the additional concept beginning in this chapter and preserve earlier unresolved goals where compatible. If the old arc was complete, start a causally connected new arc without undoing its resolution. " : ""}`;
   const firstPlanSchema = planSchema.extend({ seriesArc: seriesArcSchema });
-  const reusePlan = !!existingArc && !finale;
+  const reusePlan = !!existingArc && (mode==="integrated"||!finale);
   console.info("novel-plan", { chapter: old.chapter + 1, reused: reusePlan });
   const planned = reusePlan ? undefined : await structured(existingArc ? planSchema : firstPlanSchema,
     arcInstruction + (!existingArc ? `Create seriesArc now: exactly ${STORY_CHAPTER_LIMIT} numbered installments in order 1–${STORY_CHAPTER_LIMIT}, each with a concrete goal and payoff, and an endingPromise defining how the core conflict and relationship will resolve. Start with the character's concept and any additional concept; use existing memory for any already written installments of this arc without inventing past events. The outline is private planning, not prose, and not established history. ` : "Keep compatible endingPromise and milestones; override conflicting model-invented plans or goals with seriesConcept and character.concept. Explicitly plan each user-required outcome, including its subjects, cause and sequence; do not replace a required tragedy with escape, rescue, ambiguity or a choice between endings. ") +
@@ -103,6 +110,30 @@ export async function generateChapter(options: Options) {
     beats: [],
   };
   const chapterContext = { ...JSON.parse(context), seriesArc: arcContext(seriesArc), installmentGoal: seriesArc.installments[schedule.chapter - 1] };
+  if(mode==="integrated"){
+    let repair="";
+    for(let attempt=0;attempt<2;attempt++){
+      phase(attempt?"rewriting":"writing");
+      const raw=await call(`${base}\n${arcInstruction}\n${schedule.direction}\nWrite ONE completed installment and its verified memory patch as JSON. Global chapter=${old.chapter+1}; arcChapter=${schedule.chapter}. Privately plan causal beats from the stored plot, write, edit logic and natural Korean, then fill review from the FINAL prose. Aim for 2700–2800 Unicode characters, strictly 2500–3000 including spaces/newlines, excluding metadata. Do not pad with repetition. Preserve character motives, established chat events and knowledge boundaries; adapt future milestones to current facts. All evidence fields quote exact substrings of this same prose, at most 400 characters; no source IDs, invented quotations or outline outcomes. memoryPatch.sharedChanges contains only important on-page changes with known/public/reader visibility. Reuse actor/event keys. Record no hypothetical or planned event as completed. A final installment must actually fulfill the required ending and relationships, with no sequel hook. Review and memory are private metadata; no editorial comments in prose. Output only the schema.`,
+        JSON.stringify({context:{...chapterContext,character:undefined},plan,...(repair?{repair}:{} )}),integratedEpisodeSchema(finale),"episode_bundle",novelIntegratedMaxOutputTokens());
+      try{
+        const result=validateIntegratedEpisode(JSON.parse(raw),old.chapter+1,schedule.chapter,previousProse);
+        phase("remembering");
+        const state=mergeMemory({...old,seriesArc,seriesStartChapter,seriesConcept,longTermGoal:plan.longTermGoal},result.patch,result.text,plan.longTermGoal);
+        if(finale)state.nextChapterGoal="";
+        signal.throwIfAborted();
+        console.info("novel-completed",{mode,chapter:state.chapter,calls,retries:attempt,durationMs:Date.now()-started,inputChars,charCount:result.charCount});
+        return {text:result.text,state,expectedChapter:old.chapter,closedPromises:result.patch.closedThreads.map(item=>item.text),sharedChanges:result.patch.sharedChanges??[]};
+      }catch(error){
+        if(signal.aborted)throw error;
+        const code=error instanceof z.ZodError?"schema_or_memory":error instanceof SyntaxError?"invalid_json":error instanceof Error&&error.message.startsWith("Integrated")?error.message:"unsupported_memory";
+        console.info(attempt?"novel-integrated-failed":"novel-integrated-repair",{chapter:old.chapter+1,reason:code});
+        if(attempt)throw new Error("Integrated episode validation failed");
+        repair=JSON.stringify({reason:code,previousOutput:raw,instruction:"Correct only this installment. Preserve prior chapters and canon. Fix the schema, numbering, causal logic, required outcome, 2500–3000 character length and exact prose evidence. Return the full corrected bundle."});
+      }
+    }
+    throw new Error("Integrated episode validation failed");
+  }
   const { imageDescription: _imageDescription, ...reviewCharacter } = character;
   const { previousEnding: _previousEnding, ...reviewMemory } = promptMemory;
   const { previousArc: _previousArc, ...reviewBase } = chapterContext;
@@ -121,13 +152,15 @@ export async function generateChapter(options: Options) {
     const sourceUnits = manuscriptSources(draft);
     const citation = z.enum(sourceUnits.map(source => source.id) as [string, ...string[]]);
     phase("reviewing");
-    const reviewed = resolveSources(await structured((finale ? createFinalReviewSchema(citation) : createReviewSchema(citation)).extend({ memoryPatch: createMemoryPatchSchema(citation) }),
+    const reviewed = resolveSources(await structured((finale ? createFinalReviewSchema(citation) : createReviewSchema(citation)).extend({ memoryPatch: createMemoryPatchSchema(citation).required({sharedChanges:true}).nullable() }),
       arcInstruction + (finale ? "This is the FINAL chapter. Independently fill resolution: centralConflictResolved, protagonistOutcomeShown, relationshipOutcomeShown and hasSequelHook must describe what is ACTUALLY written, not just planned. Choose an exact source for the closing outcome or unfinished ending; explain fix if unresolved. Warm ambiguity is fine only after the core conflict and relationship outcomes are clear. An unresolved central conflict or a sequel hook is a material no_progress issue, not an advisory missing_beat. " : "Evaluate this installment's concrete progress toward the planned finale. Do not demand an early full ending. ") +
       "Fill conceptAlignment independently of the plan and its endingPromise, comparing the actual draft directly with seriesConcept and character.concept under the priority rule. Mark satisfied=false for a conflicting event, displaced central relationship/focus, or an omitted requirement due in this installment; cite the conflicting passage or ending and give a concrete fix. In the final chapter ALL specified outcomes must actually occur on the page, with the specified people, cause and sequence; promises, symbolism, optional endings or a generally resolved conflict do not fulfill them. Before the finale do not demand future outcomes early: require compatible progress toward them. Never waive a concept violation as an advisory missing_beat. Critically review the draft against memory and plan. Check repeated events (including paraphrases), continuity, causal links, meaningful progress and missing beats. A blocking issue must materially harm continuity/progress, not stylistic preference. Select supporting sourceUnits IDs in evidence. For absent progress select the static ending; for a missing beat select the passage that skips it. Record 1-based completed beat numbers, actual newEvents and achieved endingChange with source IDs. Do not treat plans or promises as accomplished events. Pass only when at least one concrete new event and changed situation are written. Gentle emotional/social changes count when genre-appropriate. Do not demand a twist every time. Return memoryPatch from this same draft; discard it if review fails. " +
       (reusePlan ? "No detailed beats were supplied: assess the current installment goal, actual causal progression and payoff rather than inventing a missing-beat checklist; completedBeats may be empty. " : "") +
       "Treat current sharedTimeline as newer than previousProse. Supported intervening changes in place, clothes or action status are not continuity errors. Only compare the same actor/event/time; do not flag a valid scene advance or a harmless stylistic choice as a blocking issue. " +
-      "Extract a compact memory PATCH only from accepted draft and existing memory. Do not repeat unchanged facts or character entries: existing memory is merged automatically. Keep summary within about 500 Korean characters, factual descriptions within about 80 characters, at most 3 newEvents, at most 2 entries per other fact/thread array, and at most 3 changed characters with at most 2 new knowledge/relationship entries each. These are compression targets, not permission to change established facts. Do not extract planned-but-unwritten events. Summary compresses prior summary plus actual new events, retaining established causal facts. Every factual change must select a genuinely supporting sourceUnits ID as evidence. Keep worldFacts (confirmed truth) separate from each character's knowledge and beliefs; do not promote guesses to truth. Record only actual goal/knowledge/relationship changes for characters. Preserve existing facts: do not silently contradict them. closedThreads.text must exactly match an existing openThreads entry or sharedTimeline.promises text; resolvedEvents record what is now settled and must not be replayed. nextChapterGoal is a future suggestion, never a completed fact; for the final chapter write '완결'. Omit unsupported changes with empty arrays or null. currentSituation and newEvents must be supported by draft.",
-      JSON.stringify({ context: reviewContext, plan, previousProse, sourceUnits }), "chapter_review", novelReviewMaxOutputTokens()), sourceUnits);
+      "Extract a compact memory PATCH only from accepted draft and existing memory. Do not repeat unchanged facts or character entries: existing memory is merged automatically. Keep summary within about 500 Korean characters, factual descriptions within about 80 characters, at most 3 newEvents, at most 2 entries per other fact/thread array, and at most 3 changed characters with at most 2 new knowledge/relationship entries each. These are compression targets, not permission to change established facts. Do not extract planned-but-unwritten events. Summary compresses prior summary plus actual new events, retaining established causal facts. Every factual change must select a genuinely supporting sourceUnits ID as evidence. Keep worldFacts (confirmed truth) separate from each character's knowledge and beliefs; do not promote guesses to truth. Record only actual goal/knowledge/relationship changes for characters. Preserve existing facts: do not silently contradict them. closedThreads.text must exactly match an existing openThreads entry or sharedTimeline.promises text; resolvedEvents record what is now settled and must not be replayed. nextChapterGoal is a future suggestion, never a completed fact; for the final chapter write '완결'. Omit unsupported changes with empty arrays or null. currentSituation and newEvents must be supported by draft. " +
+      "In sharedChanges extract at most 4 IMPORTANT on-page events, relationship changes, commitments or lasting statuses for both modes; use [] if none. subjectName/targetName must be exact existing participant names or names in the manuscript (null target when absent). Reuse sharedTimeline canon key/actor/target for the same event/relationship; new keys event_<slug>, relationship_<target>, promise_<slug> remain stable. Evidence selects sourceUnits IDs. status distinguishes planned, ongoing, completed, cancelled. visibility public means common knowledge established on page; character means the MAIN named character personally witnesses or learns it; reader means narrator-only revelation, another NPC's secret/private thought, or anything not known to the main character. Default unknown knowledge to reader, never treat a mentioned character as having witnessed every event. Public scene and main-character relationship entries must not disclose a reader-only secret. Do not extract outline outcomes or future directions as completed facts. Check each person's dialogue and decisions against explicit personality, motives and causal emotional response; vague generic reactions must be corrected within the current installment, without changing past chapters." +
+      " If this draft has material blocking errors, concept violations, copied events or an unresolved final ending, set memoryPatch:null: it will be discarded, so do not spend output on a summary or memory for the rejected draft. Keep the full independent verdict and supporting evidence. For an acceptable draft (including advisory missing beats only), provide the complete grounded memoryPatch with sharedChanges; null can NEVER be committed.",
+      JSON.stringify({ context: reviewContext, plan, previousProse, sourceUnits:sourceContext(sourceUnits) }), "chapter_review", novelReviewMaxOutputTokens()), sourceUnits);
     const resolution = finale ? createFinalReviewSchema().parse(Object.fromEntries(Object.entries(reviewed).filter(([key]) => key !== "memoryPatch"))).resolution : undefined;
     review = reviewSchema.parse(Object.fromEntries(Object.entries(reviewed).filter(([key]) => key !== "resolution" && key !== "memoryPatch")));
     const endingSatisfied = !resolution || (resolution.centralConflictResolved && resolution.protagonistOutcomeShown && resolution.relationshipOutcomeShown && !resolution.hasSequelHook);
@@ -153,5 +186,6 @@ export async function generateChapter(options: Options) {
     longTermGoal: plan.longTermGoal }, patch, draft, plan.longTermGoal);
   if (finale) state.nextChapterGoal = "";
   signal.throwIfAborted();
-  return { text: draft, state, expectedChapter: old.chapter, closedPromises: patch.closedThreads.map(item => item.text) };
+  console.info("novel-completed",{mode,chapter:state.chapter,calls,retries:proseCalls-1,durationMs:Date.now()-started,inputChars,charCount:Array.from(draft).length});
+  return { text: draft, state, expectedChapter: old.chapter, closedPromises: patch.closedThreads.map(item => item.text),sharedChanges:patch.sharedChanges??[] };
 }

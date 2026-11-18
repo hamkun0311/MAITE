@@ -63,3 +63,21 @@ test("greetings merge at the correct completed exchange and do not duplicate aft
  const greetings=[{id:D,body:"뭐해?",user_turns:1,created_at:"2026-11-20"}];
  const merged=mergeCheckins(messages,greetings);assert.equal(merged[2].content,"뭐해?");assert.equal(merged[3].content,"응");assert.deepEqual(mergeCheckins(merged,greetings),merged);
 });
+
+
+test("multi-character inbox migration preserves rows, permits independent daily greetings and retains read receipts",async()=>{
+ const db=await setup();try{
+  await add(db);await add(db,E);
+  await db.query("insert into character_checkins(user_id,document_id,day,user_turns,body,character_name,status) values($1,$2,'2026-11-20',1,'뭐해?','희진','sent')",[A,D]);
+  const migration=await readFile(new URL("../supabase/migrations/202611190001_character_checkin_inbox.sql",import.meta.url),"utf8");
+  await db.exec(migration);await db.exec(migration);
+  assert.equal((await db.query("select * from character_checkins where read_at is null")).rows.length,1);
+  await db.query("insert into character_checkins(user_id,document_id,day,user_turns,body,character_name,status) values($1,$2,'2026-11-20',1,'보고 싶어','수아','sent')",[A,E]);
+  await assert.rejects(db.query("insert into character_checkins(user_id,document_id,day,user_turns,body,character_name) values($1,$2,'2026-11-20',1,'중복','희진')",[A,D]),/unique/);
+  const latest=await db.query<any>("select * from character_checkin_latest($1)",[A]);assert.equal(latest.rows.length,2);
+  assert.equal((await db.query("select * from character_checkin_latest($1)",[B])).rows.length,0);
+  await db.query("update character_checkins set read_at=now() where user_id=$1 and document_id=$2",[A,D]);
+  const unread=await db.query<any>("select document_id from character_checkins where read_at is null");assert.deepEqual(unread.rows.map(row=>row.document_id),[E]);
+  await db.exec(migration);assert.equal((await db.query("select * from character_checkins where read_at is not null")).rows.length,1);
+ }finally{await db.close();}
+});

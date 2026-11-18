@@ -1,5 +1,5 @@
 import { changedCharacterLocation } from "../../../lib/chat/presentation.ts";
-import { timelineSchema, advanceTimeline, timelineChatMemory } from "../../../lib/chat/timeline.ts";
+import { timelineSchema, advanceTimeline, timelineChatMemory,timelineForChat } from "../../../lib/chat/timeline.ts";
 import { reasoningOptions, textModel } from "../../../lib/ai-model.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
@@ -10,10 +10,11 @@ import { storyStateSchema } from "../../../lib/novel/state.ts";
 import { generateChapter, NovelOutputLimitError } from "../../../lib/novel/generate.ts";
 import { explicitSpeechRequest, replySpeechPolicy, speechInstructions, speechStyleSchema } from "../../../lib/chat/speech.ts";
 import { streamedDialogue } from "../../../lib/chat/dialogue.ts";
-import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, mergeChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
+import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
 import { storyComplete } from "../../../lib/novel/series.ts";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
 import { userDisplayName } from "../../../lib/chat/identity.ts";
+import {completeCharacterReply,completedDialogueText} from "../../../lib/chat/completion.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -80,7 +81,7 @@ async function handle(request: Request) {
     const { messages, character, storyState, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
     if (character?.mode !== "story") signal = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
     const userName = character ? userDisplayName(character, additionalConcept || storyState?.seriesConcept) : "당신";
-    const timeline = rawTimeline ? { ...rawTimeline, participants: rawTimeline.participants.map(p => p.id === "user" ? { ...p, name: userName } : p) } : undefined;
+    const timeline = rawTimeline ? { ...rawTimeline, participants: rawTimeline.participants.map(p => p.id === "user" ? { ...p, name: userName } : p.id==="character"&&character?{...p,name:character.name}:p) } : undefined;
     if (character?.mode === "story" && storyComplete(storyState) && !additionalConcept)
       return fail("완결된 이야기입니다. 컨셉을 추가하거나 새 이야기로 시작해주세요.", 409);
     if (Date.now() > usage.until) { usage.count = 0; usage.until = Date.now() + 60000; }
@@ -101,7 +102,7 @@ async function handle(request: Request) {
               direction: messages.at(-1)!.content, key, signal,
               phase: phase => { stage = phase; send({ type: "phase", phase }); }, onUsage, timeline,
             });
-            if (timeline) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises, userName) });
+            if (timeline) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises, userName,chapter.sharedChanges) });
             send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter });
             send({ type: "done" });
           } catch (error) {
@@ -123,10 +124,13 @@ async function handle(request: Request) {
     }
     const requestedSpeech = explicitSpeechRequest(messages.at(-1)!.content);
     const speechPolicy = character?.mode === "chat" ? replySpeechPolicy(character, messages, speechStyle, speechPreference) : undefined;
-    const registerInstructions = `Before continuity and utterances, select speechStyle for THIS reply and use it consistently throughout. Current register: ${speechStyle ?? "unset"}. Clear direct request: ${requestedSpeech ?? "none"}. The latest request addressed to the CHARACTER overrides the current register. Interpret negations, quotations, hypotheticals and third-party speech in context; asking the user to speak casually is not a request to change your register. Otherwise follow the Korean register priority and age default specified above; preserve an agreed register unless the concept or conversation establishes a change. Never mix polite and casual endings or switch merely because of mood. After utterances, set clothingMentioned from ONLY the latest user message and this reply when the CHARACTER has changed clothes, chosen a new outfit, or is explicitly asked to wear/change an outfit (including uncommon garments). Exclude unchanged outfits, compliments, incidental names, unrelated homonyms, metaphors, other people's clothing and old memory. Set locationChanged when this exchange establishes a new/current changed location for the CHARACTER or a shared scene. Distinguish actual arrival/move from plans, invitations, flashbacks, negated moves, absent NPC places or the user moving alone. Do not require outfit changes for a location change. No explanations.`;
+    const registerInstructions = `Before continuity and utterances, select speechStyle for THIS reply and use it consistently throughout. Current register: ${speechStyle ?? "unset"}. Clear direct request: ${requestedSpeech ?? "none"}. The latest request addressed to the CHARACTER overrides the current register. Interpret negations, quotations, hypotheticals and third-party speech in context; asking the user to speak casually is not a request to change your register. Otherwise follow the Korean register priority and personality-based initial choice specified above; preserve an agreed register unless the concept or conversation establishes a change. Never mix polite and casual endings or switch merely because of mood. After utterances, set clothingMentioned from ONLY the latest user message and this reply when the CHARACTER has changed clothes, chosen a new outfit, or is explicitly asked to wear/change an outfit (including uncommon garments). Exclude unchanged outfits, compliments, incidental names, unrelated homonyms, metaphors, other people's clothing and old memory. Set locationChanged when this exchange establishes a new/current changed location for the CHARACTER or a shared scene. Distinguish actual arrival/move from plans, invitations, flashbacks, negated moves, absent NPC places or the user moving alone. Do not require outfit changes for a location change. No explanations.`;
     const originalMemory = character?.mode === "chat" ? chatMemory ?? emptyChatMemory(character.name) : undefined;
-    const rawMemory = originalMemory ? { ...originalMemory, participants: originalMemory.participants.map(p => p.id === "user" ? { ...p, name: userName } : p) } : undefined;
-    const memory = rawMemory && timeline ? timelineChatMemory(rawMemory, timeline) : rawMemory;
+    const rawMemory = originalMemory ? { ...originalMemory, participants: originalMemory.participants.map(p => p.id === "user" ? { ...p, name: userName } : p.id==="character"&&character?{...p,name:character.name}:p) } : undefined;
+    const memory = rawMemory && timeline ? timelineChatMemory(rawMemory, timelineForChat(timeline,messages.at(-1)!.content)) : rawMemory;
+    const factIds=memory?.facts.map(fact=>fact.id)??[];
+    const continuity=characterDialogueSchema.shape.continuity.extend({factIds:factIds.length?z.array(z.enum(factIds as [string,...string[]])).max(4):characterDialogueSchema.shape.continuity.shape.factIds.max(0)});
+    const outputSchema=characterDialogueSchema.extend({continuity,memory:characterDialogueSchema.shape.memory.required({personality:true}),...(speechPolicy?.style?{speechStyle:z.literal(speechPolicy.style)}:{})});
     finishReply = trackUsage("chat.reply", textModel(), onUsage);
     const upstream = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -138,7 +142,7 @@ async function handle(request: Request) {
         instructions: [characterInstructions(character), ...(character?.mode === "chat" ? [registerInstructions, ...(speechPolicy?.style ? [speechInstructions(speechPolicy.style), "This register is fixed for this reply. Ordinary tone, affection, mood and casual user speech do not authorize changing it."] : [])] : []),
           ...(memory && character ? [conversationInstructions(character, memory, messages.at(-1)!.content, timeline)] : [])].join("\n\n"),
         input: messages,
-        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: z.toJSONSchema(speechPolicy?.style ? characterDialogueSchema.extend({ speechStyle: z.literal(speechPolicy.style) }) : characterDialogueSchema) } } } : {}),
+        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: z.toJSONSchema(outputSchema) } } } : {}),
       }),
     });
     if (!upstream.ok || !upstream.body) {
@@ -157,6 +161,7 @@ async function handle(request: Request) {
           let answer = "";
           let rawDialogue = "";
           let nextMemory: ChatMemory | undefined;
+          let nextSharedTimeline:ReturnType<typeof advanceTimeline>|undefined;
           let selectedSpeech: z.infer<typeof speechStyleSchema> | undefined;
           let clothingMentioned = false;
           let locationChanged = false;
@@ -177,16 +182,17 @@ async function handle(request: Request) {
             if (event.type === "response.completed") {
               finishReply?.(event.response);
               if (character?.mode === "chat") {
-                const result = characterDialogueSchema.parse(JSON.parse(rawDialogue));
-                const final = result.utterances.join("\n\n");
-                if (!final.trim() || final !== answer) throw new Error("Invalid dialogue output");
-                selectedSpeech = result.speechStyle;
-                clothingMentioned = result.clothingMentioned;
-                nextMemory = mergeChatMemory(memory!, result.memory, messages.at(-1)!.content, final);
-                locationChanged = result.locationChanged || changedCharacterLocation(memory, nextMemory);
-                const ids = new Set(nextMemory.participants.map(person => person.id));
-                if ([result.continuity.actorId, result.continuity.targetId].some(id => id !== null && !ids.has(id)) ||
-                  result.continuity.factIds.some(id => !memory!.facts.some(fact => fact.id === id))) console.info("chat-continuity-rejected");
+                const result = completeCharacterReply(JSON.parse(completedDialogueText(event.response,rawDialogue)),memory!,character,messages.at(-1)!.content,timeline,userName);
+                const final=result.text;
+                if(!final.trim()||!final.startsWith(answer))throw new Error("Invalid dialogue output");
+                if(final.length>answer.length)send({type:"delta",text:final.slice(answer.length)});
+                answer=final;
+                selectedSpeech = result.reply.speechStyle;
+                clothingMentioned = result.reply.clothingMentioned;
+                nextMemory = result.memory;
+                nextSharedTimeline=result.timeline;
+                locationChanged = result.reply.locationChanged || changedCharacterLocation(memory, nextMemory);
+                if(result.degraded)console.warn("chat-metadata-discarded",{reason:result.degraded,turn:memory!.turn});
               }
               completed = true;
               if (character?.mode === "chat") {
@@ -195,18 +201,21 @@ async function handle(request: Request) {
               }
               if (selectedSpeech) send({ type: "speech", speechStyle: selectedSpeech, ...(speechPolicy?.remember ? { preference: selectedSpeech } : {}) });
               if (nextMemory) send({ type: "memory", state: nextMemory, expectedTurn: memory!.turn });
-              if (timeline && nextMemory && character) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, nextMemory, undefined, undefined, [], userName) });
+              if (timeline && nextSharedTimeline) send({ type: "timeline", expectedRevision: timeline.revision, state: nextSharedTimeline });
               send({ type: "done" }); break;
             }
             if (["error", "response.failed", "response.incomplete"].includes(String(event.type))) {
               finishReply?.(event.response, "failed");
-              throw new Error("Incomplete response");
+              const response=event.response as {incomplete_details?:{reason?:string}}|undefined;
+              throw new Error(event.type==="response.incomplete"&&response?.incomplete_details?.reason==="max_output_tokens"?"Chat output token limit":"Incomplete response");
             }
           }
           if (!completed) throw new Error("Disconnected stream");
-        } catch {
+        } catch(error) {
+          const reason=error instanceof z.ZodError?"invalid_dialogue_schema":error instanceof SyntaxError?"invalid_dialogue_json":error instanceof Error&&["Chat output token limit","Invalid dialogue output","Invalid dialogue stream","Dialogue too long","Incomplete response","Disconnected stream"].includes(error.message)?error.message:"stream_processing_failed";
+          console.warn("chat-failed",{reason,cancelled:signal.aborted});
           if (!abort.signal.aborted && !request.signal.aborted)
-            send({ type: "error", message: "응답이 중단되었습니다. 다시 시도해주세요." });
+            send({ type: "error",...(reason==="Chat output token limit"?{code:"output_token_limit"}:{}), message: reason==="Chat output token limit"?"답변 생성 중 출력 토큰 한도에 도달했습니다. 이전 대화는 유지됩니다. 사용량을 확인한 뒤 다시 시도해주세요.":"응답이 중단되었습니다. 다시 시도해주세요." });
         } finally {
           finishReply?.(undefined, "unknown");
           abort.abort();

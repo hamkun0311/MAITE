@@ -22,7 +22,7 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .character-app .character-image-panel .chat-layout { padding:20px 16px; gap:20px; background:var(--native-bg); }
 .character-app .character-image-panel .conversation { height:auto; min-height:0; max-height:none; }
 .character-app .character-image-panel .character-profile { padding:18px; border:1px solid #e8e2f2; border-radius:20px; background:#fff; }
-.character-app .character-image-panel .character-output { min-width:0; padding:16px; border:1px solid #e8e2f2; border-radius:20px; background:#fff; box-shadow:0 4px 18px #41305b05; }
+.character-app .character-image-panel .character-output { width:100%; min-width:0; align-self:stretch; box-sizing:border-box; padding:16px; border:1px solid #e8e2f2; border-radius:20px; background:#fff; box-shadow:0 4px 18px #41305b05; }
 .character-app .character-image-panel .character-output-heading { padding:0 0 12px; border-bottom:1px solid #eee9f6; color:#795bee; }
 .character-app .character-image-panel .character-output-heading h2 { color:#655475; }
 .character-app .character-image-panel .character-canvas { margin-top:14px; background:#f3effb; }
@@ -205,10 +205,12 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 
 .character-app .character-screen[hidden] { display:none; }
 .character-app .chat-header .native-avatar { width:34px; height:34px; font-size:17px; }
-.character-app .character-next { display:flex; gap:12px; padding:14px 0; }
+.character-app .character-next { display:flex; gap:12px; padding:14px 0; background:transparent; border-top:1px solid var(--native-line); }
 .character-app .character-next button { display:flex; align-items:center; justify-content:center; flex:1; min-width:0; min-height:52px; padding:12px 18px; border:1px solid #ded4f7; border-radius:16px; background:#f1ebff; color:#795bee; box-shadow:0 3px 12px #795bee0b; }
 .character-app .character-next button:hover { background:#e8defc; border-color:#cbbbef; }
 .character-app .character-next button svg { width:25px; height:25px; }
+.character-app .character-output .chat-progress { margin-top:4px; min-height:40px; padding:10px 12px; border:1px solid var(--native-line); border-radius:12px; background:#f7f4fd; color:#9392a5; font-size:11px; line-height:1.6; }
+.character-app .character-output .chat-progress .status-dot { background:#b49bdc; }
 .character-app .story-generation-status { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:11px; color:#9392a5; margin-top:6px; }
 .character-app .story-generation-status button { padding:5px 10px; border:1px solid #ded4f7; border-radius:10px; background:#f1ebff; color:#795bee; font-size:11px; }
 .native-reward-entry { display:flex; justify-content:space-between; align-items:center; padding:16px 18px; margin:14px 0; background:#fff; border:1px solid #e8e2fa; border-radius:18px; color:#795bee; font-weight:700; text-decoration:none; }
@@ -261,3 +263,15 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .novel-sale-prices { background:#f6f2fd; padding:12px 14px; border-radius:14px; font-size:12px; }
 .novel-sale-prices>div { display:flex; justify-content:space-between; gap:10px; margin:6px 0; }
 .novel-sale-prices dd { margin:0; font-weight:700; }
+.store-cover { display:flex; align-items:center; justify-content:center; width:64px; height:92px; flex-shrink:0; border-radius:12px; overflow:hidden; background:#f1ecfa; color:#a18db9; }
+.store-cover img { width:100%; height:100%; object-fit:cover; }
+.store-listing>.store-cover { float:left; margin:0 14px 10px 0; }
+.store-listing::after { content:""; display:block; clear:both; }
+.character-app .store-novel>summary { display:flex; align-items:center; gap:14px; padding:14px 0; cursor:pointer; }
+.store-novel>summary::after { content:"⌄"; margin-left:auto; color:#977db6; }
+/* Character greetings share one unread state across the list and footer. */
+.character-app .footer-character-icon { position:relative; display:inline-flex; }
+.character-app .checkin-footer-dot { position:absolute; right:-4px; top:-2px; width:8px; height:8px; border-radius:50%; background:#f0648c; box-shadow:0 0 0 2px #fff; }
+.character-app .character-name-row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+.character-app .character-name-row h3,.character-app .character-name-row h2 { margin-bottom:0; }
+.character-app .checkin-arrival-badge { display:inline-flex; flex:none; border-radius:999px; padding:3px 7px; background:#fff0f5; color:#c8406b; font-size:10px; font-weight:700; line-height:1.4; white-space:nowrap; }

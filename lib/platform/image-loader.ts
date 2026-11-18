@@ -10,6 +10,8 @@ export function loadAccountImage(scope: string, key: string, url: string) {
     return cached ? new Response(cached) : fetch(input, init);
   }, async () => {
     if (key.startsWith("profile:")) return (await jsonApi("/api/account")).avatarUrl;
+    const preview = key.match(/^listing-preview:([a-f0-9-]{36}):thumbnail$/i);
+    if (preview) return (await jsonApi("/api/store")).listings.find((row:{id:string})=>row.id===preview[1])?.thumbnailUrl;
     const asset = key.match(/^(job|listing):([a-f0-9-]{36}):(original|thumbnail)$/i);
     if (!asset) return;
     // Re-check entitlement instead of extending or bypassing a signed URL after expiry.

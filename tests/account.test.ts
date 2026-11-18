@@ -9,7 +9,7 @@ import { createStudioSessions } from "../lib/chat/session.ts";
 import { verifyAdmob } from "../lib/server/admob.ts";
 import { verifyPurchase, playAccountId } from "../lib/server/play.ts";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { completedNovelListings, isPublishedNovel, listingId } from "../lib/server/publishing.ts";
+import { novelListings, unpublishedNovelRows, isPublishedNovel, listingId } from "../lib/server/publishing.ts";
 import { novelComplete, libraryNovels } from "../lib/account/library.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { userProfileSchema } from "../lib/account/profile.ts";
@@ -84,9 +84,10 @@ test("updated heart packs grant new quantities once without repricing old purcha
  }finally{await db.close();}
 });
 
-test("public profile accepts only a bounded nickname, gender and age", () => {
+test("public profile needs only nickname and gender while accepting legacy saved ages", () => {
   const profile = { nickname: "별빛", gender: "여성", age: 27 };
   assert.equal(userProfileSchema.safeParse(profile).success, true);
+  assert.equal(userProfileSchema.safeParse({nickname:"별빛",gender:"여성"}).success,true);
   for (const invalid of [{ ...profile, nickname: " " }, { ...profile, nickname: "x".repeat(33) }, { ...profile, age: 0 }, { ...profile, age: 121 }, { ...profile, age: 25.5 }, { ...profile, userId: "someone-else" }, { ...profile, admin: true }]) assert.equal(userProfileSchema.safeParse(invalid).success, false);
 });
 const A = "11111111-1111-4111-8111-111111111111";
@@ -101,7 +102,7 @@ test("novels publish every chapter atomically from a saved complete work and tru
     chat: { ...sessions.chat, committed: [{ role: "user", content: "비공개 대화" }] }, story: { ...sessions.story, documentId: B, lastJobId: job, archive, storyState: state }, timeline: sessions.chat.timeline.state });
   const finalEvent = { type: "chapter", text: state.previousProse, state };
   const options = { payload: snapshot, result: { events: [finalEvent, { type: "done" }] }, owner: A, documentId: B, title: "서점에서의 약속", description: "완결된 이야기" };
-  const rows = completedNovelListings(options);
+  const rows = novelListings(options);
   assert.equal(novelComplete(snapshot), true);
   assert.equal(rows.length, 5);
   assert.deepEqual(rows.map(row => row.content.chapter), [1, 2, 3, 4, 5]);
@@ -109,16 +110,28 @@ test("novels publish every chapter atomically from a saved complete work and tru
   assert.equal(rows[4].content.novel.chapters, 5);
   assert.equal(isPublishedNovel(rows[0].content.novel), true);
   assert.equal(isPublishedNovel(undefined), false);
-  assert.equal(isPublishedNovel({ id: B, title: "미완결", chapters: 3 }), false);
+  assert.equal(isPublishedNovel({ id: B, title: "미완결", chapters: 3 }), true);
   assert.equal(rows[0].id, listingId(A, B, 1));
   assert.notEqual(rows[0].id, listingId(B, B, 1));
   assert.ok(!JSON.stringify(rows).includes("비공개"));
-  assert.deepEqual(completedNovelListings(options), rows);
+  assert.deepEqual(novelListings(options), rows);
+  for(const chapter of [1,3]){
+    const partialArchive=archive.slice(0,chapter*2);
+    const partialState={...state,chapter,previousProse:partialArchive.at(-1)!.content,nextChapterGoal:"다음 회차"};
+    const partialSnapshot={...snapshot,story:{...snapshot.story,archive:partialArchive,storyState:partialState}};
+    const partialRows=novelListings({...options,payload:partialSnapshot,result:{events:[{type:"chapter",text:partialState.previousProse,state:partialState}]}});
+    assert.equal(partialRows.length,chapter);assert.equal(partialRows[0].content.novel.complete,false);
+    assert.equal(isPublishedNovel(partialRows[0].content.novel),true);
+    const added=unpublishedNovelRows(rows,partialRows);
+    assert.deepEqual(added.map(row=>row.content.chapter),Array.from({length:5-chapter},(_,index)=>chapter+index+1));
+    assert.equal(unpublishedNovelRows(partialRows,partialRows).length,0);
+    assert.throws(()=>unpublishedNovelRows([{...partialRows[0],content:{...partialRows[0].content,text:"바꾼 원고"}}],partialRows),/원고는 변경/);
+  }
   // An edited client completion flag cannot substitute for the server's result.
-  assert.throws(() => completedNovelListings({ ...options, result: { events: [{ ...finalEvent, state: { ...state, nextChapterGoal: "다음 사건" } }] } }), /완결/);
-  assert.throws(() => completedNovelListings({ ...options, result: { events: [] } }), /완결/);
-  assert.throws(() => completedNovelListings({ ...options, payload: { ...snapshot, story: { ...snapshot.story, archive: archive.slice(2) } } }), /완결/);
-  assert.throws(() => completedNovelListings({ ...options, result: { events: [{ ...finalEvent, text: "다른 원고" }] } }), /완결/);
+  assert.throws(() => novelListings({ ...options, result: { events: [{ ...finalEvent, state: { ...state, nextChapterGoal: "다음 사건" } }] } }), /생성이 확인된 회차/);
+  assert.throws(() => novelListings({ ...options, result: { events: [] } }), /생성이 확인된 회차/);
+  assert.throws(() => novelListings({ ...options, payload: { ...snapshot, story: { ...snapshot.story, archive: archive.slice(2) } } }), /생성이 확인된 회차/);
+  assert.throws(() => novelListings({ ...options, result: { events: [{ ...finalEvent, text: "다른 원고" }] } }), /생성이 확인된 회차/);
   assert.equal(sessionSnapshotForTest(snapshot).lastJobId, job);
   const novels = libraryNovels([{ id: A, kind: "studio", title: "캐릭터", chapter: "5", novel_id: B }, { id: B, kind: "chapter", title: "소설", chapter: "5" }]);
   assert.deepEqual(novels.map(doc => doc.id), [B]);

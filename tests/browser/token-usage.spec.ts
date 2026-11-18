@@ -42,7 +42,7 @@ test("character image generation stays inline with a spinner and can be cancelle
   await expect(button).toHaveAttribute("aria-busy", "true"); await expect(button.locator(".spin")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0); await expect(page.getByLabel("캐릭터 이름")).toBeVisible();
   await page.getByRole("button", { name: "이미지 생성 취소", exact: true }).click(); release();
-  await expect(button).toBeEnabled(); await expect(page.getByText("생성을 취소했습니다.", { exact: false })).toBeVisible();
+  await expect(button).toBeEnabled(); await expect(button).toHaveAttribute("aria-busy","false"); await expect(button.locator(".spin")).toHaveCount(0);
 });
 
 test("story generation uses an inline spinner and can be cancelled without a popup", async ({ page }) => {

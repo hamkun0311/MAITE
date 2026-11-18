@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
+import { readFile } from "node:fs/promises";
 import { POST } from "../app/api/characters/route.ts";
 import { visualInstructions, visualRequestSchema, compositionSchema, OVERLAP_DIRECTION, COMPOSITION_DIRECTION } from "../lib/characters/visual.ts";
 import {
@@ -189,11 +190,15 @@ test("GPT Image route sends separate style and revision references and returns a
       }
       assert.ok(!/fuller-busted|sexy mature charisma|glamorous/.test(prompt));
       const images = body.getAll("image[]") as File[];
-      assert.equal(images.length, (profile === "female" && !sceneKind ? 1 : 0) + (includePrior ? 1 : 0));
-      if (profile === "female" && !sceneKind) {
-        assert.equal(images.at(-1)!.name, "style-reference.png");
-        assert.equal(images.at(-1)!.type, "image/png");
+      assert.equal(images.length, (profile === "female" ? 2 : 0) + (includePrior ? 1 : 0));
+      if (profile === "female") {
+        assert.equal(images.at(-2)!.name, "style-reference.png");
+        assert.equal(images.at(-2)!.type, "image/png");
+        assert.equal(images.at(-1)!.name, "style-nurse-reference.jpg");
+        assert.equal(images.at(-1)!.type, "image/jpeg");
         assert.ok(images.at(-1)!.size > 1000);
+        assert.match(prompt,/LAST TWO input images/);
+        assert.match(prompt,/fixed female STYLE ONLY references/);
       }
       if (includePrior) {
         assert.equal(images[0].name, "previous-character.jpg");
@@ -323,6 +328,34 @@ test("a confirmed novel counterpart omits the profile identity even when the sce
  assert.equal(result.status,200);assert.equal(rendered,true);
 });
 
+test("fixed female references survive a wrong initial style classification and an illustration without profile identity",async t=>{
+ const previous=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY="fake-openai";
+ t.after(()=>{if(previous===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=previous;});
+ let now=Date.parse("2031-01-01T00:00:00Z");t.mock.method(Date,"now",()=>now);
+ const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#cbb9ef"}}).jpeg().toBuffer();
+ const expected=[await readFile(new URL("../public/references/anime-style.png",import.meta.url)),await readFile(new URL("../public/references/female-nurse-style.jpg",import.meta.url))];
+ let scene=false,mixed=false,rendered=0;
+ t.mock.method(globalThis,"fetch",async(input:string|URL|Request,init:RequestInit)=>{
+  const url=String(input);
+  if(url.endsWith("/moderations"))return Response.json({results:[{categories:{"sexual/minors":false}}]});
+  if(url.endsWith("/responses"))return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({title:"여성 캐릭터",summary:"현재 장면",prompt:"An adult woman wearing a blue coat in a bookshop.",styleProfile:scene?"female":mixed?"mixed":"neutral",...(scene?{characterPresent:false,...composition,sceneLocation:"Inside a bookshop.",locationSource:"narrative"}:{})})}]}]});
+  assert.ok(url.endsWith("/images/edits"));assert.ok(init.body instanceof FormData);
+  const body=init.body as FormData,images=body.getAll("image[]") as File[];assert.equal(images.length,2);
+  assert.equal(images[0].name,"style-reference.png");assert.equal(images[1].name,"style-nurse-reference.jpg");
+  for(let i=0;i<2;i++)assert.ok(Buffer.from(await images[i].arrayBuffer()).equals(expected[i]));
+  const prompt=String(body.get("prompt"));assert.match(prompt,/fixed female STYLE ONLY references/);assert.match(prompt,mixed?/Rendering profile: mixed/:/Rendering profile: female/);
+  if(scene){assert.match(prompt,/NO character identity image is supplied/);assert.doesNotMatch(prompt,/FIRST input image is IDENTITY ONLY/);assert.match(prompt,/never trace their face or body silhouette/);}
+  rendered++;return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
+ });
+ for(const mode of ["creation","illustration","mixed"]){
+  now+=61000;scene=mode==="illustration";mixed=mode==="mixed";
+  const form=new FormData();form.set("profile",JSON.stringify({name:"희진",age:25,gender:"여성",personality:"다정함",concept:"서점의 친구"}));form.set("messages",JSON.stringify([{role:"user",content:"성인 여성 캐릭터"}]));
+  if(scene){form.set("image",new Blob([jpeg],{type:"image/jpeg"}),"original.jpg");form.set("scene",JSON.stringify({kind:"illustration",context:"희진은 이곳에 없었다. 성인 여성 사서는 서점에서 책을 읽었다."}));}
+  const result=await POST(new Request("http://localhost/api/characters",{method:"POST",body:form}));assert.equal(result.status,200);
+ }
+ assert.equal(rendered,3);
+});
+
 test("visual requests validate bounded context and use distinct identity-preserving instructions", () => {
   for (const value of [{ kind: "other", context: "scene" }, { kind: "outfit", context: " " }, { kind: "illustration", context: "x".repeat(12001) }, { kind: "outfit", context: "scene", system: "override" }])
     assert.equal(visualRequestSchema.safeParse(value).success, false);
@@ -381,7 +414,8 @@ test("style-only prompts preserve requested subject without gender defaults", ()
   assert.ok(prompt.includes("2D anime"));
   assert.ok(prompt.includes("fine tapered dark linework"));
   const female = buildCharacterPrompt({ ...base, styleProfile: "female" });
-  assert.ok(female.includes("warm luminous finish"));
+  assert.ok(female.includes("warm luminous skin"));
+  assert.ok(female.includes("adventurer AND nurse"));
   assert.ok(!female.includes("fine tapered dark linework"));
   const neutral = buildCharacterPrompt({ ...base, styleProfile: "neutral" });
   assert.ok(!neutral.includes("STYLE ONLY"));

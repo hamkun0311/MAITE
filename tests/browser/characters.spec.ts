@@ -51,9 +51,7 @@ test("top menus, character generation, full-screen preview and image-based revis
   await expect(page.getByRole("button", { name: "생성 프롬프트", exact: true })).toHaveCount(0);
   await page.getByLabel("컨셉", { exact: true }).fill("성인 여성, 우아한 원피스");
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
-  await expect(
-    page.getByText("이미지 생성 완료 · JPG로 저장할 수 있습니다."),
-  ).toBeVisible();
+  await expect(page.locator(".character-canvas")).toHaveAttribute("aria-busy","false");
   await expect(
     page.getByAltText("우아한 캐릭터 — 생성된 2D 캐릭터 일러스트"),
   ).toBeVisible();
@@ -76,9 +74,7 @@ test("top menus, character generation, full-screen preview and image-based revis
   await expect(page.getByRole("link", { name: "이미지 다운로드" })).toHaveCount(0);
   await page.getByLabel("컨셉", { exact: true }).fill("은발의 성인 여성, 우아한 원피스");
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
-  await expect(
-    page.getByText("이미지 생성 완료 · JPG로 저장할 수 있습니다."),
-  ).toBeVisible();
+  await expect(page.locator(".character-canvas")).toHaveAttribute("aria-busy","false");
   expect(calls).toBe(2);
   await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
@@ -127,9 +123,8 @@ test("cancellation and API error never expose a stale character download", async
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   await page.getByRole("button", { name: "이미지 생성 취소", exact: true }).click();
   release();
-  await expect(
-    page.getByText("생성을 취소했습니다.", { exact: false }),
-  ).toBeVisible();
+  await expect(page.getByRole("button",{name:"캐릭터 생성",exact:true})).toBeEnabled();
+  await expect(page.locator(".character-canvas")).toHaveAttribute("aria-busy","false");
   await expect(page.getByLabel("컨셉", { exact: true })).toHaveValue(
     "성인 캐릭터",
   );

@@ -1,4 +1,5 @@
 "use client";
+import CheckinInbox from "./CheckinInbox";
 import PushBridge from "./PushBridge";
 import TokenUsage from "./TokenUsage";
 import CachedImage from "./CachedImage";
@@ -210,6 +211,10 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   async function loadCloud(id: string) {
     const load = ++loadSequence.current; const currentOwner = owner.current;
     if (documentId.current === id && art) { router.push("/ideal/new"); return; }
+    // Persist the outgoing character before replacing the shared session refs.
+    if (art && previous.current) await saveCloud();
+    else await cloudQueue.current.catch(() => undefined);
+    if (load !== loadSequence.current || currentOwner !== owner.current) return;
     const doc = await jsonApi(`/api/account?document=${id}&media=1`); const data = snapshotSchema.parse(doc.payload);
     const job = doc.media?.original ? { imageUrl: doc.media.original } : await jsonApi(data.art.jobId ? `/api/account?job=${data.art.jobId}` : `/api/store?id=${data.art.listingId}`);
     if (!job.imageUrl) throw new Error("캐릭터 이미지를 찾지 못했습니다.");
@@ -302,7 +307,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       pending.current = null;
     }
     setBusy(false);
-    setStatus("생성을 취소했습니다. 설정을 확인하고 다시 생성해주세요.");
   }
   function reset() {
     cancel();
@@ -404,7 +408,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       });
       setMessages([...history, { role: "assistant", content: summary }]);
       setCreatedPreview({url,title});
-      setStatus("이미지 생성 완료 · JPG로 저장할 수 있습니다.");
     } catch (e) {
       if (id !== generation.current) return;
       pending.current = null;
@@ -536,7 +539,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   );
   return (
     <StudioContext.Provider value={{ creation, art, characterDocumentId: documentId.current, sessions: sessions.current, openMenu, editProfile, visuals, loadDocument: loadCloud, importCharacter, deleteCharacter, flushSave: async () => { if (art && accountEnabled() && user) await saveCloud(); } }}>
-    <div ref={app} className={`chat-app character-app ${menu === "chat" || menu === "story" ? "is-character-reading" : ""} ${menu === "chat" ? "is-character-chat" : ""}`}>
+    <CheckinInbox key={user?.id ?? "demo"}><div ref={app} className={`chat-app character-app ${menu === "chat" || menu === "story" ? "is-character-reading" : ""} ${menu === "chat" ? "is-character-chat" : ""}`}>
       <header className="chat-header">
         <Link href="/ideal/mypage" className="native-user" aria-label="내 프로필"><span className="native-avatar">{account?.avatarUrl ? <CachedImage src={account.avatarUrl} cacheKey={`profile:${account.avatarUrl.split("?")[0]}`} alt=""/> : (account?.profile?.display_name || "당신").slice(0, 1)}</span><strong>{account?.profile?.display_name || "당신"}</strong></Link>
         <div className="native-header-tools">
@@ -549,7 +552,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       <PushBridge/>
       {createdPreview && <CharacterImageViewer src={createdPreview.url} title={createdPreview.title} open onClose={() => setCreatedPreview(undefined)} />}
       <AppFooter />
-    </div>
+    </div></CheckinInbox>
     </StudioContext.Provider>
   );
 }

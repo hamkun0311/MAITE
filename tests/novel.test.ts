@@ -6,7 +6,11 @@ import { z } from "zod";
 import { POST } from "../app/api/chat/route.ts";
 import { manuscriptSources, resolveSources } from "../lib/novel/sources.ts";
 import { seriesArcSchema, seriesSchedule, storyComplete, storyProgress } from "../lib/novel/series.ts";
-import { emptyTimeline } from "../lib/chat/timeline.ts";
+import { emptyTimeline,advanceTimeline,timelineForChat } from "../lib/chat/timeline.ts";
+import {conversationInstructions,emptyChatMemory} from "../lib/chat/memory.ts";
+import {novelTimelineContext,sourceContext} from "../lib/novel/context.ts";
+import {integratedEpisodeSchema,validateIntegratedEpisode} from "../lib/novel/integrated.ts";
+import {novelGenerationMode} from "../lib/ai-model.ts";
 
 const character = { mode: "story" as const, name: "서하", age: 25, personality: "다정함", concept: "친구와 서점 복구", genre: "막장드라마" as const, imageDescription: "서점의 탐정" };
 const prose = "서하는 서랍에서 계약서를 찾았다. 그가 약속한 수리 날짜가 문서에 적혀 있었다. " + "그녀는 친구에게 전화를 걸어 내일 함께 서점을 정리하자고 말했다. 망설이던 친구가 수화기 너머에서 웃었다. " + "둘은 닫힌 서점 문을 열고 먼지 쌓인 책을 창가로 옮겼다. 새로 비워진 진열대 사이로 햇빛이 들어왔다. 오래 미뤄 두었던 일이 드디어 시작되었다. " + "친구가 가져온 달력에 수리 날짜를 표시했다. 내일 아침에는 창문을 닦기로 했다.";
@@ -17,7 +21,8 @@ const plan = { seriesArc, chapterGoal: "서점 복구를 시작한다", longTerm
 const review = { pass: true, conceptAlignment: { satisfied: true, evidence: fact.evidence, fix: "설정 준수" }, blockingIssues: [], completedBeats: [1, 2, 3], newEvents: [fact], endingChange: { text: "정리가 시작됨", evidence: "오래 미뤄 두었던 일이 드디어 시작되었다." } };
 const patch = { summary: "서하가 계약서를 찾아 친구와 서점 정리를 시작했다.", currentSituation: fact,
   newEvents: [fact], resolvedEvents: [fact], openedThreads: [], closedThreads: [], worldFacts: [fact],
-  characters: [{ name: "서하", goal: null, knowledge: [fact], relationships: [] }], nextChapterGoal: "창문을 닦는다" };
+  characters: [{ name: "서하", goal: null, knowledge: [fact], relationships: [] }], nextChapterGoal: "창문을 닦는다",sharedChanges:[] };
+const unpack = (value: any): any[] => Array.isArray(value)?value:value?.rows?.map((row:any[])=>Object.fromEntries(value.columns.map((name:string,index:number)=>[name,row[index]])))??[];
 const response = (value: unknown, init?: RequestInit) => {
   if (value && typeof value === "object" && "pass" in value) value = { memoryPatch: patch, ...value };
   const input = init ? JSON.parse(JSON.parse(String(init.body)).input) : {};
@@ -25,11 +30,137 @@ const response = (value: unknown, init?: RequestInit) => {
     if (Array.isArray(item)) return item.map(cite);
     if (!item || typeof item !== "object") return item;
     return Object.fromEntries(Object.entries(item).map(([key, child]) => [key, key === "evidence"
-      ? input.sourceUnits?.find((unit: { id: string; text: string }) => typeof child === "string" && unit.text.includes(child))?.id ?? "unknown_source"
+      ? unpack(input.sourceUnits).find((unit: { id: string; text: string }) => typeof child === "string" && unit.text.includes(child))?.id ?? "unknown_source"
       : cite(child)]));
   };
   return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: typeof value === "string" ? value : JSON.stringify(init ? cite(value) : value) }] }] });
 };
+
+const longProse=(prose+Array.from({length:90},(_,i)=>` 서하는 ${i+1}번째 서가를 정리하며 친구와 다음 작업을 의논했다. 약속한 날짜를 지키려면 오늘 이 일을 끝내야 했다.`).join("")).slice(0,2700);
+const bundle=(chapter=1,arcChapter=1)=>({chapter,arcChapter,prose:longProse,review:{...review,memoryPatch:patch,...(arcChapter===5?{resolution:{centralConflictResolved:true,protagonistOutcomeShown:true,relationshipOutcomeShown:true,hasSequelHook:false,evidence:fact.evidence,fix:"마무리됨"}}:{})}});
+
+test("novel prompt tables preserve every canon and source field without mutating saved memory",()=>{
+ const timeline={...emptyTimeline(),participants:[{id:"user",name:"당신"},{id:"character",name:"서하"}],canon:Array.from({length:10},(_,i)=>({id:`novel:${i+1}:character:event_${i}`,source:"novel" as const,sourceId:`chapter_${i+1}`,subjectId:"character",objectId:"user",key:`event_${i}`,kind:"event" as const,status:"completed" as const,visibility:i%2?"reader" as const:"character" as const,text:`중요한 사건 ${i}`,evidence:`원고 근거 ${i}`}))};
+ const before=structuredClone(timeline),packed=novelTimelineContext(timeline);
+ assert.deepEqual(unpack(packed.canon),timeline.canon);assert.deepEqual(unpack(packed.participants),timeline.participants);
+ assert.deepEqual(timeline,before);assert.ok(JSON.stringify(packed).length<JSON.stringify(timeline).length);
+ const sources=manuscriptSources(longProse),compact=sourceContext(sources);
+ assert.deepEqual(unpack(compact),sources);assert.ok(JSON.stringify(compact).length<JSON.stringify(sources).length);
+ assert.equal(resolveSources({evidence:sources[0].id},sources).evidence,sources[0].text);
+});
+
+test("integrated episodes enforce numbering, full length, grounding, repetition and final resolution",()=>{
+ assert.equal(validateIntegratedEpisode(bundle(),1,1,"").charCount,2700);
+ assert.throws(()=>validateIntegratedEpisode(bundle(),2,1,""),/numbering/);
+ assert.throws(()=>validateIntegratedEpisode({...bundle(),prose},1,1,""),/length/);
+ assert.throws(()=>validateIntegratedEpisode(bundle(),1,1,longProse),/repeats/);
+ assert.throws(()=>validateIntegratedEpisode({...bundle(),review:{...review,memoryPatch:{...patch,sharedChanges:[{subjectName:"서하",targetName:null,key:"event_missing",kind:"event",status:"completed",visibility:"character",text:"결혼했다",evidence:"없는 결혼"}]}}},1,1,""),/Unsupported/);
+ assert.equal(validateIntegratedEpisode(bundle(5,5),5,5,"").charCount,2700);
+ assert.throws(()=>validateIntegratedEpisode({...bundle(5,5),review:{...bundle(5,5).review,resolution:{...bundle(5,5).review.resolution!,hasSequelHook:true}}},5,5,""),/unresolved/);
+ assert.equal(integratedEpisodeSchema(false).safeParse({...bundle(),extra:"bad"}).success,false);
+});
+
+test("integrated generation uses two calls for a new arc, one for existing and finale, and stays opt-in",async t=>{
+ const old=process.env.OPENAI_NOVEL_GENERATION_MODE;
+ t.after(()=>{if(old===undefined)delete process.env.OPENAI_NOVEL_GENERATION_MODE;else process.env.OPENAI_NOVEL_GENERATION_MODE=old;});
+ delete process.env.OPENAI_NOVEL_GENERATION_MODE;assert.equal(novelGenerationMode(),"reviewed");
+ process.env.OPENAI_NOVEL_GENERATION_MODE="typo";assert.equal(novelGenerationMode(),"reviewed");
+ process.env.OPENAI_NOVEL_GENERATION_MODE="integrated";
+ let calls=0,currentChapter=1,arcChapter=1;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init?.body));
+  if(body.text?.format.name==="chapter_plan")return response(plan,init);
+  assert.equal(body.text.format.name,"episode_bundle");assert.match(body.instructions,/2500–3000/);
+  return response(bundle(currentChapter,arcChapter));
+ });
+ const options={character,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
+ const first=await generateChapter(options);assert.equal(calls,2);assert.equal(first.state.chapter,1);
+ calls=0;currentChapter=3;arcChapter=3;
+ const state={...emptyStoryState(),chapter:2,seriesArc};const saved=structuredClone(state);
+ const middle=await generateChapter({...options,state});assert.equal(calls,1);assert.equal(middle.state.chapter,3);assert.deepEqual(state,saved);
+ calls=0;currentChapter=5;arcChapter=5;
+ const final=await generateChapter({...options,state:{...state,chapter:4}});assert.equal(calls,1);assert.equal(final.state.nextChapterGoal,"");
+ calls=0;currentChapter=4;arcChapter=1;
+ const changed=await generateChapter({...options,state:{...state,chapter:3},additionalConcept:"새로운 목표"});assert.equal(calls,2);assert.equal(changed.state.seriesStartChapter,3);assert.equal(changed.state.chapter,4);
+});
+
+test("integrated repair is bounded and never advances state or repeats a token-exhausted paid request",async t=>{
+ const old=process.env.OPENAI_NOVEL_GENERATION_MODE;process.env.OPENAI_NOVEL_GENERATION_MODE="integrated";
+ t.after(()=>{if(old===undefined)delete process.env.OPENAI_NOVEL_GENERATION_MODE;else process.env.OPENAI_NOVEL_GENERATION_MODE=old;});
+ const state={...emptyStoryState(),chapter:2,seriesArc},before=structuredClone(state);let calls=0,alwaysBad=false,exhausted=false;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const input=JSON.parse(JSON.parse(String(init?.body)).input);
+  if(exhausted)return Response.json({status:"incomplete",incomplete_details:{reason:"max_output_tokens"}});
+  if(calls===1||alwaysBad)return response({...bundle(3,3),prose});
+  assert.match(input.repair,/length mismatch/);return response(bundle(3,3));
+ });
+ const options={character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
+ const fixed=await generateChapter(options);assert.equal(calls,2);assert.equal(fixed.state.chapter,3);assert.deepEqual(state,before);
+ calls=0;alwaysBad=true;await assert.rejects(generateChapter(options),/validation failed/);assert.equal(calls,2);assert.deepEqual(state,before);
+ calls=0;exhausted=true;await assert.rejects(generateChapter(options),/token limit/);assert.equal(calls,1);assert.deepEqual(state,before);
+});
+
+test("reviewed generation can omit discarded memory on a rejected draft while keeping independent review",async t=>{
+ const old=process.env.OPENAI_NOVEL_GENERATION_MODE;process.env.OPENAI_NOVEL_GENERATION_MODE="reviewed";
+ t.after(()=>{if(old===undefined)delete process.env.OPENAI_NOVEL_GENERATION_MODE;else process.env.OPENAI_NOVEL_GENERATION_MODE=old;});
+ const failed={...review,pass:false,blockingIssues:[{type:"continuity",evidence:fact.evidence,fix:"원고의 모순을 수정"}],memoryPatch:null};
+ const values=[plan,prose,failed,prose,{...review,memoryPatch:patch}];let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{calls++;return response(values.shift(),init);});
+ const result=await generateChapter({character,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(calls,5);assert.equal(result.state.chapter,1);assert.equal(result.state.summary,patch.summary);
+ const oldState=emptyStoryState(),before=structuredClone(oldState);calls=0;
+ values.push(plan,prose,{...review,memoryPatch:null});
+ await assert.rejects(generateChapter({character,state:oldState,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}}));
+ assert.equal(calls,3);assert.deepEqual(oldState,before);
+});
+
+test("integrated API preserves the single-chapter event contract and never publishes a failed bundle",async t=>{
+ const keys=["OPENAI_API_KEY","OPENAI_NOVEL_GENERATION_MODE","ACCOUNT_FEATURES_ENABLED","NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED"];
+ const before=keys.map(key=>process.env[key]);
+ Object.assign(process.env,{OPENAI_API_KEY:"test",OPENAI_NOVEL_GENERATION_MODE:"integrated",ACCOUNT_FEATURES_ENABLED:"false",NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED:"false"});
+ t.after(()=>keys.forEach((key,index)=>{if(before[index]===undefined)delete process.env[key];else process.env[key]=before[index];}));
+ let calls=0,bad=false;
+ t.mock.method(globalThis,"fetch",async()=>{calls++;return response(bad?{...bundle(3,3),prose}:bundle(3,3));});
+ const state={...emptyStoryState(),chapter:2,seriesArc};
+ const request=()=>new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,storyState:state,timeline:emptyTimeline(),messages:[{role:"user",content:"다음 이야기"}]})});
+ const wire=await(await POST(request())).text();
+ const events=wire.split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
+ assert.equal(calls,1);assert.equal(events.filter(e=>e.type==="chapter").length,1);
+ assert.equal(events.find(e=>e.type==="chapter").state.chapter,3);assert.equal(events.at(-1).type,"done");
+ assert.equal(events.filter(e=>e.type==="timeline").length,1);
+ bad=true;calls=0;const failed=await(await POST(request())).text();assert.equal(calls,2);
+ assert.doesNotMatch(failed,/"type":"chapter"|"type":"timeline"|"type":"done"/);assert.equal(state.chapter,2);
+});
+
+test("accepted novel facts cross into chat while later writing receives the full canon without extra calls",async t=>{
+ const timeline={...emptyTimeline(),revision:1,participants:[{id:"user",name:"당신"},{id:"character",name:"서하"}],canon:[{id:"chat:fact_1_0",source:"chat" as const,sourceId:"user_1",subjectId:"user",objectId:"character",key:"event_rescue",kind:"event" as const,status:"completed" as const,visibility:"character" as const,text:"서하를 구했다",evidence:"내가 서하를 구했어"}]};
+ const changes=[{subjectName:"서하",targetName:null,key:"event_contract",kind:"event",status:"completed",visibility:"character",text:"계약서를 찾았다",evidence:fact.evidence},{subjectName:"서하",targetName:null,key:"event_hidden_date",kind:"event",status:"ongoing",visibility:"reader",text:"독자만 아는 날짜의 의미",evidence:"그가 약속한 수리 날짜가 문서에 적혀 있었다."}];
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));calls++;
+  assert.match(body.input,/서하를 구했다/);assert.match(body.instructions,/SHARED CANON/);
+  if(body.text?.format.name==="chapter_plan")return response(plan,init);
+  if(body.text?.format.name==="chapter_review")return response({...review,memoryPatch:{...patch,sharedChanges:changes}},init);
+  return response(prose,init);
+ });
+ const result=await generateChapter({character,timeline,direction:"다음 이야기",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(calls,3);assert.equal(result.state.chapter,1);assert.equal(result.sharedChanges.length,2);
+ const shared=advanceTimeline(timeline,character.name,undefined,result.state,undefined,[],"당신",result.sharedChanges);
+ assert.match(JSON.stringify(shared),/독자만 아는/);
+ const chatPrompt=conversationInstructions({...character,mode:"chat"},emptyChatMemory(character.name),"찾았어?",shared);
+ assert.match(chatPrompt,/계약서를 찾았다/);assert.doesNotMatch(chatPrompt,/독자만 아는 날짜/);
+ assert.equal(timelineForChat(shared).canon?.length,2);
+ calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init?.body));assert.match(body.input,/독자만 아는 날짜/);
+  if(body.text?.format.name==="chapter_review")return response({...review,memoryPatch:{...patch,sharedChanges:[]}},init);
+  return response(prose.replaceAll("서랍","책상"),init);
+ });
+ // A later failure cannot mutate the caller's already accepted shared state.
+ const before=JSON.stringify(shared);
+ await assert.rejects(generateChapter({character,timeline:shared,state:result.state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}}));
+ assert.equal(JSON.stringify(shared),before);
+});
 
 function schemaNode(root:any,node:any):any {
  while(node.$ref) node=node.$ref.split("/").slice(1).reduce((value:any,key:string)=>value[key.replaceAll("~1","/").replaceAll("~0","~")],root);
@@ -45,6 +176,18 @@ test("review schemas share source IDs without relaxing evidence validation",()=>
  const item=schemaNode(compact,schemaNode(compact,compact.properties!.newEvents).items);
  assert.deepEqual(schemaNode(compact,item.properties.evidence).enum,ids);
  assert.equal(citation.safeParse("source_999").success,false);
+});
+
+test("novel speed experiments change planning and writing effort without changing chat or review",async t=>{
+ const keys=["OPENAI_REASONING_EFFORT","OPENAI_NOVEL_REASONING_EFFORT","OPENAI_NOVEL_PLAN_REASONING_EFFORT"];
+ const before=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+ t.after(()=>{for(const[key,value]of Object.entries(before)){if(value===undefined)delete process.env[key];else process.env[key]=value;}});
+ process.env.OPENAI_REASONING_EFFORT="medium";process.env.OPENAI_NOVEL_REASONING_EFFORT="low";process.env.OPENAI_NOVEL_PLAN_REASONING_EFFORT="high";
+ const {reasoningOptions}=await import("../lib/ai-model.ts");assert.equal(reasoningOptions().reasoning?.effort,"medium");
+ const values:unknown[]=[plan,prose,review];const efforts:string[]=[];
+ t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{const body=JSON.parse(String(init.body));efforts.push(body.reasoning.effort);return response(values.shift(),init);});
+ await generateChapter({character,direction:"첫 이야기",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.deepEqual(efforts,["high","low","low"]);
 });
 
 test("first and final chapter plans use the expanded, configurable reasoning and output budget",async t=>{
@@ -312,10 +455,10 @@ test("a passing review with source IDs commits the first chapter without a quota
       assert.equal(input.draft, undefined);
       assert.equal(input.context.memory.seriesArc, undefined);
       assert.ok(body.text.format.schema.required.includes("memoryPatch"));
-      assert.ok(input.sourceUnits.length > 0);
+      assert.ok(unpack(input.sourceUnits).length > 0);
       const root=body.text.format.schema;
       const item=schemaNode(root,schemaNode(root,root.properties.newEvents).items);
-      assert.deepEqual(schemaNode(root,item.properties.evidence).enum, input.sourceUnits.map((unit: { id: string }) => unit.id));
+      assert.deepEqual(schemaNode(root,item.properties.evidence).enum, unpack(input.sourceUnits).map((unit: { id: string }) => unit.id));
       assert.equal(input.context.character.imageDescription,undefined);
       assert.equal(input.context.seriesArc.installments,undefined);
       assert.doesNotMatch(body.instructions, /You are writing immersive fictional character roleplay/);
