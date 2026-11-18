@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateChapter } from "../lib/novel/generate.ts";
-import { emptyStoryState, mergeMemory, repeatsPrevious, storyStateSchema } from "../lib/novel/state.ts";
+import { generateChapter, novelJsonSchema } from "../lib/novel/generate.ts";
+import { createReviewSchema, createMemoryPatchSchema, emptyStoryState, mergeMemory, repeatsPrevious, storyStateSchema } from "../lib/novel/state.ts";
+import { z } from "zod";
 import { POST } from "../app/api/chat/route.ts";
 import { manuscriptSources, resolveSources } from "../lib/novel/sources.ts";
 import { seriesArcSchema, seriesSchedule, storyComplete, storyProgress } from "../lib/novel/series.ts";
@@ -30,6 +31,83 @@ const response = (value: unknown, init?: RequestInit) => {
   return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: typeof value === "string" ? value : JSON.stringify(init ? cite(value) : value) }] }] });
 };
 
+function schemaNode(root:any,node:any):any {
+ while(node.$ref) node=node.$ref.split("/").slice(1).reduce((value:any,key:string)=>value[key.replaceAll("~1","/").replaceAll("~0","~")],root);
+ return node;
+}
+
+test("review schemas share source IDs without relaxing evidence validation",()=>{
+ const ids=Array.from({length:180},(_,index)=>`source_${index+1}`) as [string,...string[]];
+ const citation=z.enum(ids);
+ const schema=createReviewSchema(citation).extend({memoryPatch:createMemoryPatchSchema(citation)});
+ const compact=novelJsonSchema(schema);
+ assert.ok(JSON.stringify(compact).length < JSON.stringify(z.toJSONSchema(schema)).length*0.6);
+ const item=schemaNode(compact,schemaNode(compact,compact.properties!.newEvents).items);
+ assert.deepEqual(schemaNode(compact,item.properties.evidence).enum,ids);
+ assert.equal(citation.safeParse("source_999").success,false);
+});
+
+test("first and final chapter plans use the expanded, configurable reasoning and output budget",async t=>{
+ const previous=process.env.OPENAI_NOVEL_PLAN_MAX_OUTPUT_TOKENS;
+ t.after(()=>{if(previous===undefined)delete process.env.OPENAI_NOVEL_PLAN_MAX_OUTPUT_TOKENS;else process.env.OPENAI_NOVEL_PLAN_MAX_OUTPUT_TOKENS=previous;});
+ const {seriesArc: _arc,...nextPlan}=plan;
+ for(const budget of [12000,16000]){
+  if(budget===12000)delete process.env.OPENAI_NOVEL_PLAN_MAX_OUTPUT_TOKENS;else process.env.OPENAI_NOVEL_PLAN_MAX_OUTPUT_TOKENS=String(budget);
+  for(const final of [false,true]){
+   const state=final?{...emptyStoryState(),chapter:4,seriesArc}:undefined;
+   const finalReview={...review,resolution:{centralConflictResolved:true,protagonistOutcomeShown:true,relationshipOutcomeShown:true,hasSequelHook:false,evidence:fact.evidence,fix:"완결"}};
+   const values:unknown[]=[final?nextPlan:plan,prose,final?finalReview:review];let calls=0;
+   const records:{feature:string;status:string;outputTokens:number|null}[]=[];
+   const mocked=t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{
+    const body=JSON.parse(String(init.body));calls++;
+    const result=response(values.shift(),init);
+    if(body.text?.format?.name!=="chapter_plan")return result;
+    assert.equal(body.max_output_tokens,budget);assert.deepEqual(body.reasoning,{effort:"medium"});
+    return Response.json({...await result.json(),usage:{input_tokens:500,output_tokens:6000,total_tokens:6500,output_tokens_details:{reasoning_tokens:5000}}});
+   });
+   try{
+    const result=await generateChapter({character,state,direction:"다음 이야기",key:"test",signal:new AbortController().signal,phase:()=>{},onUsage:record=>records.push(record)});
+    assert.equal(result.state.chapter,final?5:1);assert.equal(calls,3);
+    assert.equal(records.find(record=>record.feature==="novel.chapter_plan"&&record.status==="completed")?.outputTokens,6000);
+   }finally{mocked.mock.restore();}
+  }
+ }
+});
+
+test("medium reviews have room for reasoning beyond the old cap and still commit only a completed review",async t=>{
+ const previous=process.env.OPENAI_NOVEL_REVIEW_REASONING_EFFORT;
+ process.env.OPENAI_NOVEL_REVIEW_REASONING_EFFORT="medium";
+ t.after(()=>{if(previous===undefined)delete process.env.OPENAI_NOVEL_REVIEW_REASONING_EFFORT;else process.env.OPENAI_NOVEL_REVIEW_REASONING_EFFORT=previous;});
+ const values:unknown[]=[plan,prose,review];
+ const records:{feature:string;status:string;reasoningTokens:number|null}[]=[];
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init.body));
+  const result=response(values.shift(),init);
+  if(body.text?.format?.name!=="chapter_review")return result;
+  assert.deepEqual(body.reasoning,{effort:"medium"});assert.equal(body.max_output_tokens,12000);
+  return Response.json({...await result.json(),usage:{input_tokens:14101,output_tokens:5700,total_tokens:19801,output_tokens_details:{reasoning_tokens:5000}}});
+ });
+ const result=await generateChapter({character,direction:"첫 이야기",key:"test",signal:new AbortController().signal,phase:()=>{},onUsage:record=>records.push(record)});
+ assert.equal(result.state.chapter,1);assert.equal(calls,3);
+ assert.equal(records.find(record=>record.feature==="novel.chapter_review"&&record.status==="completed")?.reasoningTokens,5000);
+});
+
+test("a reused outline still reviews and repairs a grounded continuity error at most once",async t=>{
+ const bad={...review,pass:false,blockingIssues:[{type:"continuity",evidence:fact.evidence,fix:"확정된 인물 관계를 유지한다"}]};
+ const values:unknown[]=[prose,bad,prose,review];
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init.body));assert.notEqual(body.text?.format?.name,"chapter_plan");
+  if(calls===3)assert.equal(JSON.parse(JSON.parse(body.input).corrections).issues[0].type,"continuity");
+  return response(values.shift(),init);
+ });
+ const old={...emptyStoryState(),chapter:1,seriesArc,longTermGoal:plan.longTermGoal};
+ const before=structuredClone(old);
+ const result=await generateChapter({character,state:old,direction:"이어서 써줘",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(result.state.chapter,2);assert.equal(calls,4);assert.deepEqual(old,before);
+});
+
 test("additional concepts replan five future chapters without resetting actual history, even after completion", async t => {
   for (const chapter of [3, 5]) {
     const old = { ...emptyStoryState(), chapter, seriesArc, summary: "서점 정리를 시작했다", longTermGoal: "예전 목표" };
@@ -40,6 +118,8 @@ test("additional concepts replan five future chapters without resetting actual h
     const mock = t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
       calls++;
       const body = JSON.parse(String(init.body));
+      assert.deepEqual(body.reasoning,{effort:body.text?.format?.name==="chapter_review"?"low":"medium"});
+      assert.doesNotMatch(body.instructions,/exactly 10 numbered installments/);
       const input = JSON.parse(body.input);
       if (body.text?.format?.name === "chapter_plan") {
         assert.equal(input.schedule.chapter, 1);
@@ -117,29 +197,30 @@ test("source references select real manuscript passages instead of generated quo
 
 test("a five-part arc is stored once and follows the remaining chapter schedule", async t => {
   let state = emptyStoryState();
-  const { seriesArc: omitted, ...nextPlan } = plan;
-  void omitted;
   for (let chapter = 1; chapter <= 4; chapter++) {
     const distinctPassage = Array.from({ length: 500 }, (_, index) => String.fromCharCode(0xac00 + chapter * 600 + index)).join("");
-    const values: unknown[] = [chapter === 1 ? plan : nextPlan, prose + distinctPassage, review];
+    const values: unknown[] = [...(chapter === 1 ? [plan] : []), prose + distinctPassage, review];
+    let calls=0;
     const mocked = t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body));
+      calls++;
       const input = JSON.parse(body.input);
       const context = input.context ?? input;
       if (body.text?.format?.name === "chapter_plan") {
+        assert.equal(chapter,1);
         assert.equal(context.schedule.chapter, chapter);
         assert.equal(context.schedule.totalChapters, 5);
         assert.equal(context.schedule.remainingAfterThis, 5 - chapter);
         assert.equal(body.text.format.schema.required.includes("seriesArc"), chapter === 1);
-        if (chapter > 1) assert.equal(context.seriesArc.endingPromise, seriesArc.endingPromise);
-        if (chapter > 1) assert.deepEqual(context.seriesArc.installments.rows, seriesArc.installments.map(({ chapter, goal, payoff }) => [chapter, goal, payoff]));
       }
+      if(chapter>1&&!body.text){assert.match(body.instructions,/Privately plan 3–5 causal scene beats/);assert.equal(context.installmentGoal.chapter,chapter);assert.deepEqual(context.seriesArc.installments.rows,seriesArc.installments.map(({chapter,goal,payoff})=>[chapter,goal,payoff]));}
       return response(values.shift(), init);
     });
     const result = await generateChapter({ character, state, direction: "다음 장면", key: "test", signal: new AbortController().signal, phase: () => {} });
     state = result.state;
     assert.equal(state.chapter, chapter);
     assert.deepEqual(state.seriesArc, seriesArc);
+    assert.equal(calls,chapter===1?3:2);
     mocked.mock.restore();
   }
   assert.equal(seriesSchedule(4).phase, "climax");
@@ -232,7 +313,11 @@ test("a passing review with source IDs commits the first chapter without a quota
       assert.equal(input.context.memory.seriesArc, undefined);
       assert.ok(body.text.format.schema.required.includes("memoryPatch"));
       assert.ok(input.sourceUnits.length > 0);
-      assert.deepEqual(body.text.format.schema.properties.newEvents.items.properties.evidence.enum, input.sourceUnits.map((unit: { id: string }) => unit.id));
+      const root=body.text.format.schema;
+      const item=schemaNode(root,schemaNode(root,root.properties.newEvents).items);
+      assert.deepEqual(schemaNode(root,item.properties.evidence).enum, input.sourceUnits.map((unit: { id: string }) => unit.id));
+      assert.equal(input.context.character.imageDescription,undefined);
+      assert.equal(input.context.seriesArc.installments,undefined);
       assert.doesNotMatch(body.instructions, /You are writing immersive fictional character roleplay/);
     }
     calls++;
@@ -351,4 +436,26 @@ test("story API publishes no draft or memory when extraction fails", async t => 
   assert.ok(wire.includes('"type":"error"'));
   assert.ok(!wire.includes('"type":"chapter"'));
   assert.ok(!wire.includes(prose)); assert.ok(!wire.includes('"type":"done"'));
+});
+
+test("review token exhaustion preserves failed usage and returns a specific error without paid retries",async t=>{
+ const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED"];
+ const old=keys.map(key=>process.env[key]);
+ process.env.OPENAI_API_KEY="test-key";process.env.ACCOUNT_FEATURES_ENABLED="false";process.env.NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED="false";
+ t.after(()=>keys.forEach((key,index)=>{if(old[index]===undefined)delete process.env[key];else process.env[key]=old[index];}));
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init.body));
+  if(calls<3)return response(calls===1?plan:prose,init);
+  assert.equal(body.text.format.name,"chapter_review");
+  assert.deepEqual(body.reasoning,{effort:"low"});assert.equal(body.max_output_tokens,12000);
+  return Response.json({id:"review_limit",status:"incomplete",incomplete_details:{reason:"max_output_tokens"},output:[],usage:{input_tokens:14101,output_tokens:12000,total_tokens:26101,output_tokens_details:{reasoning_tokens:12000}}});
+ });
+ const result=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json","X-Track-Usage":"1"},body:JSON.stringify({character,messages:[{role:"user",content:"첫 이야기"}]})}));
+ const wire=await result.text();assert.equal(calls,3);
+ assert.match(wire,/output_token_limit/);assert.match(wire,/자동 재시도는 하지 않았/);
+ assert.ok(!wire.includes('"type":"chapter"'));assert.ok(!wire.includes('"type":"done"'));
+ const events=wire.split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
+ const record=events.filter(event=>event.type==="usage").map(event=>event.record).find(record=>record.responseId==="review_limit");
+ assert.equal(record.status,"failed");assert.equal(record.totalTokens,26101);assert.equal(record.reasoningTokens,12000);
 });

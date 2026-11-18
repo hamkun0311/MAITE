@@ -4,6 +4,7 @@ import { allowedOrigin, corsHeaders, preflight } from "./http.ts";
 import type { GenerationKind } from "../account/policy.ts";
 import type { UsageRecord } from "../usage.ts";
 import sharp from "sharp";
+import { uploadThumbnail } from "./image-assets.ts";
 import { storyStateSchema } from "../novel/state.ts";
 
 type Job = { id: string; status: "reserved" | "completed" | "failed"; result: { events?: object[]; headers?: Record<string, string> } | null; storage_path: string | null };
@@ -95,8 +96,9 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
         const bytes = Buffer.from(await blob.arrayBuffer()); const metadata = await sharp(bytes).metadata();
         if (metadata.format !== "jpeg" || !metadata.width || !metadata.height || metadata.width * metadata.height > 16_000_000) throw new AccountError("이미지 형식을 확인하지 못했습니다.", 502);
         await sharp(bytes, { failOn: "error" }).stats();
-        const { error } = await db.storage.from("maite-private").upload(path, blob, { contentType: "image/jpeg", upsert: false });
+        const { error } = await db.storage.from("maite-private").upload(path, blob, { contentType: "image/jpeg", cacheControl: "3600", upsert: false });
         if (error) throw new AccountError("이미지를 저장하지 못했습니다. 하트 예약은 취소됩니다.", 503);
+        await uploadThumbnail(db, path, bytes).catch(() => console.warn("thumbnail-save-failed"));
         if (request.signal.aborted) throw new AccountError("생성을 취소했습니다.", 499);
         await settle({ headers: Object.fromEntries([...response.headers].filter(([key]) => key.startsWith("x-character-"))), usage: imageUsage }, path);
         return new Response(blob, { headers: response.headers });

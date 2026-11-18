@@ -2,13 +2,17 @@
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { accountClient, accountEnabled } from "@/lib/account/client";
-import { jsonApi } from "@/lib/platform/commerce";
+import { jsonApi, invalidateApiReads } from "@/lib/platform/commerce";
 import { isNative } from "@/lib/platform/native";
 import type { AccountData } from "@/lib/account/library";
 import ProfileSetup, { ProfileEditModal } from "./ProfileSetup";
 import type { UserProfile } from "@/lib/account/profile";
 import type { StudioSnapshot } from "@/lib/platform/snapshot";
 import type { LibraryDocument } from "@/lib/account/library";
+import { unregisterPush } from "@/lib/platform/push";
+import { apiFetch } from "@/lib/platform/api";
+import { imageBlobs } from "@/lib/platform/image-cache";
+import { persistentImages } from "@/lib/platform/persistent-images";
 
 type User = { id: string; email?: string };
 type AccountContext = { user?: User; account?: AccountData; refresh: () => Promise<void>; logout: () => Promise<void>; editProfile: () => void };
@@ -36,7 +40,7 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
       const id = active.current; const day = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul" }).format(new Date());
       if (!id || dailyPending.current || checkedDay.current === `${id}:${day}`) return;
       dailyPending.current = true;
-      try { await jsonApi("/api/account", { action: "daily" }); if (active.current === id) checkedDay.current = `${id}:${day}`; await refresh(); }
+      try { /* Rewards are claimed explicitly on the calendar screen. */ if (active.current === id) checkedDay.current = `${id}:${day}`; await refresh(); }
       catch (error) { if (!disposed) setError(error instanceof Error ? error.message : "계정을 불러오지 못했습니다."); }
       finally { dailyPending.current = false; }
     }
@@ -44,6 +48,9 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
       if (disposed) return;
       const next = session?.user;
       if (active.current !== next?.id) {
+        invalidateApiReads();
+        if (active.current) void persistentImages.clear();
+        imageBlobs.clear();
         active.current = next?.id; pending.current = undefined; setAccount(undefined); setUser(next); checkedDay.current = ""; setEditing(false);
         if (next && event === "SIGNED_IN") router.replace("/ideal");
       }
@@ -91,14 +98,24 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
       if (native && data.url) { const { Browser } = await import("@capacitor/browser"); await Browser.open({ url: data.url }); }
     } catch (error) { setError(error instanceof Error ? error.message : "로그인하지 못했습니다."); } finally { setBusy(false); }
   }
-  async function logout() { const { error } = await client!.auth.signOut(); if (error) throw error; router.replace("/ideal"); }
-  if (enabled && (!ready || !user)) return <main className="login-screen"><div className="login-card"><span className="login-brand">maite.</span><h1>당신의 상상에서 시작되는 이야기</h1><p>캐릭터를 만들고, 대화하고, 당신만의 소설을 완성하세요.</p>{ready ? <button disabled={busy || !client} onClick={() => void login()}>{busy ? "로그인 연결 중…" : "Google로 로그인"}</button> : <p role="status">로그인 확인 중…</p>}{(!client || error) && <p role="alert">{error || "로그인 설정을 확인해주세요."}</p>}</div></main>;
-  async function saveProfile(profile: UserProfile) {
-    await jsonApi("/api/account", { action: "profile", ...profile });
-    setAccount(current => current && ({ ...current, profile: { ...current.profile, display_name: profile.nickname, gender: profile.gender, age: profile.age, onboarded: true } }));
+  async function logout() { await unregisterPush().catch(() => undefined); const { error } = await client!.auth.signOut(); if (error) throw error; router.replace("/ideal"); }
+  if (enabled && (!ready || !user)) return <main className="login-screen"><div className="login-card"><span className="login-brand">maite.</span><h1>당신의 상상, <br/> 시작되는 이야기</h1><p>캐릭터를 만들고, 대화하고, 당신만의 소설을 완성하세요.</p>{ready ? <button disabled={busy || !client} onClick={() => void login()}>{busy ? "로그인 연결 중…" : "Google로 로그인"}</button> : <p role="status">로그인 확인 중…</p>}{(!client || error) && <p role="alert">{error || "로그인 설정을 확인해주세요."}</p>}</div></main>;
+  async function saveProfile(profile: UserProfile, photo?: File | null) {
+    const owner = active.current;
+    let avatar: { avatarUrl?: string | null } = {};
+    if (photo !== undefined) {
+      const body = new FormData(); body.set("profile", JSON.stringify(profile));
+      if (photo) body.set("photo", photo); else body.set("removePhoto", "true");
+      invalidateApiReads();
+      const response = await apiFetch("/api/account/profile", { method: "POST", body });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || "사진을 저장하지 못했습니다.");
+      avatar = { avatarUrl: data.avatarUrl }; invalidateApiReads();
+    } else await jsonApi("/api/account", { action: "profile", ...profile });
+    if (active.current !== owner) return;
+    setAccount(current => current && ({ ...current, ...avatar, profile: { ...current.profile, display_name: profile.nickname, gender: profile.gender, age: profile.age, onboarded: true } }));
     const first = account?.profile?.onboarded === false; setEditing(false); if (first) router.replace("/ideal/characters");
   }
   if (enabled && user && !account) return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">{error || "당신의 이야기를 준비하고 있어요"}</p>{error && <button onClick={() => { setError(""); void refresh().catch(() => setError("계정 연결을 확인해주세요.")); }}>다시 시도</button>}</main>;
   if (enabled && user && account?.profile?.onboarded === false) return <ProfileSetup initial={{ nickname: account.profile.display_name }} onSave={saveProfile}/>;
-  return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"], age: account?.profile?.age }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
+  return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal avatarUrl={account?.avatarUrl} initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"], age: account?.profile?.age }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
 }

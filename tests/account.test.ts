@@ -13,6 +13,76 @@ import { completedNovelListings, isPublishedNovel, listingId } from "../lib/serv
 import { novelComplete, libraryNovels } from "../lib/account/library.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { userProfileSchema } from "../lib/account/profile.ts";
+import { PRODUCTS } from "../lib/account/policy.ts";
+
+test("800-heart pass applies to future purchases while preserving both previous pass benefits",async()=>{
+ const db=new PGlite();const C="55555555-5555-4555-8555-555555555555";
+ try{
+  await db.exec(`create role anon;create role authenticated;create role service_role;create schema auth;create schema storage;
+   create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}');
+   create function auth.uid() returns uuid language sql as $$ select '${A}'::uuid $$;
+   create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
+  await db.exec(await readFile(new URL("../supabase/migrations/202611170001_accounts.sql",import.meta.url),"utf8"));
+  await db.query("insert into auth.users(id) values($1),($2),($3)",[A,B,C]);
+  await db.query("select grant_purchase($1,'pass-400','heart_pass_30','old')",[A]);
+  await db.exec(await readFile(new URL("../supabase/migrations/202611180004_heart_product_amounts.sql",import.meta.url),"utf8"));
+  await db.query("select grant_purchase($1,'pass-600','heart_pass_30','previous')",[B]);
+  const sql=await readFile(new URL("../supabase/migrations/202611180005_heart_pass_800.sql",import.meta.url),"utf8");
+  await db.exec(sql);
+  const balance=async(id:string)=>Number((await db.query<{transferable:number}>("select transferable from wallets where user_id=$1",[id])).rows[0].transferable);
+  assert.equal(await balance(A),100);assert.equal(await balance(B),150);
+  await db.query("select grant_purchase($1,'pass-800','heart_pass_30','new')",[C]);
+  const product=PRODUCTS.find(product=>product.id==="heart_pass_30")!;
+  assert.equal(await balance(C),product.hearts);
+  const pass=(await db.query<{daily_hearts:number;days:number}>("select daily_hearts,ends_on-starts_on as days from heart_passes where user_id=$1",[C])).rows[0];
+  assert.deepEqual(pass,{daily_hearts:20,days:30});assert.equal(product.hearts+pass.daily_hearts*pass.days,800);
+  for(const id of [A,B,C])await db.query("select claim_daily($1)",[id]);
+  assert.equal(await balance(A),110);assert.equal(await balance(B),165);assert.equal(await balance(C),220);
+  await db.exec(sql);await db.query("select grant_purchase($1,'pass-800','heart_pass_30','new')",[C]);await db.query("select claim_daily($1)",[C]);assert.equal(await balance(C),220);
+  await assert.rejects(db.query("select grant_purchase($1,'duplicate-pass','heart_pass_30','duplicate')",[C]),/pass_active/);
+  await assert.rejects(db.query("select grant_purchase($1,'pass-800','heart_pass_30','new')",[A]),/invalid_purchase/);
+ }finally{await db.close();}
+});
+
+test("updated heart packs grant new quantities once without repricing old purchases",async()=>{
+ const db=new PGlite();
+ try{
+  await db.exec(`create role anon;create role authenticated;create role service_role;create schema auth;create schema storage;
+   create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}');
+   create function auth.uid() returns uuid language sql as $$ select '${A}'::uuid $$;
+   create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
+  await db.exec(await readFile(new URL("../supabase/migrations/202611170001_accounts.sql",import.meta.url),"utf8"));
+  await db.query("insert into auth.users(id) values($1),($2)",[A,B]);
+  await db.query("select grant_purchase($1,'old-token','hearts_100','old-order')",[A]);
+  await db.query("select grant_purchase($1,'old-pass','heart_pass_30','old-pass-order')",[B]);
+  await db.exec(await readFile(new URL("../supabase/migrations/202611180004_heart_product_amounts.sql",import.meta.url),"utf8"));
+  const balance=async()=>Number((await db.query<{transferable:number}>("select transferable from wallets where user_id=$1",[A])).rows[0].transferable);
+  assert.equal(await balance(),100);
+  await db.query("select grant_purchase($1,'old-token','hearts_100','old-order')",[A]);assert.equal(await balance(),100);
+  let expected=100;
+  for(const product of PRODUCTS.filter(product=>product.id!=="heart_pass_30")){
+   await db.query("select grant_purchase($1,$2,$3,'new-order')",[A,product.id,product.id]);expected+=product.hearts;
+   assert.equal(await balance(),expected);
+   await db.query("select grant_purchase($1,$2,$3,'new-order')",[A,product.id,product.id]);assert.equal(await balance(),expected);
+  }
+  assert.equal(await balance(),1650);
+  await db.query("select grant_purchase($1,'new-pass','heart_pass_30','new-pass-order')",[A]);assert.equal(await balance(),1800);
+  await db.query("select grant_purchase($1,'new-pass','heart_pass_30','new-pass-order')",[A]);assert.equal(await balance(),1800);
+  await assert.rejects(db.query("select grant_purchase($1,'second-pass','heart_pass_30','second-pass-order')",[A]),/pass_active/);
+  const pass=(await db.query<{daily_hearts:number;days:number}>("select daily_hearts,ends_on-starts_on as days from heart_passes where user_id=$1",[A])).rows[0];
+  assert.deepEqual(pass,{daily_hearts:15,days:30});assert.equal(150+pass.daily_hearts*pass.days,600);
+  await db.query("select claim_daily($1)",[A]);assert.equal(await balance(),1815);
+  await db.query("select claim_daily($1)",[A]);assert.equal(await balance(),1815);
+  assert.equal((await db.query<{daily_hearts:number}>("select daily_hearts from heart_passes where user_id=$1",[B])).rows[0].daily_hearts,10);
+  await db.query("select claim_daily($1)",[B]);
+  assert.equal(Number((await db.query<{transferable:number}>("select transferable from wallets where user_id=$1",[B])).rows[0].transferable),110);
+  await db.query("update heart_passes set starts_on=(now() at time zone 'Asia/Seoul')::date-30,ends_on=(now() at time zone 'Asia/Seoul')::date where user_id=$1",[A]);
+  await db.query("delete from daily_claims where user_id=$1 and kind='pass'",[A]);
+  await db.query("select claim_daily($1)",[A]);assert.equal(await balance(),1815);
+  await assert.rejects(db.query("select grant_purchase($1,'old-token','hearts_100','old-order')",[B]),/invalid_purchase/);
+  assert.equal((await db.query<{allowed:boolean}>("select has_function_privilege('authenticated','public.grant_purchase(uuid,text,text,text)','execute') allowed")).rows[0].allowed,false);
+ }finally{await db.close();}
+});
 
 test("public profile accepts only a bounded nickname, gender and age", () => {
   const profile = { nickname: "별빛", gender: "여성", age: 27 };
@@ -235,6 +305,7 @@ test("Play validation rejects pending/foreign-account purchases and grants befor
         return Response.json({purchaseState:state,quantity:1,obfuscatedExternalAccountId:account,productId,consumptionState:0,orderId:"order-a"});
       }
       if(url.includes("/rpc/grant_purchase")){calls.push("grant");grantedProduct=JSON.parse(String(init?.body)).p_product;return Response.json(true);}
+      if(url.includes("/rpc/claim_daily")){calls.push("daily");assert.equal(JSON.parse(String(init?.body)).p_user,A);return Response.json({claimed:15});}
       if(url.includes("/payment_purchases"))return Response.json([]);
       throw new Error(`Unexpected request method ${init?.method}`);
     };
@@ -248,8 +319,12 @@ test("Play validation rejects pending/foreign-account purchases and grants befor
     assert.deepEqual(await verifyPurchase(A,"heart_700","purchase-700"),{granted:true,settled:true});
     assert.equal(grantedProduct,"hearts_700");
     productId="hearts_100";
+    productId="heart_pass_30";
+    assert.deepEqual(await verifyPurchase(A,"heart_pass_30","purchase-pass"),{granted:true,settled:true});
+    assert.deepEqual(calls.slice(-2),["grant","consume"]);
+    productId="hearts_100";
     state=2;await assert.rejects(verifyPurchase(A,"hearts_100","pending"),/완료된 본인/);
     state=0;account=playAccountId(B);await assert.rejects(verifyPurchase(A,"hearts_100","foreign"),/완료된 본인/);
-    assert.equal(calls.length,6);
+    assert.equal(calls.length,8);
   }finally{globalThis.fetch=originalFetch;for(const[key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });

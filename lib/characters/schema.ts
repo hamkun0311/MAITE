@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { visualInstructions, compositionSchema, COMPOSITION_DIRECTION, OVERLAP_DIRECTION, type visualRequestSchema } from "./visual.ts";
+import { visualInstructions, confirmedIllustrationTarget, compositionSchema, COMPOSITION_DIRECTION, OVERLAP_DIRECTION, type visualRequestSchema } from "./visual.ts";
 export const characterStyleProfile = z.enum(["female", "male", "neutral", "mixed"]);
 export const characterMessages = z
   .array(
@@ -31,6 +31,7 @@ export const illustrationBrief = characterBrief.extend({
   locationSource: z.enum(["narrative", "reference"]),
 }).strict();
 export const outfitBrief = characterBrief.extend({
+  characterPresent: z.boolean().default(true).describe("Whether the profile character is physically present in this current scene. False for absent or off-screen profile characters; target the actual non-user counterpart instead."),
   ...compositionSchema.shape,
   sceneLocation: z.string().trim().min(1).max(300).regex(/^[\x20-\x7E]+$/),
   locationSource: z.enum(["conversation", "reference"]),
@@ -54,7 +55,10 @@ export const CHARACTER_STYLE_LABELS = {
   neutral: "공통 애니메이션 스타일", mixed: "남녀 혼합 스타일",
 } as const;
 export function buildCharacterPrompt(brief: z.infer<typeof characterBrief> | z.infer<typeof illustrationBrief> | z.infer<typeof outfitBrief>, scene?: z.infer<typeof visualRequestSchema>) {
-  const references = scene?.kind === "illustration"
+  const target = confirmedIllustrationTarget(scene);
+  const otherTarget = !!target && target !== scene?.selection?.profileName;
+  const identityAbsent = otherTarget || (scene && (scene.kind === "illustration" ? !illustrationBrief.parse(brief).characterPresent : !outfitBrief.parse(brief).characterPresent));
+  const references = identityAbsent ? "NO character identity image is supplied. The profile character is ABSENT. Depict the current non-user counterpart, never transfer the absent profile identity; if nobody else is present, depict the environment." : scene?.kind === "illustration"
     ? illustrationBrief.parse(brief).characterPresent ? "The FIRST input image is IDENTITY ONLY for the profile character who appears in this story moment. Preserve face, age, hair and eyes only; redraw pose, clothing and setting from the current chapter." : "NO character identity image is supplied. The profile character is ABSENT. Illustrate only the actual people or environment in the selected chapter moment; do not insert the profile character, their face, portrait, silhouette or reflection."
     : scene?.kind === "outfit"
     ? "The FIRST input image is an IDENTITY reference: preserve the character's face, age, hair, eyes and body type. Clothing and background follow the latest established conversation scene. The reference background is NOT locked; a newly established current location overrides it. Any separate LAST style sample is STYLE ONLY, never a source of identity or setting."
@@ -67,7 +71,8 @@ export function buildCharacterPrompt(brief: z.infer<typeof characterBrief> | z.i
   const wardrobe = outfit ? ` REQUIRED CURRENT OUTFIT: ${JSON.stringify(outfit.outfit)}. Outfit basis: ${outfit.outfitSource}. REQUIRED CURRENT SCENE LOCATION: ${JSON.stringify(outfit.sceneLocation)}. Location basis: ${outfit.locationSource}. These concrete requirements override the reference image's outfit, background, props, pose, original concept and any conflicting subject description. REDRAW the character wearing this outfit AT this location. Replace original clothes incompatible with the required outfit, including work aprons when changing into a dress; do not layer the new dress over the old uniform. When the location changes, remove incompatible old workplace props such as a coffee drink and cafe counter. A reference location source retains only the setting, never overrides the required outfit. Show the outfit's silhouette and recognizable shop/fitting-room surroundings when a clothing store is established. Do not return the original portrait with a new title or only minor color changes. Use a new natural pose and framing appropriate to the current scene, while preserving face, age, hair, eyes and body type.` : "";
   const composition = scene ? compositionSchema.strip().parse(brief) : undefined;
   const staging = composition ? ` REQUIRED NEW BODY STAGING: ${JSON.stringify(composition.pose)}. REQUIRED CAMERA: ${JSON.stringify(composition.framing)}. ${COMPOSITION_DIRECTION} Identity means the same facial features, not the exact head angle, gaze, smile or facial pixels. Expression must fit the current scene, not a fixed open-mouth smile. The first image is identity only: compare its visible pose with the required staging and redraw the body, hands, legs and camera rather than tracing that silhouette. Previous compositions to avoid (not scene content): ${JSON.stringify(scene?.previousCompositions ?? [])}.` : "";
-  return `Create the described illustration in a vertical 9:16 composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Transfer rendering style only. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. ${composition ? "" : OVERLAP_DIRECTION} Subject: ${brief.prompt}${visualInstructions(scene)}${setting}${wardrobe}${staging}`
+  const confirmed = scene?.selection?.confirmed ? ` USER-CONFIRMED IMAGE SCENE: ${JSON.stringify({location:scene.selection.location,outfit:scene.selection.outfit,target:scene.selection.target})}. Use these exact scene requirements, translating to visual details. Do not replace them with guessed wardrobe or background.${target ? ` REQUIRED PRIMARY SUBJECT: ${JSON.stringify(target)}. Center this illustration on this explicitly selected person and their confirmed outfit, even when another character is central to the chapter.${otherTarget ? " Omit the profile character from this composition; do not copy their face, age, gender, hair or wardrobe onto the selected subject." : ""}` : ""}` : "";
+  return `Create the described illustration in a vertical 9:16 composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Transfer rendering style only. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. ${composition ? "" : OVERLAP_DIRECTION} Subject: ${brief.prompt}${visualInstructions(scene)}${setting}${wardrobe}${staging}${confirmed}`
     .replace(/\s+/g, " ")
     .trim();
 }

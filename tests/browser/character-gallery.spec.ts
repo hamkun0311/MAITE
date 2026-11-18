@@ -1,3 +1,4 @@
+import { openNewFace } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import sharp from "sharp";
 import { fillCharacterProfile } from "./character-helpers";
@@ -18,6 +19,8 @@ test("images fit their actual aspect ratio; gallery keeps images through reset a
   });
   const generate = page.getByRole("button", { name: "캐릭터 생성", exact: true });
   await generate.click();
+  await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   const image = page.getByAltText("가로 이미지 — 생성된 2D 캐릭터 일러스트", { exact: true });
   for (const viewport of [{ width: 320, height: 568 }, { width: 1440, height: 900 }]) {
     await page.setViewportSize(viewport);
@@ -42,8 +45,10 @@ test("images fit their actual aspect ratio; gallery keeps images through reset a
   await page.keyboard.press("Escape");
   await expect(viewer).not.toBeVisible();
   await expect(gallery.getByRole("button", { name: "이미지 보기: 가로 이미지", exact: true })).toBeFocused();
-  await page.getByRole("link", { name: "뉴페이스", exact: true }).click();
+  await openNewFace(page);
   await generate.click();
+  await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   const second = page.getByAltText("세로 이미지 — 생성된 2D 캐릭터 일러스트", { exact: true });
   await expect(second).toBeVisible();
   const size = await second.boundingBox();

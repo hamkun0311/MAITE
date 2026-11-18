@@ -93,6 +93,7 @@ test("GPT Image route sends separate style and revision references and returns a
       }
       if (url.endsWith("/responses")) {
         const body = JSON.parse(String(options.body));
+        assert.deepEqual(body.reasoning,{effort:"low"});
         if (sceneKind) {
           assert.equal(JSON.parse(body.input[0].content[0].text).scene.kind, sceneKind);
           assert.match(body.instructions, sceneKind === "outfit" ? /Change the named character's CLOTHING/ : /latest completed story scene/);
@@ -131,7 +132,7 @@ test("GPT Image route sends separate style and revision references and returns a
                     styleProfile: profile,
                     ...(sceneKind ? composition : {}),
                     ...(sceneKind === "illustration" ? { characterPresent, sceneLocation: "Inside a bookshop, bookshelves beside a reading table.", locationSource: "narrative" } : {}),
-                    ...(sceneKind === "outfit" ? { sceneLocation: "Inside a clothing-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue coat with black trousers.", outfitSource: "conversation" } : {}),
+                    ...(sceneKind === "outfit" ? { characterPresent, sceneLocation: "Inside a clothing-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue coat with black trousers.", outfitSource: "conversation" } : {}),
                   }),
                 },
               ],
@@ -139,7 +140,7 @@ test("GPT Image route sends separate style and revision references and returns a
           ],
         });
       }
-      assert.equal(url, `https://api.openai.com/v1/images/${sceneKind === "illustration" && !characterPresent ? "generations" : profile === "female" || includePrior ? "edits" : "generations"}`);
+      assert.equal(url, `https://api.openai.com/v1/images/${sceneKind && !characterPresent ? "generations" : profile === "female" || includePrior ? "edits" : "generations"}`);
       assert.equal(
         new Headers(options.headers).get("Authorization"),
         "Bearer fake-openai",
@@ -160,7 +161,7 @@ test("GPT Image route sends separate style and revision references and returns a
       const body = options.body;
       assert.equal(body.get("model"), "gpt-image-2.5-sunburst");
       assert.equal(body.get("size"), "720x1280");
-      assert.equal(body.get("quality"), "low");
+      assert.equal(body.get("quality"), "medium");
       assert.equal(body.get("output_format"), "jpeg");
       assert.equal(body.has("steps"), false);
       const prompt = String(body.get("prompt"));
@@ -233,10 +234,10 @@ test("GPT Image route sends separate style and revision references and returns a
   assert.equal(metadata.format, "jpeg");
   assert.equal(first.headers.get("X-Character-Width"), "720");
   assert.equal(first.headers.get("X-Character-Height"), "1280");
-  assert.ok(first.headers.get("X-Character-Prompt")!.includes("STYLE ONLY"));
+  assert.ok(decodeURIComponent(first.headers.get("X-Character-Prompt")!).includes("STYLE ONLY"));
   const revision = form();
   sceneKind = "outfit";
-  revision.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 파란 코트를 입었다.", previousCompositions: [composition] }));
+  revision.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 파란 코트를 입었다.", previousCompositions: [composition], selection: { confirmed:true, location:"체육관",outfit:"스포츠브라와 돌핀팬츠",characters:["서하"],target:"서하",profileName:"서하",userNames:["햄군"] } }));
   includePrior = true;
   revision.set("previousStyle", "female");
   revision.set(
@@ -246,6 +247,7 @@ test("GPT Image route sends separate style and revision references and returns a
   );
   const revised = await POST(req(revision));
   assert.equal(revised.status, 200);
+  assert.ok(decodeURIComponent(revised.headers.get("X-Character-Prompt")!).includes("스포츠브라와 돌핀팬츠"));
   assert.deepEqual(JSON.parse(decodeURIComponent(revised.headers.get("X-Character-Composition")!)), composition);
   sceneKind = undefined;
   blocks = true;
@@ -273,6 +275,11 @@ test("GPT Image route sends separate style and revision references and returns a
   for (const [key, value] of maleRevision) emptyScene.set(key, value);
   emptyScene.set("scene", JSON.stringify({ kind: "illustration", context: "희진은 이곳에 없다. 텅 빈 서점에서 열린 창문으로 바람만 들어왔다." }));
   assert.equal((await POST(req(emptyScene))).status, 200);
+  sceneKind = "outfit";
+  const counterpartScene = new FormData();
+  for (const [key, value] of maleRevision) counterpartScene.set(key, value);
+  counterpartScene.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 이곳에 없다. 당신은 흰 셔츠를 입은 민수와 대화한다.", selection: { profileName: "서하", userNames: ["당신"], characters: ["민수"], target: "민수" } }));
+  assert.equal((await POST(req(counterpartScene))).status, 200);
   characterPresent = true;
   sceneKind = undefined;
   includePrior = false;
@@ -288,6 +295,32 @@ test("GPT Image route sends separate style and revision references and returns a
     assert.equal(response.headers.get("X-Character-Width"), String(output.width));
     assert.equal(response.headers.get("X-Character-Height"), String(output.height));
   }
+});
+
+test("a confirmed novel counterpart omits the profile identity even when the scene editor reports the profile present",async t=>{
+ const previous=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY="fake-openai";
+ t.after(()=>{if(previous===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=previous;});
+ t.mock.method(Date,"now",()=>Date.parse("2030-01-01T00:00:00Z"));
+ const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#cbb9ef"}}).jpeg().toBuffer();
+ let rendered=false;
+ t.mock.method(globalThis,"fetch",async(input:string|URL|Request,init:RequestInit)=>{
+  const url=String(input);
+  if(url.endsWith("/moderations"))return Response.json({results:[{categories:{"sexual/minors":false}}]});
+  if(url.endsWith("/responses")){
+   const body=JSON.parse(String(init.body));assert.match(body.instructions,/user explicitly chose that person as the PRIMARY subject/);
+   assert.equal(JSON.parse(body.input[0].content[0].text).scene.selection.target,"민수");
+   return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({title:"민수",summary:"민수의 보고",prompt:"An adult knight kneels before the king.",styleProfile:"male",characterPresent:true,...composition,sceneLocation:"A royal hall.",locationSource:"narrative"})}]}]});
+  }
+  assert.ok(url.endsWith("/images/generations"));assert.equal(init.body instanceof FormData,false);
+  const body=JSON.parse(String(init.body));assert.match(body.prompt,/REQUIRED PRIMARY SUBJECT: "민수"/);assert.match(body.prompt,/NO character identity image is supplied/);assert.doesNotMatch(body.prompt,/FIRST input image is IDENTITY ONLY/);
+  rendered=true;return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
+ });
+ const form=new FormData();
+ form.set("profile",JSON.stringify({name:"희진",age:25,personality:"다정함",concept:"왕궁의 친구"}));
+ form.set("messages",JSON.stringify([{role:"user",content:"민수의 보고 장면"}]));form.set("image",new Blob([jpeg],{type:"image/jpeg"}),"original.jpg");
+ form.set("scene",JSON.stringify({kind:"illustration",context:"희진은 왕궁 연회장에 있었다. 민수는 왕 앞에서 보고했다.",selection:{confirmed:true,targetConfirmed:true,target:"민수",profileName:"희진",userNames:["햄군"],characters:["희진","민수"],location:"왕궁 연회장",outfit:"검은 갑옷"}}));
+ const result=await POST(new Request("http://localhost/api/characters",{method:"POST",body:form}));
+ assert.equal(result.status,200);assert.equal(rendered,true);
 });
 
 test("visual requests validate bounded context and use distinct identity-preserving instructions", () => {

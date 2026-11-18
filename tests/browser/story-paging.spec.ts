@@ -48,7 +48,7 @@ test("swiping reads saved chapters without requests; continuation and illustrati
   expect(bodies.at(-1)!.messages.at(-2)!.content).toContain("원고2.");
 });
 
-test("story loading popup cancels an unfinished chapter and keeps the extra concept for retry", async ({ page }) => {
+test("inline story cancellation keeps the extra concept and previous chapter readable", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/ideal"); await generateCharacter(page);
   await page.route("**/api/chat", route => route.fulfill({ contentType: "text/event-stream", body: storyWire(route.request().postDataJSON(), "기존에 완료된 원고.") }));
@@ -67,17 +67,12 @@ test("story loading popup cancels an unfinished chapter and keeps the extra conc
   const concept = page.getByRole("textbox", { name: "다음 이야기 컨셉" });
   await concept.fill("왕국으로 돌아간다");
   await page.getByRole("button", { name: "다음 이야기", exact: true }).click();
-  const loading = page.getByRole("dialog", { name: "이야기를 쓰고 있어요" });
-  await expect(loading).toBeVisible();
-  const box = (await loading.boundingBox())!;
-  expect(Math.abs(box.x + box.width / 2 - 195)).toBeLessThan(2);
-  expect(Math.abs(box.y + box.height / 2 - 422)).toBeLessThan(2);
-  await expect(loading.locator("img")).toHaveJSProperty("complete", true);
-  await page.screenshot({ path: ".verification/generation-loading-mobile.png" });
-  await page.keyboard.press("Escape");
-  await expect(loading).toHaveCount(0);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.locator(".story-next-button .spin")).toBeVisible();
+  await expect(page.locator(".story-page p")).toContainText("기존에 완료된 원고.");
+  await page.getByRole("button", { name: "이야기 생성 취소", exact: true }).click();
   await expect(page.locator(".story-page > span")).toHaveText("이야기 #1");
   await expect(concept).toHaveValue("왕국으로 돌아간다");
   await expect(page.getByText("응답을 중지했습니다.", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "다음 이야기", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
 });

@@ -170,7 +170,7 @@ export default function Workspace() {
   }, [help, historyOpen]);
 
   function stopWorker() {
-    worker.current?.terminate();
+    if (worker.current) { worker.current.onmessage = null; worker.current.onerror = null; worker.current.terminate(); }
     worker.current = null;
     if (timeout.current) clearTimeout(timeout.current);
     timeout.current = null;
@@ -228,6 +228,7 @@ export default function Workspace() {
     }
     worker.current = cadWorker;
     const fail = (text: string) => {
+      if (worker.current !== cadWorker) return;
       stopWorker();
       setBusy(false);
       setError(text);
@@ -245,6 +246,7 @@ export default function Workspace() {
         "CAD 엔진을 불러오지 못했습니다. 네트워크 연결과 WASM 파일을 확인해주세요.",
       );
     cadWorker.onmessage = (event: MessageEvent<WorkerMessage>) => {
+      if (worker.current !== cadWorker) return;
       const data = event.data;
       if (data.type === "progress") {
         setProgress(data.progress);

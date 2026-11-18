@@ -2,6 +2,9 @@ import { z } from "zod";
 import { AccountError, requireAccount, rpc } from "@/lib/server/account";
 import { allowedOrigin, corsHeaders, preflight } from "@/lib/server/http";
 import { userProfileSchema } from "@/lib/account/profile";
+import { responseTimings } from "@/lib/server/timing";
+import { documentMedia } from "@/lib/server/document-media";
+import { signedImages, thumbnailPath } from "@/lib/server/image-assets";
 export const runtime = "nodejs";
 export const OPTIONS = preflight;
 const action = z.discriminatedUnion("action", [
@@ -14,40 +17,48 @@ const action = z.discriminatedUnion("action", [
 ]);
 export async function GET(request: Request) {
   const headers = corsHeaders(request);
+  const measure = responseTimings(headers);
   try {
     if (!allowedOrigin(request)) throw new AccountError("허용되지 않은 요청입니다.", 403);
-    const { db, user } = await requireAccount(request);
+    const { db, user } = await measure("auth", () => requireAccount(request));
     const url = new URL(request.url); const jobId = url.searchParams.get("job"); const docId = url.searchParams.get("document");
     if (url.searchParams.get("previews") === "1") {
-      const { data, error } = await db.from("generation_jobs").select("id,storage_path").eq("user_id", user.id).eq("kind", "character").eq("status", "completed").not("storage_path", "is", null).order("created_at", { ascending: false }).limit(200);
+      const { data, error } = await measure("images_db", () => db.from("generation_jobs").select("id,storage_path").eq("user_id", user.id).eq("kind", "character").eq("status", "completed").not("storage_path", "is", null).order("created_at", { ascending: false }).limit(200));
       if (error) throw new AccountError("캐릭터 이미지를 불러오지 못했습니다.", 503);
       const paths = (data ?? []).map(row => row.storage_path as string);
-      const signed = paths.length ? await db.storage.from("maite-private").createSignedUrls(paths, 300) : { data: [], error: null };
-      if (signed.error) throw new AccountError("이미지를 불러오지 못했습니다.", 503);
-      return Response.json({ images: Object.fromEntries((data ?? []).flatMap((row, index) => signed.data?.[index]?.signedUrl ? [[row.id, signed.data[index].signedUrl]] : [])) }, { headers });
+      const urls = await measure("storage_sign", () => signedImages.get(db, user.id, paths.flatMap(path => [path, thumbnailPath(path)])));
+      return Response.json({ images: Object.fromEntries((data ?? []).flatMap(row => {
+        const url = urls.get(thumbnailPath(row.storage_path)) || urls.get(row.storage_path); return url ? [[row.id, url]] : [];
+      })) }, { headers });
     }
     if (jobId) {
-      const { data, error } = await db.from("generation_jobs").select("id,kind,status,result,storage_path,created_at").eq("id", z.uuid().parse(jobId)).eq("user_id", user.id).single();
+      const { data, error } = await measure("job_db", () => db.from("generation_jobs").select("id,kind,status,result,storage_path,created_at").eq("id", z.uuid().parse(jobId)).eq("user_id", user.id).single());
       if (error || !data) throw new AccountError("작업을 찾지 못했습니다.", 404);
-      let imageUrl: string | undefined;
-      if (data.storage_path) { const signed = await db.storage.from("maite-private").createSignedUrl(data.storage_path, 300); imageUrl = signed.data?.signedUrl; }
-      return Response.json({ ...data, imageUrl }, { headers });
+      const urls = data.storage_path ? await measure("storage_sign", () => signedImages.get(db, user.id, [data.storage_path, thumbnailPath(data.storage_path)])) : new Map<string, string | undefined>();
+      return Response.json({ ...data, imageUrl: urls.get(data.storage_path), thumbnailUrl: urls.get(thumbnailPath(data.storage_path || "")) }, { headers });
     }
     if (docId) {
-      const { data, error } = await db.from("documents").select("*").eq("id", z.uuid().parse(docId)).eq("user_id", user.id).is("deleted_at", null).single();
+      const { data, error } = await measure("document_db", () => db.from("documents").select("*").eq("id", z.uuid().parse(docId)).eq("user_id", user.id).is("deleted_at", null).single());
       if (error || !data) throw new AccountError("저장 내용을 찾지 못했습니다.", 404);
+      if (url.searchParams.get("media") === "1") {
+        const media = await documentMedia(db, user.id, data.payload, measure);
+        return Response.json({ ...data, media }, { headers });
+      }
       return Response.json(data, { headers });
     }
-    await rpc("expire_generations", { p_user: user.id });
-    const results = await Promise.all([
+    await measure("expiry", () => rpc("expire_generations", { p_user: user.id }));
+    const results = await measure("account_db", () => Promise.all([
       db.from("wallets").select("transferable,bonus,free_chats").eq("user_id", user.id).single(),
       db.from("profiles").select("display_name").eq("id", user.id).single(),
       db.from("documents").select("id,title,kind,updated_at,character_name:payload->art->profile->>name,job_id:payload->art->>jobId,source_id:payload->>id,chapter:payload->story->storyState->>chapter,novel_id:payload->story->>documentId,next_goal:payload->story->storyState->>nextChapterGoal,series_start:payload->story->storyState->>seriesStartChapter").eq("user_id", user.id).is("deleted_at", null).order("updated_at", { ascending: false }).limit(200),
-    ]);
+    ]));
     if (results.some(result => result.error)) throw new AccountError("계정 정보를 불러오지 못했습니다. DB 마이그레이션을 확인해주세요.", 503);
     const savedProfile = userProfileSchema.safeParse(user.user_metadata?.maite_profile);
+    const avatarPath = user.user_metadata?.maite_avatar_path;
+    const avatarUrl = typeof avatarPath === "string" && avatarPath.startsWith(`${user.id}/profile/`) && /^[-a-zA-Z0-9/_.]+$/.test(avatarPath)
+      ? (await signedImages.get(db, user.id, [avatarPath])).get(avatarPath) : undefined;
     return Response.json({ userId: user.id, email: user.email, wallet: results[0].data, profile: { ...results[1].data, onboarded: savedProfile.success, ...(savedProfile.success ? { display_name: savedProfile.data.nickname, gender: savedProfile.data.gender, age: savedProfile.data.age } : {}) }, documents: results[2].data, jobs: [],
-      billingEnabled: process.env.GOOGLE_PLAY_BILLING_ENABLED === "true", adsEnabled: process.env.ADMOB_REWARDS_ENABLED === "true" }, { headers });
+      avatarUrl, billingEnabled: process.env.GOOGLE_PLAY_BILLING_ENABLED === "true", adsEnabled: process.env.ADMOB_REWARDS_ENABLED === "true" }, { headers });
   } catch (error) { return Response.json({ error: error instanceof AccountError ? error.message : "요청을 확인해주세요." }, { status: error instanceof AccountError ? error.status : 400, headers }); }
 }
 export async function POST(request: Request) {

@@ -2,6 +2,8 @@
 import { useEffect, useRef } from "react";
 import { X, ImageOff } from "lucide-react";
 import { NO_BACKGROUND, type CharacterGalleryImage } from "@/lib/characters/gallery";
+import CachedImage from "./CachedImage";
+import { imageAssetKey } from "@/lib/platform/image-cache";
 
 export default function CharacterBackgroundPicker({ open, images, selected, onSelect, onClose }: {
   open: boolean; images: CharacterGalleryImage[]; selected?: string; onSelect: (id: string) => void; onClose: () => void;
@@ -22,7 +24,7 @@ export default function CharacterBackgroundPicker({ open, images, selected, onSe
         <div className="background-none-preview"><ImageOff size={32} aria-hidden="true" /></div><span>배경 없음</span><small>이미지 없이 보기</small>
       </button>
       {images.map(image => <button key={image.id} type="button" aria-label={`배경 선택: ${image.title}`} aria-pressed={selected === image.id} onClick={() => { onSelect(image.id); onClose(); }}>
-        <img src={image.url} alt={image.title} />
+        <CachedImage src={image.blob.size ? image.url : image.thumbnailUrl || image.url} cacheKey={imageAssetKey(image, !image.blob.size && image.thumbnailUrl ? "thumbnail" : "original")} fallbackSrc={image.thumbnailUrl ? image.url : undefined} loading="lazy" alt={image.title} />
       </button>)}
     </div>
   </dialog>;

@@ -46,9 +46,5 @@ test("chat and story exchange compact continuity, failed story changes never com
   await page.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await expect.poll(() => chatCalls).toBe(2);
   await expect(page.getByText("서점에서 만나요.", { exact: true })).toHaveCount(2);
-  await page.getByRole("button", { name: "AI 대화 초기화", exact: true }).click();
-  await page.getByRole("textbox", { name: "AI에게 보낼 메시지" }).fill("계속 이야기하자");
-  await page.getByRole("button", { name: "AI 메시지 보내기" }).click();
-  await expect.poll(() => chatCalls).toBe(3);
-  expect(storyCalls).toBe(2);
+  await expect(page.getByRole("button", { name: "AI 대화 초기화", exact: true })).toHaveCount(0);
 });

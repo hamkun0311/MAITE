@@ -41,6 +41,7 @@ export async function verifyPurchase(userId: string, productId: string, token: s
   const purchase = await response.json();
   if (purchase.purchaseState !== 0 || (purchase.quantity ?? 1) !== 1 || purchase.obfuscatedExternalAccountId !== playAccountId(userId) || (purchase.productId && purchase.productId !== productId)) throw new AccountError("완료된 본인 구매만 충전할 수 있습니다.", 409);
   const granted = await rpc<boolean>("grant_purchase", { p_user: userId, p_hash: hash, p_product: grantProductId, p_order: purchase.orderId ?? null });
+  // Pass daily rewards are now claimed explicitly on the reward calendar.
   // Consumption acknowledges consumables and allows another purchase; grant precedes consume.
   if (purchase.consumptionState !== 1) {
     const consumed = await fetch(`${base}:consume`, { method: "POST", headers, signal: AbortSignal.timeout(15000) });

@@ -1,4 +1,4 @@
-import { textModel } from "../../../lib/ai-model.ts";
+import { reasoningOptions, textModel } from "../../../lib/ai-model.ts";
 import { z } from "zod";
 import {
   conversationSchema,
@@ -27,6 +27,7 @@ async function callAI(
     signal,
     body: JSON.stringify({
       model: textModel(),
+      ...reasoningOptions(),
       store: false,
       instructions,
       input,

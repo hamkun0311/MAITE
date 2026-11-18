@@ -395,20 +395,7 @@ export default function ChatStudio() {
               <progress aria-label="생성 진행률" value={progress} max={100} />
             )}
           </div>
-          <div className="chat-download">
-            <div>
-              <strong>{scene?.title || "당신의 아이디어를 기다립니다"}</strong>
-              <p>
-                {result
-                  ? `${result.bounds.map((v) => v.toFixed(1)).join(" × ")} mm · ${(result.step.byteLength / 1024).toFixed(0)} KB`
-                  : "브라우저에서 실제 CAD 형상을 만들고 STEP으로 저장합니다."}
-              </p>
-            </div>
-            <button disabled={!result || busy} onClick={() => download("step")}>
-              <ArrowDownToLine size={16} />
-              STEP 다운로드
-            </button>
-          </div>
+
           {scene && (
             <div className="scene-notes">
               <div>

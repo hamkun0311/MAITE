@@ -1,7 +1,8 @@
+import { startNewCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import { generateCharacter, enterCharacterMode } from "./character-helpers";
 
-test("location-only changes enable image generation; plans, failure and ordinary chat do not", async ({ page }) => {
+test("scene defaults persist while manual image generation stays enabled across ordinary chat and failures", async ({ page }) => {
   await page.goto("/ideal");
   await generateCharacter(page);
   let calls = 0, images = 0;
@@ -33,18 +34,18 @@ test("location-only changes enable image generation; plans, failure and ordinary
   await expect(page.getByText("이미지 테스트 실패", { exact: true })).toBeVisible();
   expect(images).toBe(1);
   await send("알았어");
-  await expect(button).toBeDisabled();
+  await expect(button).toBeEnabled();
   await send("내일은 서점에 가자");
-  await expect(button).toBeDisabled();
+  await expect(button).toBeEnabled();
   await send("다른 장소");
   await expect(page.getByText("응답 실패", { exact: true })).toBeVisible();
-  await expect(button).toBeDisabled();
+  await expect(button).toBeEnabled();
   await send("카페에 왔어");
   await expect(button).toBeEnabled();
   await page.getByRole("button", { name: "캐릭터 이미지로 돌아가기", exact: true }).click({ noWaitAfter: true });
   await expect(page).toHaveURL(/\/ideal$/);
   await enterCharacterMode(page);
   await expect(button).toBeEnabled();
-  await chat.getByRole("button", { name: "AI 대화 초기화", exact: true }).click();
-  await expect(button).toHaveCount(0);
+  await startNewCharacter(page);
+  await expect(button).toBeEnabled();
 });

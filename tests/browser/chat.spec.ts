@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import { readFile } from "node:fs/promises";
 
 // Mock only the paid AI boundary. The real browser Worker, OCCT, preview and STEP writer run.
 const fixture = {
@@ -102,12 +101,7 @@ test("chat context to real scene Worker and STEP; cancel and retry", async ({
   ).toBeVisible({ timeout: 120000 });
   await page.getByRole("button", { name: "정리된 프롬프트" }).click();
   await expect(page.getByText(/Sleeping dog, lowered/)).toBeVisible();
-  const downloading = page.waitForEvent("download");
-  await page.getByRole("button", { name: "STEP 다운로드" }).click();
-  const download = await downloading;
-  await download.saveAs(".verification/chat-scene.step");
-  const content = await readFile(".verification/chat-scene.step", "utf8");
-  expect(content).toContain("MANIFOLD_SOLID_BREP");
+  await expect(page.getByRole("button", { name: "STEP 다운로드" })).toHaveCount(0);
   await page.getByRole("button", { name: "3D 미리보기", exact: true }).click();
   await page.screenshot({
     path: ".verification/chat-desktop.png",
@@ -119,7 +113,7 @@ test("chat context to real scene Worker and STEP; cancel and retry", async ({
   await page.getByRole("button", { name: "생성 취소" }).click();
   await expect(
     page.getByRole("button", { name: "STEP 다운로드" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "명세로 다시 생성" }).click();
   await expect(
     page.getByText("3D 생성 · STEP 유효성 및 치수 재검증 완료"),
@@ -160,5 +154,5 @@ test("API failure remains an error and never enables STEP", async ({
   ).toBeVisible();
   await expect(
     page.getByRole("button", { name: "STEP 다운로드" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
 });

@@ -1,3 +1,4 @@
+import { openNewFace } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import { generateCharacter, enterCharacterMode, storyWire, chapterEvent } from "./character-helpers";
 import type { StoryState } from "../../lib/novel/state";
@@ -32,7 +33,8 @@ test("mobile profile precedes image generation and is shared by chat and story",
   for (const button of await actions.getByRole("button").all()) {
     expect(await button.textContent()).toBe("");
     const box = await button.boundingBox();
-    expect(box!.width).toBe(box!.height);
+    expect(box!.width).toBeGreaterThanOrEqual(44);
+    expect(box!.height).toBeGreaterThanOrEqual(44);
   }
   expect(await actions.evaluate(element => {
     const image = element.previousElementSibling!.querySelector("img")!;
@@ -64,7 +66,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await chat.getByLabel("AI에게 보낼 메시지").fill("아직 보내지 않은 말");
   await page.goBack();
   await expect(page).toHaveURL(/\/ideal$/);
-  await expect(page.getByRole("link", { name: "이미지 다운로드" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true }).click();
   await expect(viewer).toBeVisible();
   await page.goForward();
@@ -111,7 +113,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   expect(bodies).toHaveLength(5);
   await expect(story.getByRole("button", { name: "AI 대화 초기화", exact: true })).toHaveCount(0);
   await expect(story.getByRole("button", { name: "캐릭터 설정", exact: true })).toHaveCount(0);
-  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
+  await openNewFace(page);
   await expect(page.getByLabel("캐릭터 이름")).toHaveValue("서하");
   await expect(gender).toHaveValue("여성");
   await expect(page.getByLabel("외모", { exact: true })).toHaveValue("긴 은발, 보라색 눈동자, 갸름한 얼굴");
@@ -119,7 +121,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(chat.getByText("오랜만이야", { exact: true })).toBeVisible();
   await page.screenshot({ path: ".verification/character-chat-mobile.png", fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
+  await openNewFace(page);
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toHaveCount(0);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);
@@ -143,13 +145,13 @@ test("direct activity URLs guide a new session to character creation without cal
   expect(requests).toBe(0);
 });
 
-test("leaving a chat page cancels streaming and keeps partial output out of the next request", async ({ page }) => {
+test("leaving a chat page keeps streaming alive and commits the completed response", async ({ page }) => {
   await page.goto("/ideal");
   await generateCharacter(page);
   await enterCharacterMode(page);
   await page.evaluate(() => {
     const original = window.fetch.bind(window);
-    const scope = window as typeof window & { routeChatAborted?: boolean; routeChatBodies?: unknown[] };
+    const scope = window as typeof window & { routeChatAborted?: boolean; routeChatBodies?: unknown[]; finishChat?: () => void };
     scope.routeChatBodies = [];
     window.fetch = async (input, init) => {
       if (input !== "/api/chat") return original(input, init);
@@ -159,7 +161,10 @@ test("leaving a chat page cancels streaming and keeps partial output out of the 
         controller.enqueue(encoder.encode('data: {"type":"delta","text":"아직 끝나지 않은 응답"}\n\n'));
         if (scope.routeChatBodies!.length > 1) {
           controller.enqueue(encoder.encode('data: {"type":"done"}\n\n')); controller.close();
-        } else init?.signal?.addEventListener("abort", () => { scope.routeChatAborted = true; controller.error(new DOMException("Aborted", "AbortError")); }, { once: true });
+        } else {
+          scope.finishChat = () => { controller.enqueue(encoder.encode('data: {"type":"done"}\n\n')); controller.close(); };
+          init?.signal?.addEventListener("abort", () => { scope.routeChatAborted = true; controller.error(new DOMException("Aborted", "AbortError")); }, { once: true });
+        }
       } }), { headers: { "Content-Type": "text/event-stream" } });
     };
   });
@@ -169,14 +174,16 @@ test("leaving a chat page cancels streaming and keeps partial output out of the 
   await expect(chat.getByText("아직 끝나지 않은 응답", { exact: true })).toBeVisible();
   await chat.getByRole("button", { name: "캐릭터 이미지로 돌아가기" }).click();
   await expect(page).toHaveURL(/\/ideal$/);
-  expect(await page.evaluate(() => (window as typeof window & { routeChatAborted?: boolean }).routeChatAborted)).toBe(true);
+  expect(await page.evaluate(() => (window as typeof window & { routeChatAborted?: boolean }).routeChatAborted)).not.toBe(true);
+  await page.evaluate(() => (window as typeof window & { finishChat: () => void }).finishChat());
   await enterCharacterMode(page);
-  await expect(chat.getByText("화면을 이동해 응답을 중지했습니다.")).toBeVisible();
+  await expect(chat.getByText("아직 끝나지 않은 응답", { exact: true })).toBeVisible();
+  await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeEnabled();
   await chat.getByLabel("AI에게 보낼 메시지").fill("다음 요청");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeEnabled();
   const bodies = await page.evaluate(() => (window as typeof window & { routeChatBodies: { messages: unknown[] }[] }).routeChatBodies);
-  expect(bodies[1].messages).toEqual([{ role: "user", content: "다음 요청" }]);
+  expect(bodies[1].messages).toEqual([{ role: "user", content: "첫 요청" }, { role: "assistant", content: "아직 끝나지 않은 응답" }, { role: "user", content: "다음 요청" }]);
 });
 
 test("story reader uses most of the screen and commits a chapter only after completion", async ({ page }) => {
@@ -201,14 +208,16 @@ test("story reader uses most of the screen and commits a chapter only after comp
   await enterCharacterMode(page, "이야기 만들기");
   const story = page.getByRole("region", { name: "이야기 만들기", exact: true });
   const log = story.getByRole("log");
-  const loading = page.getByRole("dialog", { name: "이야기를 쓰고 있어요" });
-  await expect(loading).toBeVisible();
-  await expect(loading.getByRole("status")).toHaveText("이야기 흐름 확인 중…");
-  await expect(loading.locator("img")).toHaveJSProperty("complete", true);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(story.locator(".story-generation-status")).toContainText("이야기 흐름 확인 중…");
+  await expect(story.locator(".story-next-button .spin")).toBeVisible();
   await expect(page.locator(".story-page p")).not.toContainText("첫 장면.");
   await expect(story.getByLabel("AI에게 보낼 메시지")).toHaveCount(0);
   await expect(page.locator(".story-next-button")).toBeDisabled();
+  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "서점", exact: true }).click();
+  await expect(page).toHaveURL(/\/ideal\/bookshop$/);
   await page.evaluate(() => (window as typeof window & { finishStory?: () => void }).finishStory!());
+  await page.goBack(); await expect(page).toHaveURL(/\/ideal\/story$/);
   await expect(story.getByRole("button", { name: "다음 이야기", exact: true })).toBeEnabled();
   await expect(log.locator(".assistant p")).toContainText("첫 장면.");
   const footer = page.getByRole("navigation", { name: "하단 메뉴" });

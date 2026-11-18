@@ -10,6 +10,8 @@ import ActionConfirmProvider from "../../../components/ActionConfirm";
 import { CharactersScreen, HeartStoreScreen, StudioHomeScreen } from "../../../components/NativePages";
 import AccountProvider from "../../../components/AccountProvider";
 import { MyPageScreen, StoreScreen, LibraryDetailScreen } from "../../../components/AccountPages";
+import {BookshelfScreen,PurchasedNovelScreen} from "../../../components/Bookshelf";
+import RewardsScreen from "../../../components/RewardsScreen";
 function MobileApp() {
   const path = usePathname();
   useEffect(() => {
@@ -24,6 +26,6 @@ function MobileApp() {
     });
     return () => { void state.then(listener => listener.remove()); void back.then(listener => listener.remove()); };
   }, []);
-  return <AccountProvider><ActionConfirmProvider><CharacterStudio>{path === "/ideal/mypage" ? <MyPageScreen/> : path === "/ideal/store" ? <HeartStoreScreen/> : path === "/ideal/bookshop" ? <StoreScreen/> : path === "/ideal/characters" ? <CharactersScreen/> : path.startsWith("/ideal/characters/") ? <LibraryDetailScreen kind="character"/> : path.startsWith("/ideal/novels/") ? <LibraryDetailScreen kind="novel"/> : path === "/ideal/chat" ? <CharacterActivityScreen mode="chat" /> : path === "/ideal/story" ? <CharacterActivityScreen mode="story" /> : path === "/ideal/gallery" ? <CharacterGalleryScreen /> : path === "/ideal/new" ? <CharacterCreationScreen/> : <StudioHomeScreen/>}</CharacterStudio></ActionConfirmProvider></AccountProvider>;
+  return <AccountProvider><ActionConfirmProvider><CharacterStudio>{path === "/ideal/library" ? <BookshelfScreen/> : path.startsWith("/ideal/library/") ? <PurchasedNovelScreen/> : path === "/ideal/rewards" ? <RewardsScreen/> : path === "/ideal/mypage" ? <MyPageScreen/> : path === "/ideal/store" ? <HeartStoreScreen/> : path === "/ideal/bookshop" ? <StoreScreen/> : path === "/ideal/characters" ? <CharactersScreen/> : path.startsWith("/ideal/characters/") ? <LibraryDetailScreen kind="character"/> : path.startsWith("/ideal/novels/") ? <LibraryDetailScreen kind="novel"/> : path === "/ideal/chat" ? <CharacterActivityScreen mode="chat" /> : path === "/ideal/story" ? <CharacterActivityScreen mode="story" /> : path === "/ideal/gallery" ? <CharacterGalleryScreen /> : path === "/ideal/new" ? <CharacterCreationScreen/> : <StudioHomeScreen/>}</CharacterStudio></ActionConfirmProvider></AccountProvider>;
 }
 createRoot(document.getElementById("root")!).render(<MobileApp />);

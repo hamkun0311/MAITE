@@ -3,6 +3,7 @@ import type { StudioSnapshot } from "../platform/snapshot.ts";
 
 export type LibraryDocument = { id: string; title: string; kind: string; updated_at?: string; character_name?: string; job_id?: string; source_id?: string; chapter?: string; novel_id?: string; next_goal?: string; series_start?: string };
 export type AccountData = {
+  avatarUrl?: string | null;
   userId: string; email: string; profile?: { display_name: string; gender?: string; age?: number; onboarded?: boolean }; wallet: { transferable: number; bonus: number; free_chats: number };
   documents: LibraryDocument[]; jobs: { id: string; kind: string; status: string }[]; billingEnabled: boolean; adsEnabled: boolean;
 };

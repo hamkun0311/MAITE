@@ -1,14 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { fillCharacterProfile } from "./character-helpers";
 
-test("top menus, character generation, download and image-based revision", async ({
+test("top menus, character generation, full-screen preview and image-based revision", async ({
   page,
 }) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.getByRole("link", { name: "모양", exact: true })).toHaveCount(0);
   await expect(
-    page.getByRole("link", { name: "뉴페이스", exact: true }),
+    page.getByRole("link", { name: "캐릭터", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   const jpeg = Buffer.from(
     await page.evaluate(() => {
@@ -57,7 +57,9 @@ test("top menus, character generation, download and image-based revision", async
   await expect(
     page.getByAltText("우아한 캐릭터 — 생성된 2D 캐릭터 일러스트"),
   ).toBeVisible();
-  await expect(page.getByText("720 × 1280 · JPG")).toBeVisible();
+  await expect(page.getByAltText("우아한 캐릭터 — 생성된 2D 캐릭터 일러스트")).toHaveAttribute("width", "720");
+  await expect(page.getByRole("dialog", {name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   await page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
   await expect(viewer).toBeVisible();
@@ -71,15 +73,14 @@ test("top menus, character generation, download and image-based revision", async
   await page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true }).click();
   await viewer.click({ position: { x: 5, y: 5 } });
   await expect(viewer).not.toBeVisible();
-  const downloadEvent = page.waitForEvent("download");
-  await page.getByRole("link", { name: "이미지 다운로드" }).click();
-  expect((await downloadEvent).suggestedFilename()).toMatch(/\.jpg$/);
+  await expect(page.getByRole("link", { name: "이미지 다운로드" })).toHaveCount(0);
   await page.getByLabel("컨셉", { exact: true }).fill("은발의 성인 여성, 우아한 원피스");
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   await expect(
     page.getByText("이미지 생성 완료 · JPG로 저장할 수 있습니다."),
   ).toBeVisible();
   expect(calls).toBe(2);
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page.getByRole("link", { name: "이미지 다운로드" })).toHaveCount(
     0,
@@ -113,9 +114,7 @@ test("cancellation and API error never expose a stale character download", async
   await expect(
     page.getByRole("alert").filter({ hasText: "요청을 변경해주세요." }),
   ).toBeVisible();
-  await expect(
-    page.locator(".chat-download button"),
-  ).toBeDisabled();
+  await expect(page.locator(".chat-download button")).toHaveCount(0);
   await page.unroute("**/api/characters");
   let release: () => void = () => {};
   const wait = new Promise<void>((resolve) => {

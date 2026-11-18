@@ -1,9 +1,19 @@
 "use client";
 import { isNative } from "./native";
 import { apiFetch } from "./api";
+import { accountClient } from "../account/client";
+import { ReadCache } from "./read-cache";
+const reads = new ReadCache();
+export const invalidateApiReads = () => reads.clear();
 export async function jsonApi(path: string, body?: object) {
-  const response = await apiFetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
-  const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "요청을 완료하지 못했습니다."); return data;
+  const request = async () => {
+    const response = await apiFetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { signal: AbortSignal.timeout(30000) });
+    const data = await response.json(); if (!response.ok) throw new Error(data.error ?? "요청을 완료하지 못했습니다."); return data;
+  };
+  if (body) { reads.clear(); try { return await request(); } finally { reads.clear(); } }
+  const auth = accountClient(); const session = auth ? (await auth.auth.getSession()).data.session : null;
+  const ttl = /[?&](document|job|previews)=/.test(path) ? 15000 : path === "/api/store" ? 5000 : 0;
+  return reads.get(session?.access_token || "demo", path, request, ttl);
 }
 export async function buyHearts(productId?: string) {
   if (!isNative()) throw new Error("하트 충전은 Android 앱에서 사용할 수 있습니다.");

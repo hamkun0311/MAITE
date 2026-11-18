@@ -3,6 +3,31 @@ import assert from "node:assert/strict";
 import { trackUsage, usageFetch, type UsageRecord } from "../lib/usage.ts";
 import { POST } from "../app/api/chat/route.ts";
 import { addUsageRecord, clearUsage, finishUsageTask, startUsageTask, sumUsage, usageSnapshot } from "../lib/usage-store.ts";
+import { imageDescriptionReasoningOptions, imageQuality, novelReviewMaxOutputTokens, novelReviewReasoningOptions, reasoningOptions } from "../lib/ai-model.ts";
+
+test("shared generation quality settings default to medium and remain configurable",t=>{
+ const keys=["OPENAI_REASONING_EFFORT","OPENAI_IMAGE_QUALITY","OPENAI_NOVEL_REVIEW_REASONING_EFFORT","OPENAI_NOVEL_REVIEW_MAX_OUTPUT_TOKENS","OPENAI_IMAGE_DESCRIPTION_REASONING_EFFORT"];
+ const before=keys.map(key=>process.env[key]);
+ t.after(()=>keys.forEach((key,index)=>{if(before[index]===undefined)delete process.env[key];else process.env[key]=before[index];}));
+ for(const key of keys)delete process.env[key];
+ assert.deepEqual(reasoningOptions("gpt-5.4-mini"),{reasoning:{effort:"medium"}});
+ assert.deepEqual(reasoningOptions("gpt-6.2-sol"),{reasoning:{effort:"medium"}});
+ assert.deepEqual(reasoningOptions("gpt-4.1"),{});
+ assert.deepEqual(novelReviewReasoningOptions("gpt-5.4-mini"),{reasoning:{effort:"low"}});
+ assert.deepEqual(imageDescriptionReasoningOptions("gpt-5.4-mini"),{reasoning:{effort:"low"}});
+ assert.deepEqual(imageDescriptionReasoningOptions("gpt-4.1"),{});
+ assert.equal(novelReviewMaxOutputTokens(),12000);
+ process.env.OPENAI_NOVEL_REVIEW_MAX_OUTPUT_TOKENS="16000";assert.equal(novelReviewMaxOutputTokens(),16000);
+ process.env.OPENAI_NOVEL_REVIEW_MAX_OUTPUT_TOKENS="invalid";assert.equal(novelReviewMaxOutputTokens(),12000);
+ assert.deepEqual(novelReviewReasoningOptions("gpt-4.1"),{});
+ assert.equal(imageQuality(),"medium");
+ process.env.OPENAI_REASONING_EFFORT="low";process.env.OPENAI_IMAGE_QUALITY="high";
+ assert.deepEqual(reasoningOptions("gpt-5.4-mini"),{reasoning:{effort:"low"}});assert.equal(imageQuality(),"high");
+ process.env.OPENAI_NOVEL_REVIEW_REASONING_EFFORT="medium";
+ process.env.OPENAI_IMAGE_DESCRIPTION_REASONING_EFFORT="medium";
+ assert.deepEqual(novelReviewReasoningOptions("gpt-5.4-mini"),{reasoning:{effort:"medium"}});
+ assert.deepEqual(imageDescriptionReasoningOptions("gpt-5.4-mini"),{reasoning:{effort:"medium"}});
+});
 
 test("usage keeps cache/reasoning as subsets, missing counts unknown, and finalizes once", () => {
   const records: UsageRecord[] = [];

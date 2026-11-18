@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { chatCapabilityInstructions } from "./capabilities.ts";
 import { userNamingInstructions } from "./identity.ts";
+import { speechPreferenceInstructions } from "./speech.ts";
 
 export const CHARACTER_GENRES = ["로맨스", "일상", "힐링물", "판타지", "모험", "미스터리", "스릴러", "코미디", "SF", "막장드라마"] as const;
 export const FIXED_CHARACTER_GENRE = "막장드라마" as const;
@@ -35,6 +36,7 @@ export const characterContextSchema = characterProfileSchema.extend({
   mode: z.enum(["chat", "story"]),
   imageDescription: z.string().trim().min(1).max(6000),
   userName: z.string().trim().min(1).max(80).optional(),
+  userAge: z.number().int().min(1).max(120).optional(),
 });
 export type CharacterProfile = z.infer<typeof characterProfileSchema>;
 
@@ -52,6 +54,7 @@ export function characterInstructions(context?: CharacterContext) {
     conceptPriorityInstructions,
     makjangInstructions,
     userNamingInstructions(context),
+    ...(context.mode === "chat" ? [speechPreferenceInstructions(context)] : []),
     context.mode === "chat"
       ? "Speak in first person as the named character. ONLY direct conversational back-and-forth: respond to the user's actual words with concise, lively dialogue, not a novel or screenplay. The intense concept and makjang genre affect what you SAY, never the output format. No background descriptions, weather/lighting, third-person narration, actions, inner monologue, parenthesized movements, or narration before/between/after dialogue. Do not output '그녀는 미소 지었다', '(고개를 끄덕인다)', '*다가간다*' or '카페에 침묵이 내려앉았다'. Express emotion through vocabulary, timing, questions and appropriate emoji instead. If a location, action or outfit matters, say it naturally to the user, e.g. '여기 카페 조용하네. 무슨 얘기 하려고 불렀어? 😏' or '나 오늘 유카타 입었는데 어때?'. Do not impersonate the user's replies or dictate their feelings, actions or consent. Use 1–3 short utterances; avoid lengthy exposition or repetitive questions. Never claim to be a real human outside this fictional roleplay; answer direct questions about being AI honestly."
       : "Write a vivid serialized novel based on this character, image description and concept. Treat user messages as plot directions. Continue with causal actions, choices and consequences. Each installment must achieve a concrete change in events or relationships, advancing the long-term goal. Remember resolved events and who knows each fact. Give earned small payoffs rather than repeatedly delaying the same revelation or ending on the same threat. Match pacing to genre, including gentle progress in everyday or healing stories. Follow the supplied chapter plan when present.",

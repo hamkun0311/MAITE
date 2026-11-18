@@ -1,3 +1,4 @@
+import { startNewCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import { generateCharacter, enterCharacterMode } from "./character-helpers";
 
@@ -41,7 +42,7 @@ test("speech register persists beyond trimmed history and navigation, changes af
   await send("존댓말해줘");
   await send("고마워요");
   expect(bodies.at(-1)!.speechStyle).toBe("polite");
-  await chat.getByRole("button", { name: "AI 대화 초기화", exact: true }).click();
+  await startNewCharacter(page);
   await send("다시 처음부터");
   expect(bodies.at(-1)!.speechStyle).toBeUndefined();
   expect(bodies.at(-1)!.messages).toHaveLength(1);

@@ -1,3 +1,4 @@
+import { startNewCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import { generateCharacter, enterCharacterMode } from "./character-helpers";
 import { emptyChatMemory, type ChatMemory } from "../../lib/chat/memory";
@@ -37,7 +38,7 @@ test("conversation memory survives trimmed history and navigation; failed metada
   await send("그럼 둘이 놀자");
   expect(bodies.at(-1)!.chatMemory).toEqual(before);
   await expect(chat.getByRole("log")).not.toContainText("sourceTurnId");
-  await chat.getByRole("button", { name: "AI 대화 초기화", exact: true }).click();
+  await startNewCharacter(page);
   await send("다시 시작");
   expect(bodies.at(-1)!.chatMemory).toBeUndefined();
   expect(bodies.at(-1)!.messages).toHaveLength(1);

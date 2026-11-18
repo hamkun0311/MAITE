@@ -4,7 +4,8 @@ import { readEvents } from "../lib/chat/stream.ts";
 import { POST } from "../app/api/chat/route.ts";
 import { CHARACTER_GENRES, characterContextSchema, characterInstructions } from "../lib/chat/character.ts";
 import { illustrationContext, changedCharacterLocation, mentionsClothing, plainDialogue, visualContext, outfitContext } from "../lib/chat/presentation.ts";
-import { explicitSpeechRequest, speechInstructions, resolveSpeechStyle } from "../lib/chat/speech.ts";
+import { explicitSpeechRequest, replySpeechPolicy, speechInstructions, speechPreferenceInstructions, resolveSpeechStyle } from "../lib/chat/speech.ts";
+import { sessionSnapshot } from "../lib/platform/snapshot.ts";
 import { detectClothing } from "../lib/chat/clothing.ts";
 import { dialogueSchema, streamedDialogue } from "../lib/chat/dialogue.ts";
 import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, mergeChatMemory, type ChatMemoryPatch } from "../lib/chat/memory.ts";
@@ -13,11 +14,53 @@ import { advanceTimeline, emptyTimeline, timelineChatMemory, timelineCovers, tim
 import { createStudioSessions } from "../lib/chat/session.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { unsupportedFollowUp } from "../lib/chat/capabilities.ts";
-import { proposalOnlySceneChange } from "../lib/chat/continuity.ts";
+import { actionTimingInstructions, proposalOnlySceneChange } from "../lib/chat/continuity.ts";
 
 const encoder = new TextEncoder();
 const wire = (event: object) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
 const emptyPatch = (): ChatMemoryPatch => ({ participants: [], updates: [], mood: null });
+
+test("older-user register stays polite unless a deliberate concept or conversation preference exists",()=>{
+ const character=characterContextSchema.parse({name:"현아",age:21,userAge:26,personality:"다정함",concept:"카페",mode:"chat",imageDescription:"카페"});
+ const messages=[{role:"user" as const,content:"네가 탄 커피 맛있다"}];
+ assert.equal(replySpeechPolicy(character,messages,"casual").style,"polite");
+ assert.equal(replySpeechPolicy(character,[{role:"user",content:"보고 싶었어 ㅋㅋ"}],"polite").style,"polite");
+ assert.deepEqual(replySpeechPolicy(character,[{role:"user",content:"말 놓자"}],"polite"),{style:"casual",remember:true});
+ assert.equal(replySpeechPolicy(character,messages,"polite","casual").style,"casual");
+ assert.equal(replySpeechPolicy(character,[{role:"user",content:"존댓말 해줘"}],"casual","casual").style,"polite");
+ assert.equal(replySpeechPolicy({...character,concept:"항상 반말로 대화한다."},messages).style,"casual");
+ assert.equal(replySpeechPolicy(character,[{role:"user",content:"우리 말 놓아도 괜찮을까?"}],"polite").remember,true);
+ const session=createStudioSessions().chat;session.speechPreference="casual";
+ assert.equal(sessionSnapshot(session).speechPreference,"casual");
+});
+
+test("a reported coffee result can close the character's existing obligation with user evidence",()=>{
+  const memory=emptyChatMemory("지수");
+  const shared=emptyTimeline();
+  shared.participants=[{id:"user",name:"햄군"},{id:"character",name:"지수"}];
+  shared.promises=[{subjectId:"character",key:"promise_coffee",text:"햄군에게 커피를 타주기로 함"}];
+  const source="네가 탄 커피 맛있다";
+  const next=mergeChatMemory(memory,{...emptyPatch(),updates:[{subjectId:"character",objectId:"user",action:"promise_coffee",value:"fulfilled: 커피를 만들어 주었고 사용자가 맛을 칭찬함",certainty:"asserted",evidence:"user_1_1",replaces:[]}]},source,"입맛에 맞아서 다행이에요.");
+  assert.equal(next.facts.length,1);assert.equal(next.facts[0].evidence,source);
+  assert.equal(advanceTimeline(shared,"지수",next,undefined,undefined,[],"햄군").promises.length,0);
+});
+
+test("action states survive memory compaction and later corrections without reopening completed work", () => {
+  let memory=emptyChatMemory("지수");
+  for(const [source,value] of [["나는 과제를 시작할 거야.","planned: 사용자 과제"],["나는 지금 과제 하는 중이야.","in_progress: 사용자 과제"],["나는 과제 다 끝냈어.","completed: 사용자 과제"]]){
+    memory=mergeChatMemory(memory,{...emptyPatch(),updates:[{subjectId:"user",objectId:null,action:"homework",value,certainty:"asserted",evidence:`user_${memory.turn+1}_1`,replaces:[]}]},source,"알겠어.");
+    assert.equal(memory.facts.filter(f=>f.action==="homework").length,1);
+    assert.equal(memory.facts.find(f=>f.action==="homework")?.value,value);
+    assert.equal(memory.facts.find(f=>f.action==="homework")?.evidence,source);
+  }
+  memory=mergeChatMemory(memory,emptyPatch(),"오늘 날씨 좋다.","산책하기 좋네.");
+  const prompt=conversationInstructions({name:"지수",age:25,personality:"다정함",concept:"카페",mode:"chat",imageDescription:"카페",genre:"막장드라마"},memory,"네가 탄 커피 맛있다");
+  assert.ok(prompt.includes(actionTimingInstructions));
+  assert.match(prompt,/completed: 사용자 과제/);
+  assert.match(prompt,/네가 탄 커피 맛있다/);
+  memory=mergeChatMemory(memory,{...emptyPatch(),updates:[{subjectId:"user",objectId:null,action:"homework",value:"in_progress: 사용자 과제 수정 중",certainty:"asserted",evidence:`user_${memory.turn+1}_1`,replaces:memory.facts.filter(f=>f.action==="homework").map(f=>f.id)}]},"아니, 나는 과제를 수정하는 중이야.","수정 중이구나.");
+  assert.equal(memory.facts.find(f=>f.action==="homework")?.value,"in_progress: 사용자 과제 수정 중");
+});
 
 test("visual location changes use current character arrivals, not unchanged or user-only locations", () => {
   const old = emptyChatMemory("희진");
@@ -62,11 +105,12 @@ test("intent and actor checks remain private for requests, complaints and propos
   }
 });
 
-test("reply-only characters cannot retain unsolicited follow-up promises, including old memory", () => {
+test("check-in capable characters still reject unsupported timed and task-completion promises", () => {
   for (const phrase of ["끝나면 바로 말할게", "나중에 먼저 연락할게", "내일 메시지 보내줄게", "정리되면 알려주기로 약속"])
     assert.equal(unsupportedFollowUp(phrase), true, phrase);
   assert.equal(unsupportedFollowUp("다음에 물어보면 이어서 답할게"), false);
   assert.equal(unsupportedFollowUp("먼저 연락할 수 없어"), false);
+  assert.equal(unsupportedFollowUp("먼저 연락할게"), false);
   assert.equal(unsupportedFollowUp("내일 만나면 말할게"), false);
   const memory = emptyChatMemory("희진");
   memory.turn = 1;
@@ -81,9 +125,9 @@ test("reply-only characters cannot retain unsolicited follow-up promises, includ
   assert.equal(next.facts[0].subjectId, "user");
   const character = { mode: "chat" as const, name: "희진", age: 25, personality: "다정함", concept: "정리 중", genre: "막장드라마" as const, imageDescription: "은발" };
   const instructions = characterInstructions(character);
-  assert.match(instructions, /reply-only/);
+  assert.match(instructions, /scheduled check-in greetings after 3 minutes in the current test configuration/);
   assert.match(instructions, /acknowledge that promise was wrong/);
-  assert.doesNotMatch(characterInstructions({ ...character, mode: "story" }), /reply-only/);
+  assert.doesNotMatch(characterInstructions({ ...character, mode: "story" }), /scheduled check-in greetings/);
   const shared = { ...emptyTimeline(), participants: [{ id: "user", name: "당신" }, { id: "character", name: "희진" }], promises: [{ subjectId: "character", key: "promise_notify", text: "끝나면 바로 말할게" }] };
   const input = conversationInstructions(character, memory, "끝났어?", shared);
   const payload = JSON.parse(input.slice(input.lastIndexOf("\n") + 1));
@@ -474,20 +518,26 @@ test("chat API forwards validated character data as role instructions, not conve
       return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: '{"mentioned":false}' }] }] });
     assert.match(body.instructions, /first person/);
     assert.match(body.instructions, /select speechStyle/);
+    assert.ok(body.instructions.includes(actionTimingInstructions));
     assert.match(body.instructions, /검은 코트/);
     assert.match(body.instructions, /서하/);
     assert.deepEqual(body.input, [{ role: "user", content: "첫 장면" }]);
     assert.equal(body.text.format.name, "character_dialogue");
     assert.match(body.instructions, /"gender":"여성"/);
+    assert.match(body.instructions, /"userAge":32/);
+    assert.match(body.instructions, /account user is older than the character/);
+    assert.equal(body.text.format.schema.properties.speechStyle.const,"polite");
+    assert.match(body.instructions,/Never slip into 반말/);
     return new Response(new ReadableStream({ start(c) {
       c.enqueue(wire({ type: "response.output_text.delta", delta: JSON.stringify({ speechStyle: "polite", continuity: verdict, utterances: ["반가워요 😊 ^_^~"], clothingMentioned: false, locationChanged: false, memory: emptyPatch() }) }));
       c.enqueue(wire({ type: "response.completed" })); c.close();
     } }));
   });
-  const character = { mode: "chat", name: "서하", age: 25, gender: "여성", personality: "다정함", concept: "재회", imageDescription: "검은 코트" };
+  const character = { mode: "chat", name: "서하", age: 25, gender: "여성", personality: "다정함", concept: "재회", imageDescription: "검은 코트", userAge: 32 };
   const request = (value: unknown) => new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ messages: [{ role: "user", content: "첫 장면" }], character: value }) });
   assert.equal((await POST(request({ ...character, age: -1 }))).status, 400);
   assert.equal(calls, 0);
+  assert.equal((await POST(request({ ...character, userAge: 0 }))).status, 400);
   const response = await POST(request(character));
   const output = await response.text();
   assert.match(output, /반가워요 😊 \^_\^~/);
@@ -627,4 +677,42 @@ test("chat route streams before completion, bounds input, hides errors and cance
   const badGateway = await POST(request());
   assert.equal(badGateway.status, 502);
   assert.ok(!(await badGateway.text()).includes("private upstream detail"));
+});
+
+
+test("age-based register is a fallback below concept and contextual agreements", () => {
+  assert.match(speechPreferenceInstructions({ age: 23, userAge: 32 }), /account user is older.*default to polite/);
+  for (const userAge of [undefined, 23, 18]) {
+    assert.doesNotMatch(speechPreferenceInstructions({ age: 23, userAge }), /account user is older/);
+  }
+  const instructions = speechPreferenceInstructions({ age: 23, userAge: 32 });
+  assert.match(instructions, /latest contextual request\/agreement.*explicit concept.*established current register.*age default/);
+  assert.match(instructions, /Never reset agreed casual speech/);
+  assert.match(instructions, /Conceptual roles\/ages may override/);
+  for (const text of ["말 놓자", "우리 말 놓자", "편하게 말해줘"]) assert.equal(explicitSpeechRequest(text), "casual");
+  for (const text of ["내가 말 놓자고 했어?", "말 놓지 마", "‘말 놓자’는 대사야"]) assert.equal(explicitSpeechRequest(text), undefined);
+  assert.equal(explicitSpeechRequest("존댓말 해줘"), "polite");
+});
+
+test("chat fixes an older user's register in the single response schema and persists deliberate changes",async t=>{
+ const names=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED"];
+ const old=names.map(name=>process.env[name]);
+ process.env.OPENAI_API_KEY="test-key";process.env.ACCOUNT_FEATURES_ENABLED="false";process.env.NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED="false";
+ t.after(()=>names.forEach((name,index)=>{if(old[index]===undefined)delete process.env[name];else process.env[name]=old[index];}));
+ const clock=Date.now();t.mock.method(Date,"now",()=>clock+120000);
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:string,init:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init.body));
+  const style=body.text.format.schema.properties.speechStyle.const;
+  assert.equal(style,calls===1?"polite":"casual");
+  const result={speechStyle:style,continuity:{intent:"other",actorId:null,targetId:null,premise:"consistent",factIds:[]},utterances:[style==="polite"?"입맛에 맞아서 다행이에요.":"그래, 편하게 말할게."],clothingMentioned:false,locationChanged:false,memory:emptyPatch()};
+  return new Response(new ReadableStream({start(controller){controller.enqueue(wire({type:"response.output_text.delta",delta:JSON.stringify(result)}));controller.enqueue(wire({type:"response.completed"}));controller.close();}}));
+ });
+ for(const [index,text] of ["네가 탄 커피 맛있다","말 놓자","오늘 뭐 했어?"].entries()){
+  const response=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character:{name:"현아",age:21,userAge:26,personality:"다정함",concept:"카페",mode:"chat",imageDescription:"카페"},messages:[{role:"user",content:text}],speechStyle:"casual",...(index===2?{speechPreference:"casual"}:{})})}));
+  assert.equal(response.status,200);const events=[];for await(const event of readEvents(response.body!))events.push(event);
+  assert.equal(events.find(event=>event.type==="speech")?.speechStyle,index===0?"polite":"casual");
+  assert.equal(events.find(event=>event.type==="speech")?.preference,index===0?undefined:"casual");
+ }
+ assert.equal(calls,3);
 });

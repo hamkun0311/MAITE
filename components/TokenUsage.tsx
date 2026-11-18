@@ -9,6 +9,7 @@ const names: Record<string, string> = { "chat.speech": "말투 선택", "chat.re
   "image.description": "이미지 설명 정리", "image.generate": "이미지 생성" };
 const statuses = { running: "진행 중", completed: "완료", failed: "실패", cancelled: "중단", unknown: "확인 불가" };
 const number = (value: number | null) => value === null ? "확인 불가" : value.toLocaleString("ko-KR");
+const seconds = (milliseconds: number) => `${(milliseconds / 1000).toFixed(1)}초`;
 export default function TokenUsage() {
   const tasks = useSyncExternalStore(subscribeUsage, usageSnapshot, usageServerSnapshot);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -45,7 +46,7 @@ export default function TokenUsage() {
         {!tasks.length && <div className="token-usage-empty">아직 기록된 작업이 없습니다. 대화나 이야기를 시작하면 여기에 표시됩니다.</div>}
         {tasks.map(task => <details className="token-usage-task" key={task.id} open={task.status === "running" || undefined}>
           <summary><span>{task.label} · {new Date(task.startedAt).toLocaleTimeString("ko-KR")} · {statuses[task.status]}</span><strong>{task.records.length ? `${number(sumUsage(task.records, "totalTokens"))} 토큰${task.records.some(record => record.totalTokens === null) ? " + 미확인" : ""}` : "사용량 미수신"}</strong></summary>
-          {!task.records.length ? <p>{task.status === "running" ? "호출 사용량을 기다리고 있습니다." : "호출 사용량을 받지 못했습니다. 호출 전 거절 또는 중단·통신 오류 등이 원인일 수 있습니다."}</p> : <div className="token-usage-table"><table><thead><tr><th>단계 / 모델</th><th>상태</th><th>입력</th><th>출력</th><th>합계</th><th>캐시 입력</th><th>추론</th></tr></thead><tbody>{task.records.map(record => <tr key={record.id}><td>{names[record.feature] ?? record.feature}<small>{record.model}</small></td><td>{statuses[record.status]}</td><td>{number(record.inputTokens)}</td><td>{number(record.outputTokens)}</td><td>{number(record.totalTokens)}</td><td>{number(record.cachedTokens)}</td><td>{number(record.reasoningTokens)}</td></tr>)}</tbody></table></div>}
+          {!task.records.length ? <p>{task.status === "running" ? "호출 사용량을 기다리고 있습니다." : "호출 사용량을 받지 못했습니다. 호출 전 거절 또는 중단·통신 오류 등이 원인일 수 있습니다."}</p> : <div className="token-usage-table"><table><thead><tr><th>단계 / 모델</th><th>상태</th><th>입력</th><th>출력</th><th>합계</th><th>캐시 입력</th><th>추론</th><th>소요 시간</th></tr></thead><tbody>{task.records.map(record => <tr key={record.id}><td>{names[record.feature] ?? record.feature}<small>{record.model}</small></td><td>{statuses[record.status]}</td><td>{number(record.inputTokens)}</td><td>{number(record.outputTokens)}</td><td>{number(record.totalTokens)}</td><td>{number(record.cachedTokens)}</td><td>{number(record.reasoningTokens)}</td><td>{record.status === "running" ? "진행 중" : seconds(record.durationMs)}</td></tr>)}</tbody></table></div>}
         </details>)}
       </div>
     </dialog>

@@ -2,7 +2,8 @@ import { emptyTimeline, type TimelineStore } from "./timeline.ts";
 import type { StoryState } from "../novel/state.ts";
 import type { SpeechStyle } from "./speech.ts";
 import type { ChatMemory } from "./memory.ts";
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+import type { VisualScene } from "./visual-scene.ts";
+export type ChatMessage = { role: "user" | "assistant"; content: string; checkinId?: string };
 export type ChatSession = {
   timeline?: TimelineStore;
   messages: ChatMessage[];
@@ -17,7 +18,9 @@ export type ChatSession = {
   documentId?: string;
   lastJobId?: string;
   speechStyle?: SpeechStyle;
+  speechPreference?: SpeechStyle;
   chatMemory?: ChatMemory;
+  visualScene?: VisualScene;
   visualDetected?: boolean;
   latestVisualChange?: boolean;
   clothingDetected?: boolean;

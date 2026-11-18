@@ -1,4 +1,8 @@
 "use client";
+import type { ImageSceneSelection } from "@/lib/characters/visual";
+import { jsonApi } from "@/lib/platform/commerce";
+import { mergeCheckins, type Checkin } from "@/lib/notifications/checkins";
+import { agreedVisualDestination, updateVisualScene, rebuildVisualScene, visualSceneSchema, type VisualScene } from "@/lib/chat/visual-scene";
 import { apiFetch } from "@/lib/platform/api";
 import { timelineSchema, type Timeline } from "@/lib/chat/timeline";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -7,30 +11,45 @@ import { readEvents } from "@/lib/chat/stream";
 import type { CharacterContext } from "@/lib/chat/character";
 import { createChatSession, type ChatSession } from "@/lib/chat/session";
 import { illustrationContext, changedCharacterLocation, mentionsClothing, plainDialogue, outfitContext } from "@/lib/chat/presentation";
-import type { CharacterImageJob, VisualKind } from "@/lib/characters/gallery";
+import type { CharacterImageJob, VisualKind, IllustrationScene } from "@/lib/characters/gallery";
 import { storyStateSchema, type StoryState } from "@/lib/novel/state";
 import { speechStyleSchema, type SpeechStyle } from "@/lib/chat/speech";
 import { STORY_CHAPTER_LIMIT, storyComplete } from "@/lib/novel/series";
 import { chatMemorySchema, type ChatMemory } from "@/lib/chat/memory";
 import { startUsageTask, addUsageRecord, readUsageHeaders, finishUsageTask } from "@/lib/usage-store";
 
-import GenerationLoading from "./GenerationLoading";
 import { useActionConfirm } from "./ActionConfirm";
 import { accountEnabled } from "@/lib/account/client";
 import { useAccount } from "./AccountProvider";
 import { userDisplayName } from "@/lib/chat/identity";
+import { HEART_COST } from "@/lib/account/policy";
+import { saveChapter } from "@/lib/account/reading-progress";
 
 const storyPhases: Record<string, string> = { planning: "다음 전개 구상 중…", writing: "이야기 작성중", reviewing: "이야기 흐름 확인 중…", rewriting: "이야기 다듬는 중…", remembering: "이야기 마무리 중…" };
 
-type Message = { role: "user" | "assistant"; content: string };
-export default function LiveChat({ character, active = true, headingContent, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
-  character?: CharacterContext; active?: boolean; headingContent?: ReactNode; session?: ChatSession;
-  onGenerateVisual?: (kind: VisualKind, context: string) => Promise<void>;
+type Message = { role: "user" | "assistant"; content: string; checkinId?: string };
+const timelineRequests = new WeakMap<object, AbortController>();
+export default function LiveChat({ character, characterDocumentId, active = true, headingContent, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
+  characterDocumentId?: string; character?: CharacterContext; active?: boolean; headingContent?: ReactNode; session?: ChatSession;
+  onGenerateVisual?: (kind: VisualKind, context: string, scene?: IllustrationScene, selection?: ImageSceneSelection) => Promise<void>;
   imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void;
 }) {
   const localSession = useRef(createChatSession());
-  const confirm = useActionConfirm(); const { account } = useAccount();
+  const confirm = useActionConfirm(); const { account, user } = useAccount();
   const saved = session ?? localSession.current;
+  const sceneStorageKey = characterDocumentId ? `maite-visual-scene:${user?.id || "demo"}:${characterDocumentId}` : undefined;
+  const [sceneMemory, setSceneMemory] = useState<VisualScene>(() => {
+    let local: VisualScene | undefined;
+    try { const parsed = visualSceneSchema.safeParse(JSON.parse(sceneStorageKey ? localStorage.getItem(sceneStorageKey) || "null" : "null")); if (parsed.success) local = parsed.data; } catch { /* Device storage can be unavailable. */ }
+    const remote = saved.visualScene;
+    return local && (!remote || local.turn > remote.turn) ? local : remote ?? rebuildVisualScene(saved.archive ?? saved.committed, saved.chatMemory);
+  });
+  useEffect(() => {
+    if (character?.mode !== "chat") return;
+    if (!sceneMemory.location && !sceneMemory.destination && !sceneMemory.outfit) return;
+    saved.visualScene = sceneMemory;
+    try { if (sceneStorageKey) localStorage.setItem(sceneStorageKey, JSON.stringify(sceneMemory)); } catch { /* Session/cloud snapshots still retain this state. */ }
+  }, [sceneMemory, sceneStorageKey, saved, character?.mode]);
   const storyFinished = character?.mode === "story" && storyComplete(saved.storyState);
   const autoStarted = useRef(saved.started);
   const [messages, setMessages] = useState<Message[]>(saved.messages);
@@ -38,11 +57,33 @@ export default function LiveChat({ character, active = true, headingContent, ses
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const [input, setInput] = useState(saved.input);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(busy); busyRef.current = busy;
+  useEffect(() => {
+    if (!accountEnabled() || !characterDocumentId || character?.mode !== "chat" || !active || busyRef.current) return;
+    let alive = true;
+    const refresh = () => {
+      if (busyRef.current) return;
+      void jsonApi(`/api/notifications?document=${characterDocumentId}`).then(data => {
+        if (!alive || busyRef.current || !Array.isArray(data.messages)) return;
+        const rows = data.messages as Checkin[];
+        saved.archive = mergeCheckins(saved.archive ?? saved.committed, rows);
+        const turns = saved.archive.filter(message => message.role === "user").length;
+        const pendingGreeting = rows.filter(row => row.user_turns === turns).slice(-1);
+        committed.current = mergeCheckins(committed.current, pendingGreeting);
+        saved.committed = committed.current;
+        setMessages(current => mergeCheckins(current, rows));
+      }).catch(() => undefined);
+    };
+    refresh(); const timer = setInterval(refresh, 60000);
+    window.addEventListener("maite-checkins-refresh", refresh); window.addEventListener("maite-foreground", refresh);
+    return () => { alive = false; clearInterval(timer); window.removeEventListener("maite-checkins-refresh", refresh); window.removeEventListener("maite-foreground", refresh); };
+  }, [characterDocumentId, active, character?.mode, busy]);
   const [storyPhase, setStoryPhase] = useState("이야기 작성중");
   const [notice, setNotice] = useState(saved.notice);
   const committed = useRef<Message[]>(saved.committed);
-  // Only the latest completed user/character exchange may enable an outfit job.
-  const imageAvailable = saved.latestVisualChange ?? saved.latestClothingMentioned ?? mentionsClothing(committed.current.slice(-2));
+  // Scene detection supplies defaults only; it never gates manual image creation.
+  const latestExchange = committed.current.slice(-2);
+  const destination = latestExchange[0]?.role === "user" && latestExchange[1]?.role === "assistant" && !latestExchange[1].checkinId ? agreedVisualDestination(latestExchange[0].content, latestExchange[1].content) : undefined;
   const controller = useRef<AbortController | null>(null);
   const pendingStoryConcept = useRef("");
   const sequence = useRef(0), stopped = useRef(false);
@@ -90,7 +131,8 @@ export default function LiveChat({ character, active = true, headingContent, ses
     controller.current?.abort();
     controller.current = null;
     committed.current = [];
-    Object.assign(saved, { messages: [], committed: [], archive: [], input: "", notice: "", storyState: undefined, documentId: undefined, lastJobId: undefined, speechStyle: undefined, chatMemory: undefined, clothingDetected: undefined, latestClothingMentioned: undefined, visualDetected: undefined, latestVisualChange: undefined });
+    Object.assign(saved, { messages: [], committed: [], archive: [], input: "", notice: "", storyState: undefined, documentId: undefined, lastJobId: undefined, speechStyle: undefined, speechPreference: undefined, chatMemory: undefined, clothingDetected: undefined, latestClothingMentioned: undefined, visualDetected: undefined, latestVisualChange: undefined });
+    setSceneMemory({ turn: 0 }); saved.visualScene = undefined;
     setStoryPage(0); saved.storyPage = 0;
     followOutput.current = true;
     previousTurnLength.current = 0;
@@ -101,18 +143,20 @@ export default function LiveChat({ character, active = true, headingContent, ses
     const isStory = character?.mode === "story";
     const additionalConcept = isStory ? input.trim() : "";
     if (controller.current || !text || (isStory && storyComplete(saved.storyState) && !additionalConcept)) return;
-    if (isStory && accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < 15) { setNotice("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
-    if (isStory && accountEnabled() && !await confirm({ title: "다음 이야기를 만들까요?", description: additionalConcept ? "추가한 컨셉을 반영해 이야기를 이어가요." : "최신 회차의 사건과 관계를 이어가요.", lines: [{ label: "이야기 생성", value: "15하트" }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - 15}하트` }], confirmLabel: "이야기 만들기" })) return;
+    if (isStory && accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < HEART_COST.story) { setNotice("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
+    if (isStory && accountEnabled() && !await confirm({ title: "다음 이야기를 만들까요?", description: additionalConcept ? "추가한 컨셉을 반영해 이야기를 이어가요." : "최신 회차의 사건과 관계를 이어가요.", lines: [{ label: "이야기 생성", value: `${HEART_COST.story}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.story}하트` }], confirmLabel: "이야기 만들기" })) return;
     if (controller.current) return;
+    if (saved.timeline && timelineRequests.has(saved.timeline)) { setNotice("진행 중인 대화나 이야기 생성이 끝나면 이어서 요청해주세요."); return; }
     const storyState = saved.storyState;
     const timeline = saved.timeline?.state;
     pendingStoryConcept.current = additionalConcept;
-    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => message.role === "assistant" ? { ...message, content: isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content, "chat") } : message), { role: "user", content: text }];
+    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => ({ role: message.role, content: message.role === "assistant" ? isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content, "chat") : message.content })), { role: "user", content: text }];
     while (history.length > 1 && history.reduce((n, m) => n + m.content.length, 0) > 24000)
       history.splice(0, 2);
     const displayed = [...messages, { role: "user" as const, content: text }];
     const abort = new AbortController(), id = ++sequence.current;
     controller.current = abort; stopped.current = false;
+    if (saved.timeline) timelineRequests.set(saved.timeline, abort);
     followOutput.current = true;
     setMessages([...displayed, { role: "assistant", content: "" }]);
     setInput(""); setNotice(""); setBusy(true);
@@ -120,18 +164,20 @@ export default function LiveChat({ character, active = true, headingContent, ses
     let answer = "", completed = false;
     let nextChapter: { text: string; state: StoryState } | undefined;
     let nextSpeech: SpeechStyle | undefined;
+    let nextPreference: SpeechStyle | undefined;
     let nextMemory: ChatMemory | undefined;
     let clothingDetected: boolean | undefined;
     let locationChanged = false;
     let nextTimeline: Timeline | undefined;
     const usageTask = startUsageTask(isStory ? `이야기 ${(storyState?.chapter ?? 0) + 1}회차` : "대화");
     let usageCompleted = false;
-    const timeout = setTimeout(() => abort.abort(), 160000);
+    const timeout = setTimeout(() => abort.abort(), isStory ? 280000 : 160000);
     try {
       const requestBody = { messages: history, character, ...(timeline ? { timeline } : {}), ...(isStory && storyState ? { storyState } : {}),
         ...(additionalConcept ? { additionalConcept } : {}),
         ...(!isStory && character && saved.chatMemory ? { chatMemory: saved.chatMemory } : {}),
-        ...(!isStory && character && saved.speechStyle ? { speechStyle: saved.speechStyle } : {}) };
+        ...(!isStory && character && saved.speechStyle ? { speechStyle: saved.speechStyle } : {}),
+        ...(!isStory && character && saved.speechPreference ? { speechPreference: saved.speechPreference } : {}) };
       while (history.length > 1 && new TextEncoder().encode(JSON.stringify(requestBody)).length > 100000) history.splice(0, 2);
       const response = await apiFetch("/api/chat", {
         method: "POST", headers: { "Content-Type": "application/json", "X-Track-Usage": "1" },
@@ -175,6 +221,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
           const parsed = speechStyleSchema.safeParse(event.speechStyle);
           if (!parsed.success) throw new Error("대화 응답 형식이 올바르지 않습니다.");
           nextSpeech = parsed.data;
+          if (event.preference !== undefined) nextPreference = speechStyleSchema.parse(event.preference);
         } else if (!isStory && event.type === "delta" && typeof event.text === "string") {
           answer += event.text;
           if (answer.length > 8000) throw new Error("응답이 너무 길어 중단했습니다.");
@@ -198,9 +245,15 @@ export default function LiveChat({ character, active = true, headingContent, ses
       saved.archive = [...(saved.archive ?? saved.committed), { role: "user", content: text }, { role: "assistant", content: prose }];
       saved.committed = committed.current;
       if (!isStory && nextSpeech) saved.speechStyle = nextSpeech;
+      if (!isStory && nextPreference) saved.speechPreference = nextPreference;
       locationChanged ||= changedCharacterLocation(saved.chatMemory, nextMemory);
       if (!isStory && nextMemory) saved.chatMemory = nextMemory;
       if (!isStory) {
+        const scene = updateVisualScene(saved.visualScene ?? sceneMemory, text, prose, nextMemory);
+        const sceneChanged = scene.location !== (saved.visualScene ?? sceneMemory).location || scene.outfit !== (saved.visualScene ?? sceneMemory).outfit;
+        saved.visualScene = scene; setSceneMemory(scene);
+        try { if (sceneStorageKey) localStorage.setItem(sceneStorageKey, JSON.stringify(scene)); } catch { /* Keep the session state if device storage is full. */ }
+        locationChanged ||= sceneChanged || !!scene.destination;
         saved.latestClothingMentioned = clothingDetected ?? mentionsClothing(committed.current.slice(-2));
         saved.latestVisualChange = saved.latestClothingMentioned || locationChanged;
         if (saved.latestVisualChange) saved.visualDetected = true;
@@ -217,6 +270,7 @@ export default function LiveChat({ character, active = true, headingContent, ses
     } finally {
       finishUsageTask(usageTask, usageCompleted ? "completed" : abort.signal.aborted ? "cancelled" : "failed");
       clearTimeout(timeout);
+      if (saved.timeline && timelineRequests.get(saved.timeline) === abort) timelineRequests.delete(saved.timeline);
       abort.abort();
       if (id === sequence.current) { controller.current = null; setBusy(false); }
     }
@@ -225,9 +279,14 @@ export default function LiveChat({ character, active = true, headingContent, ses
   const chapters = messages.filter(m => m.role === "assistant" && m.content.trim());
   const pageIndex = Math.min(storyPage, Math.max(0, chapters.length - 1));
   const firstEpisode = Math.max(0, (saved.storyState?.chapter ?? 0) - chapters.length);
+  useEffect(() => {
+    if (isStory && active && chapters.length && saved.documentId && !busy) saveChapter(account?.userId ?? "demo", saved.documentId, firstEpisode + pageIndex + 1);
+  }, [isStory, active, chapters.length, saved.documentId, firstEpisode, pageIndex, busy, account?.userId]);
+  const imageContext = isStory ? illustrationContext(chapters.slice(0, pageIndex + 1), pageIndex === chapters.length - 1 ? saved.storyState : undefined) : outfitContext(committed.current, saved.chatMemory, { ...sceneMemory, destination });
+
   const visibleMessages = isStory ? chapters.length ? [chapters[pageIndex]] : messages.filter(m => m.role === "assistant") : messages;
   function turnPage(delta: number) {
-    if (!isStory || busy) return;
+    if (!isStory) return;
     setStoryPage(Math.max(0, Math.min(chapters.length - 1, pageIndex + delta)));
   }
   useEffect(() => {
@@ -240,8 +299,8 @@ export default function LiveChat({ character, active = true, headingContent, ses
         
       </div>
       {isStory && chapters.length > 1 && <div className="story-page-navigation" role="group" aria-label="이야기 페이지 이동">
-        <button type="button" aria-label="이전 이야기 보기" disabled={busy || pageIndex === 0} onClick={() => turnPage(-1)}><ChevronLeft size={18} /></button>
-        <button type="button" aria-label="다음 이야기 보기" disabled={busy || pageIndex === chapters.length - 1} onClick={() => turnPage(1)}><ChevronRight size={18} /></button>
+        <button type="button" aria-label="이전 이야기 보기" disabled={pageIndex === 0} onClick={() => turnPage(-1)}><ChevronLeft size={18} /></button>
+        <button type="button" aria-label="다음 이야기 보기" disabled={pageIndex === chapters.length - 1} onClick={() => turnPage(1)}><ChevronRight size={18} /></button>
       </div>}
       <div className={`live-chat-log ${isStory ? "story-pages" : ""}`} ref={log} tabIndex={isStory ? 0 : undefined}
         onKeyDown={event => { if (isStory && ["ArrowLeft", "ArrowRight"].includes(event.key)) { event.preventDefault(); turnPage(event.key === "ArrowLeft" ? -1 : 1); } }}
@@ -256,32 +315,32 @@ export default function LiveChat({ character, active = true, headingContent, ses
         const element = event.currentTarget;
         followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
       }}>
-        {!messages.length && character?.mode !== "story" && <div className="live-chat-empty"><p>첫마디로 둘만의 이야기를 시작해보세요.</p><button className="character-start" type="button" onClick={() => setInput("안녕. 우리 처음 만난 순간부터 시작해볼까?")}>첫인사 준비하기</button></div>}
         {visibleMessages.map((m, i) => {
           if (character?.mode === "story" && m.role === "user") return null;
           const label = m.role === "user" ? character ? userDisplayName(character, saved.storyState?.seriesConcept) : account?.profile?.display_name || "당신" : character?.mode === "story" ? `이야기 #${firstEpisode + pageIndex + 1}` : character?.name || "AI";
-          return <article className={`chat-message ${m.role} ${isStory ? "story-page" : ""}`} key={isStory ? pageIndex : i}><span>{label}</span><p>{(m.role === "assistant" ? plainDialogue(m.content, character?.mode === "story" ? "prose" : "chat") : m.content) || (character?.mode === "story" ? storyPhase : "대화 작성중")}</p></article>;
+          const text = m.role === "assistant" ? plainDialogue(m.content, isStory ? "prose" : "chat") : m.content;
+          return <article className={`chat-message ${m.role} ${isStory ? "story-page" : ""}`} key={isStory ? pageIndex : i}><span>{label}</span><p>{text || (isStory ? storyPhase : busy && m.role === "assistant" ? <span className="chat-typing-dots" role="status" aria-label="응답을 작성하고 있어요"><i aria-hidden="true"/><i aria-hidden="true"/><i aria-hidden="true"/></span> : "")}</p></article>;
         })}
       </div>
       {notice && <p className="chat-error" role="status">{notice}</p>}
       {imageJob && <div className="character-visual-status" role="status"><span>{imageJob.kind === "illustration" ? "삽화를 그리고 있어요" : "그림을 그리고 있어요"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
       {imageError && <p className="character-visual-error" role="alert">{imageError}</p>}
-      {onGenerateVisual && character && (character.mode === "story" || saved.visualDetected || saved.clothingDetected || mentionsClothing(committed.current)) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob || (character.mode === "chat" && !imageAvailable) || !committed.current.some(message => message.role === "assistant" && message.content.trim())} onClick={() => {
-        if (busy || imageJob || (character.mode === "chat" && !imageAvailable)) return;
-        void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", character.mode === "story" ? illustrationContext(chapters.slice(0, pageIndex + 1), pageIndex === chapters.length - 1 ? saved.storyState : undefined) : outfitContext(committed.current, saved.chatMemory));
-      }}>{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span> · {character.mode === "story" ? 50 : 30} ♥</span>}</button>}
+      {onGenerateVisual && character && (character.mode === "chat" || committed.current.some(message => message.role === "assistant" && message.content.trim())) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {
+        if (busy || imageJob) return;
+        void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", imageContext, character.mode === "story" && saved.documentId ? { novelId: saved.documentId, chapter: firstEpisode + pageIndex + 1 } : undefined);
+      }}><span className="visual-button-label">{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span> · {character.mode === "story" ? 50 : 30} ♥</span>}</span></button>}
       {character?.mode === "story" && <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="추가하고 싶은 사건이나 설정 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>}
       {character?.mode === "story" ? <button className="story-next-button" type="button" disabled={busy || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
         void submit(committed.current.length
           ? "앞선 이야기의 사건과 인물 관계를 이어서 다음 장면을 써줘. 이전 내용을 반복하지 말고 자연스럽게 이어줘."
           : "설정에 맞춰 첫 장면부터 이야기를 시작해줘.");
-      }}>{storyFinished && !input.trim() && !busy ? "이야기 완결" : "다음 이야기"} {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      }}>{busy ? "이야기를 쓰고 있어요" : storyFinished && !input.trim() ? "이야기 완결" : "다음 이야기"} {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <textarea aria-label="AI에게 보낼 메시지" placeholder="캐릭터에게 이야기해보세요…" maxLength={2000} value={input} disabled={busy} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }
         }} />
         <div><span>{input.length}/2000</span>{busy ? <button type="button" aria-label="AI 응답 중지" onClick={(event) => { event.preventDefault(); stopped.current = true; controller.current?.abort(); }}><Square size={14} /></button> : <button type="submit" aria-label="AI 메시지 보내기" disabled={!input.trim()}><ArrowUp size={18} /></button>}</div>
       </form>}
-      {isStory && busy && <GenerationLoading title="이야기를 쓰고 있어요" detail={storyPhase} returnFocusSelector=".story-next-button" onCancel={() => { stopped.current = true; controller.current?.abort(); }} />}
+      {isStory && busy && <div className="story-generation-status" role="status"><span>{storyPhase}</span><button type="button" aria-label="이야기 생성 취소" onClick={() => { stopped.current = true; controller.current?.abort(); }}>취소</button></div>}
     </section>
   );
 }

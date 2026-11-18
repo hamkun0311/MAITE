@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { responseTimings } from "@/lib/server/timing";
+import { signedImages, thumbnailPath } from "@/lib/server/image-assets";
 import { AccountError, requireAccount, rpc } from "@/lib/server/account";
 import { corsHeaders, allowedOrigin, preflight, readTextBounded } from "@/lib/server/http";
 import { characterProfileSchema } from "@/lib/chat/character";
@@ -10,26 +12,34 @@ const publish = z.discriminatedUnion("kind", [
 ]);
 export async function GET(request: Request) {
   const headers = corsHeaders(request);
+  const measure = responseTimings(headers);
   try {
     if (!allowedOrigin(request)) throw new AccountError("허용되지 않은 요청입니다.", 403);
-    const { db, user } = await requireAccount(request); const id = new URL(request.url).searchParams.get("id");
+    const { db, user } = await measure("auth", () => requireAccount(request)); const id = new URL(request.url).searchParams.get("id");
     if (id) {
-      const listing = await db.from("store_listings").select("*").eq("id", z.uuid().parse(id)).single();
+      const checkedId = z.uuid().parse(id);
+      const [listing, order] = await measure("listing_db", () => Promise.all([
+        db.from("store_listings").select("*").eq("id", checkedId).single(),
+        db.from("store_orders").select("id").eq("listing_id", checkedId).eq("buyer_id", user.id).maybeSingle(),
+      ]));
       if (listing.error || !listing.data) throw new AccountError("상품을 찾지 못했습니다.", 404);
-      const order = await db.from("store_orders").select("id").eq("listing_id", id).eq("buyer_id", user.id).maybeSingle();
       if (listing.data.seller_id !== user.id && !order.data) throw new AccountError("구매 후 열람할 수 있습니다.", 403);
-      const signed = listing.data.storage_path ? await db.storage.from("maite-private").createSignedUrl(listing.data.storage_path, 300) : undefined;
-      return Response.json({ ...listing.data, imageUrl: signed?.data?.signedUrl }, { headers });
+      const path = listing.data.storage_path;
+      const signed = path ? await measure("storage_sign", () => signedImages.get(db, user.id, [path, thumbnailPath(path)])) : new Map<string, string | undefined>();
+      return Response.json({ ...listing.data, imageUrl: signed.get(path), thumbnailUrl: signed.get(thumbnailPath(path || "")) }, { headers });
     }
-    const orders = await db.from("store_orders").select("listing_id").eq("buyer_id", user.id).order("created_at", { ascending: false }).limit(1000);
-    if (orders.error) throw new AccountError("구매 기록을 불러오지 못했습니다.", 503);
-    const owned = orders.data.map(order => order.listing_id);
     const columns = "id,seller_id,kind,title,description,created_at,active,novel:content->novel,chapter:content->chapter";
-    const results = await Promise.all([
+    const [orders, active, selling] = await measure("store_db", () => Promise.all([
+      db.from("store_orders").select("listing_id").eq("buyer_id", user.id).order("created_at", { ascending: false }).limit(1000),
       db.from("store_listings").select(columns).eq("active", true).order("created_at", { ascending: false }).limit(100),
       db.from("store_listings").select(columns).eq("seller_id", user.id).order("created_at", { ascending: false }).limit(100),
-      owned.length ? db.from("store_listings").select(columns).in("id", owned.slice(0,100)) : Promise.resolve({ data: [], error: null }),
-    ]);
+    ]));
+    if (orders.error) throw new AccountError("구매 기록을 불러오지 못했습니다.", 503);
+    const owned = orders.data.map(order => order.listing_id);
+    const visibleIds = new Set([...(active.data ?? []), ...(selling.data ?? [])].map(row => row.id));
+    const missing = owned.filter(id => !visibleIds.has(id)).slice(0,100);
+    const purchased = missing.length ? await measure("owned_db", () => db.from("store_listings").select(columns).in("id", missing)) : { data: [], error: null };
+    const results = [active, selling, purchased];
     if (results.some(result => result.error)) throw new AccountError("스토어를 불러오지 못했습니다.", 503);
     const listings = [...new Map(results.flatMap(result => result.data ?? []).map(listing => [listing.id, listing])).values()]
       .map(listing => ({ ...listing, active: listing.active && (listing.kind !== "chapter" || isPublishedNovel(listing.novel)) }))

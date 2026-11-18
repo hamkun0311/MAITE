@@ -1,3 +1,4 @@
+import { startNewCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import { generateCharacter, enterCharacterMode } from "./character-helpers";
 
@@ -9,7 +10,7 @@ test("live chat shows partial output before completion, keeps context and stays 
   await page.evaluate(() => {
     const original = window.fetch.bind(window);
     let calls = 0;
-    const scope = window as typeof window & { finishChat?: () => void; chatBodies?: unknown[] };
+    const scope = window as typeof window & { startChat?: () => void; finishChat?: () => void; chatBodies?: unknown[] };
     scope.chatBodies = [];
     window.fetch = async (input, init) => {
       if (input !== "/api/chat") return original(input, init);
@@ -17,12 +18,12 @@ test("live chat shows partial output before completion, keeps context and stays 
       scope.chatBodies!.push(JSON.parse(String(init?.body)));
       const encoder = new TextEncoder();
       return new Response(new ReadableStream({ start(c) {
-        c.enqueue(encoder.encode('data: {"type":"delta","text":"안녕하세요"}\n\n'));
+        scope.startChat = () => c.enqueue(encoder.encode('data: {"type":"delta","text":"안녕하세요"}\n\n'));
         scope.finishChat = () => {
           c.enqueue(encoder.encode('data: {"type":"delta","text":"! 반가워요."}\n\ndata: {"type":"done"}\n\n'));
           c.close();
         };
-        if (calls > 1) scope.finishChat();
+        if (calls > 1) { scope.startChat(); scope.finishChat(); }
       } }), { headers: { "Content-Type": "text/event-stream" } });
     };
   });
@@ -31,7 +32,12 @@ test("live chat shows partial output before completion, keeps context and stays 
   const chat = page.getByRole("region", { name: "AI 실시간 대화" });
   await chat.getByLabel("AI에게 보낼 메시지").fill("안녕");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
+  await expect(chat.getByRole("status", { name: "응답을 작성하고 있어요" })).toBeVisible();
+  await expect(chat.locator(".chat-typing-dots i")).toHaveCount(3);
+  await expect(chat.getByText("대화 작성중", { exact: true })).toHaveCount(0);
+  await page.evaluate(() => (window as typeof window & { startChat: () => void }).startChat());
   await expect(chat.getByText("안녕하세요", { exact: true })).toBeVisible();
+  await expect(chat.locator(".chat-typing-dots")).toHaveCount(0);
   await expect(chat.getByRole("button", { name: "AI 응답 중지" })).toBeVisible();
   await page.evaluate(() => (window as typeof window & { finishChat?: () => void }).finishChat!());
   await expect(chat.getByText("안녕하세요! 반가워요.", { exact: true })).toBeVisible();
@@ -43,7 +49,7 @@ test("live chat shows partial output before completion, keeps context and stays 
     { role: "user", content: "안녕" }, { role: "assistant", content: "안녕하세요! 반가워요." }, { role: "user", content: "다음 이야기" },
   ]);
   expect(images).toBe(0);
-  await chat.getByRole("button", { name: "AI 대화 초기화" }).click();
+  await startNewCharacter(page);
   await expect(chat.getByText("다음 이야기", { exact: true })).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeVisible();

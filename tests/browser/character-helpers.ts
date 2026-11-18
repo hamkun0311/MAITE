@@ -21,6 +21,20 @@ export async function fillCharacterProfile(page: Page) {
   await page.getByLabel("컨셉", { exact: true }).fill("재회한 라이벌과 도시의 비밀을 추적한다");
 }
 
+export async function startNewCharacter(page: Page) {
+  await openNewFace(page);
+  await page.getByRole("button", { name: "새 캐릭터 대화", exact: true }).click();
+  await expect(page).toHaveURL(/\/ideal$/);
+  await expect(page.getByLabel("나이", { exact: true })).toHaveValue("");
+  await generateCharacter(page);
+  await enterCharacterMode(page);
+}
+
+export async function openNewFace(page: Page) {
+  await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"캐릭터",exact:true}).click();
+  await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
+}
+
 export async function generateCharacter(page: Page) {
   await fillCharacterProfile(page);
   const jpeg = await sharp({ create: { width: 72, height: 128, channels: 3, background: "#c3a4bc" } }).jpeg().toBuffer();
@@ -29,7 +43,9 @@ export async function generateCharacter(page: Page) {
   }));
   await page.getByLabel("컨셉", { exact: true }).fill("25살 은발 탐정, 비 오는 도시, 검은 코트");
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
-  await page.getByRole("link", { name: "이미지 다운로드" }).waitFor();
+  await page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true }).waitFor();
+  await expect(page.getByRole("dialog", {name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
 }
 
 export async function enterCharacterMode(page: Page, mode: "대화하기" | "이야기 만들기" = "대화하기") {

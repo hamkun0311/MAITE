@@ -1,4 +1,4 @@
-import { textModel } from "../../../lib/ai-model.ts";
+import { imageDescriptionReasoningOptions, imageQuality, textModel } from "../../../lib/ai-model.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import { readFile } from "node:fs/promises";
@@ -7,7 +7,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
 import { characterProfileSchema } from "../../../lib/chat/character.ts";
-import { ILLUSTRATION_DIRECTION, OVERLAP_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema } from "../../../lib/characters/visual.ts";
+import { ILLUSTRATION_DIRECTION, OVERLAP_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema, confirmedIllustrationTarget } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
   characterBrief,
@@ -156,7 +156,7 @@ async function handle(request: Request) {
         signal,
         body: JSON.stringify({
           model: "omni-moderation-latest",
-          input: [profile ? JSON.stringify(profile) : "", scene?.context || "", ...messages
+          input: [profile ? JSON.stringify(profile) : "", scene?.context || "", scene?.selection ? JSON.stringify(scene.selection) : "", ...messages
             .filter((m) => m.role === "user")
             .map((m) => m.content)]
             .join("\n"),
@@ -185,16 +185,14 @@ async function handle(request: Request) {
         signal,
         body: JSON.stringify({
           model: textModel(),
-          ...((textModel()).startsWith("gpt-6")
-            ? { reasoning: { effort: "low" } }
-            : {}),
+          ...imageDescriptionReasoningOptions(),
           store: false,
           max_output_tokens: 5000,
           instructions:
             (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
             " Reference style analysis: " +
             JSON.stringify(CHARACTER_STYLES) +
-            (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features. For scene images retain those identity features while current scene clothing, pose and location take precedence over any initial outfit or setting in that field. " : "") +
+            (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
             " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
             (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : ""),
           input: [
@@ -237,15 +235,18 @@ async function handle(request: Request) {
       )
       .find((c: { type: string }) => c.type === "output_text")?.text;
     const brief = briefSchema.parse(JSON.parse(output || "null"));
+    const target = confirmedIllustrationTarget(scene);
+    // A manually selected counterpart must never inherit the original character's identity image.
+    if (target && target !== profile?.name && "characterPresent" in brief) brief.characterPresent = false;
     const prompt = buildCharacterPrompt(brief, scene);
     const parameters = {
       model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       prompt, size: CHARACTER_SIZE,
-      quality: process.env.OPENAI_IMAGE_QUALITY || "low",
+      quality: imageQuality(),
       output_format: "jpeg", output_compression: 85, n: 1,
     };
     const useStyleImage = brief.styleProfile === "female" && !scene;
-    const useIdentity = prior instanceof File && (scene?.kind !== "illustration" || illustrationBrief.parse(brief).characterPresent);
+    const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
     const useEdit = useStyleImage || useIdentity;
     let imageBody: FormData | string;
     if (useEdit) {
@@ -292,7 +293,7 @@ async function handle(request: Request) {
         "Cache-Control": "no-store",
         "X-Character-Title": encodeURIComponent(brief.title),
         "X-Character-Summary": encodeURIComponent(brief.summary),
-        "X-Character-Prompt": prompt,
+        "X-Character-Prompt": encodeURIComponent(prompt),
         "X-Character-Style": brief.styleProfile,
         ...(scene ? { "X-Character-Composition": encodeURIComponent(JSON.stringify(compositionSchema.strip().parse(brief))) } : {}),
         "X-Character-Width": String(info.width),

@@ -1,10 +1,12 @@
+import { openNewFace } from "./character-helpers";
+import { startNewCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import sharp from "sharp";
 import { generateCharacter, enterCharacterMode, chapterEvent, storyWire } from "./character-helpers";
 
 const jpeg = () => sharp({ create: { width: 72, height: 128, channels: 3, background: "#b9d4db" } }).jpeg().toBuffer();
 
-test("outfit button requires clothing in the latest completed exchange and persists its disabled state", async ({ page }) => {
+test("chat image generation remains available before and after ordinary or failed dialogue", async ({ page }) => {
   await page.goto("/ideal");
   await generateCharacter(page);
   let count = 0;
@@ -20,7 +22,7 @@ test("outfit button requires clothing in the latest completed exchange and persi
   await enterCharacterMode(page);
   const chat = page.getByRole("region", { name: "대화하기", exact: true });
   const button = chat.getByRole("button", { name: "이미지 생성", exact: true });
-  await expect(button).toHaveCount(0);
+  await expect(button).toBeEnabled();
   const send = async (text: string) => {
     await chat.getByLabel("AI에게 보낼 메시지").fill(text);
     await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
@@ -29,20 +31,21 @@ test("outfit button requires clothing in the latest completed exchange and persi
   await send("어떤 걸로 정했어?");
   await expect(button).toBeEnabled();
   await send("알았어");
-  await expect(button).toBeDisabled();
-  await button.evaluate(element => (element as HTMLButtonElement).click());
-  expect(imageRequests).toBe(0);
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect.poll(()=>imageRequests).toBe(1);
+  await expect(button).toBeEnabled();
   await page.goBack();
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toBeVisible();
   await enterCharacterMode(page);
-  await expect(button).toBeDisabled();
+  await expect(button).toBeEnabled();
   await send("다음 장면");
   await expect(chat.getByText("응답이 중단되었습니다.")).toBeVisible();
-  await expect(button).toBeDisabled();
+  await expect(button).toBeEnabled();
   await send("다른 건 어때?");
   await expect(button).toBeEnabled();
-  await chat.getByRole("button", { name: "AI 대화 초기화", exact: true }).click();
-  await expect(button).toHaveCount(0);
+  await startNewCharacter(page);
+  await expect(button).toBeEnabled();
 });
 
 test("plain dialogue, outfit images, story illustrations and shared background choices stay connected", async ({ page }) => {
@@ -93,16 +96,17 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   }, storyChapter);
   await enterCharacterMode(page);
   const chat = page.getByRole("region", { name: "대화하기", exact: true });
-  await expect(chat.getByRole("button", { name: "이미지 생성", exact: true })).toHaveCount(0);
+  await expect(chat.getByRole("button", { name: "이미지 생성", exact: true })).toBeEnabled();
   await chat.getByLabel("AI에게 보낼 메시지").fill("작업실을 나와 백화점 의류 매장에 도착했어. 여기서 유카타를 입어줘.");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
-  await expect(chat.getByRole("log").getByText("대화 작성중", { exact: true })).toBeVisible();
+  await expect(chat.getByRole("log").getByRole("status", { name: "응답을 작성하고 있어요" })).toBeVisible();
   await page.evaluate(() => (window as typeof window & { finishVisualChat?: () => void }).finishVisualChat!());
   await expect(chat.locator(".assistant p")).toHaveText("백화점 피팅룸에서 유카타로 갈아입었어. 어때? 😊 ^_^~");
   await chat.getByRole("button", { name: "이미지 생성", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "캐릭터 이미지 전체화면", exact: true });
   await expect(chat.locator(".character-backdrop")).not.toHaveAttribute("src", originalUrl!);
-  await expect(viewer).not.toBeVisible();
+  await expect(viewer).toBeVisible();
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   const outfitUrl = await chat.locator(".character-backdrop").getAttribute("src");
   expect(outfitUrl).not.toBe(originalUrl);
   expect(imageBodies[0]).toMatchObject({ kind: "outfit" });
@@ -123,7 +127,8 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   expect((await illustration.boundingBox())!.y).toBeLessThan((await next.boundingBox())!.y);
   await illustration.click();
   await expect(story.locator(".character-backdrop")).not.toHaveAttribute("src", originalUrl!);
-  await expect(viewer).not.toBeVisible();
+  await expect(viewer).toBeVisible();
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
   const storyUrl = await story.locator(".character-backdrop").getAttribute("src");
   expect(imageBodies[1].kind).toBe("illustration");
   expect(imageBodies[1].context).toContain("Current situation after the latest chapter: 서하는 카페 창가");
@@ -141,11 +146,11 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await page.getByRole("link", { name: "장면 갤러리", exact: true }).click();
   const gallery = page.getByRole("main", { name: "생성 이미지 갤러리" });
   await expect(gallery.getByRole("article")).toHaveCount(3);
-  await expect(gallery.getByRole("heading", { name: "유카타의 서하", exact: true })).toBeVisible();
-  await expect(gallery.getByRole("heading", { name: "카페에서의 대화", exact: true })).toBeVisible();
+  await expect(gallery.getByRole("button", { name: "이미지 보기: 유카타의 서하", exact: true })).toBeVisible();
+  await expect(gallery.getByRole("button", { name: "이미지 보기: 카페에서의 대화", exact: true })).toBeVisible();
   await page.goBack();
   await expect(chat).toBeVisible();
-  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
+  await openNewFace(page);
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);
@@ -191,7 +196,7 @@ test("cancelled and failed illustrations preserve the gallery and a late respons
   await expect(story.getByRole("button", { name: "삽화 생성", exact: true })).toHaveAttribute("aria-busy", "true");
   // Cancel the modal before resetting; the server response is still deliberately late.
   await story.getByRole("button", { name: "이미지 생성 취소", exact: true }).click();
-  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "뉴페이스", exact: true }).click();
+  await openNewFace(page);
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   finish();
   await expect(page).toHaveURL(/\/ideal$/);

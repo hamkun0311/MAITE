@@ -4,8 +4,10 @@ import Link from "next/link";
 import { Images } from "lucide-react";
 import { CharacterImageViewer } from "./CharacterImage";
 import { MAX_GALLERY_IMAGES, type CharacterGalleryImage } from "@/lib/characters/gallery";
+import CachedImage from "./CachedImage";
+import { imageAssetKey } from "@/lib/platform/image-cache";
 
-export default function CharacterGallery({ images, mode, onApply }: { images: CharacterGalleryImage[]; mode?: "chat" | "story"; onApply?: (id: string) => void }) {
+export default function CharacterGallery({ images, mode, onApply, onOriginalLoaded }: { images: CharacterGalleryImage[]; mode?: "chat" | "story"; onApply?: (id: string) => void; onOriginalLoaded?: (id: string, blob: Blob) => void }) {
   const [preview, setPreview] = useState<CharacterGalleryImage>();
   const [filter, setFilter] = useState<"all" | "outfit" | "illustration">("all");
   const visible = images.filter(image => filter === "all" || image.kind === filter);
@@ -23,10 +25,10 @@ export default function CharacterGallery({ images, mode, onApply }: { images: Ch
     {images.length ? <div className="generated-gallery-grid">
       {visible.map(image => <article key={image.id}>
         <button className="gallery-image-trigger" type="button" aria-label={`이미지 보기: ${image.title}`} onClick={() => setPreview(image)}>
-          <img src={image.url} alt={image.title} loading="lazy" />
+          <CachedImage src={image.blob.size ? image.url : image.thumbnailUrl || image.url} cacheKey={imageAssetKey(image, !image.blob.size && image.thumbnailUrl ? "thumbnail" : "original")} fallbackSrc={image.thumbnailUrl ? image.url : undefined} onBlob={image.thumbnailUrl ? undefined : blob => onOriginalLoaded?.(image.id, blob)} alt={image.title} loading="lazy" />
         </button>
       </article>)}
     </div> : <div className="generated-gallery-empty"><Images size={40} aria-hidden="true" /><h2>아직 생성한 이미지가 없어요.</h2><p>이미지를 만들면 이곳에서 다시 볼 수 있어요.</p><Link href="/ideal">캐릭터 생성하기</Link></div>}
-    {images.length > 0 && <CharacterImageViewer src={preview?.url ?? images[0].url} title={preview?.title ?? images[0].title} open={!!preview} onClose={() => setPreview(undefined)} actions={preview && mode && onApply ? <button type="button" onClick={() => { onApply(preview.id); setPreview(undefined); }}>{mode === "chat" ? "대화" : "소설"} 배경으로 적용</button> : undefined}/>}
+    {images.length > 0 && <CharacterImageViewer src={preview?.url ?? images[0].url} cacheKey={preview ? imageAssetKey(preview) : undefined} onBlob={preview ? blob => onOriginalLoaded?.(preview.id, blob) : undefined} title={preview?.title ?? images[0].title} open={!!preview} onClose={() => setPreview(undefined)} actions={preview && mode && onApply ? <button type="button" onClick={() => { onApply(preview.id); setPreview(undefined); }}>{mode === "chat" ? "대화" : "소설"} 배경으로 적용</button> : undefined}/>}
   </main>;
 }
