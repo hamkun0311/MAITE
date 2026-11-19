@@ -12,7 +12,9 @@ import type { LibraryDocument } from "@/lib/account/library";
 import { unregisterPush } from "@/lib/platform/push";
 import { apiFetch } from "@/lib/platform/api";
 import { imageBlobs } from "@/lib/platform/image-cache";
+import { imageViews } from "@/lib/platform/image-views";
 import { persistentImages } from "@/lib/platform/persistent-images";
+import { clearCharacterPreviews, invalidateCharacterPreviews } from "@/lib/platform/character-previews";
 import { preloadCharacterPreviews } from "@/lib/platform/preload-images";
 
 type User = { id: string; email?: string };
@@ -64,7 +66,7 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
       if (active.current !== next?.id) {
         invalidateApiReads();
         if (active.current) void persistentImages.clear();
-        imageBlobs.clear();
+        imageBlobs.clear(); imageViews.clear(); clearCharacterPreviews();
         active.current = next?.id; pending.current = undefined; setAccount(undefined); setUser(next); checkedDay.current = ""; setEditing(false);
         if (next && event === "SIGNED_IN") router.replace("/ideal");
       }
@@ -75,6 +77,7 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
     const librarySaved = (event: Event) => {
       const { owner, snapshot } = (event as CustomEvent<{ owner: string; snapshot: StudioSnapshot }>).detail;
       if (owner !== active.current) return;
+      invalidateCharacterPreviews(owner, snapshot.art.jobId);
       const fields = { updated_at: new Date().toISOString(), character_name: snapshot.art.profile.name, job_id: snapshot.art.jobId, source_id: snapshot.id, chapter: String(snapshot.story.storyState?.chapter || 0), novel_id: snapshot.story.documentId, next_goal: snapshot.story.storyState?.nextChapterGoal, series_start: String(snapshot.story.storyState?.seriesStartChapter || 0) };
       const documents: LibraryDocument[] = [{ ...fields, id: snapshot.id, title: snapshot.art.title, kind: "studio" }];
       if (snapshot.story.documentId && snapshot.story.storyState?.chapter) documents.push({ ...fields, id: snapshot.story.documentId, title: `${snapshot.art.title.slice(0, 100)}의 이야기`, kind: "chapter" });
@@ -132,5 +135,5 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
   if (enabled && user && !account) return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">{error || "당신의 이야기를 준비하고 있어요"}</p>{error && <button onClick={() => { setError(""); void refresh().catch(() => setError("계정 연결을 확인해주세요.")); }}>다시 시도</button>}</main>;
   if (enabled && user && account?.profile?.onboarded === false) return <ProfileSetup initial={{ nickname: account.profile.display_name }} onSave={saveProfile}/>;
   if(enabled&&user&&account?.documents.some(doc=>(doc.kind==="studio"||doc.kind==="character")&&doc.job_id)&&(imagePreparation?.owner!==user.id||!imagePreparation.ready))return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">캐릭터 이미지를 준비하고 있어요{imagePreparation?.owner===user.id?` · ${imagePreparation.loaded}/${imagePreparation.total}`:""}</p></main>;
-  return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal avatarUrl={account?.avatarUrl} initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"], age: account?.profile?.age }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
+  return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal avatarUrl={account?.avatarUrl} initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"] }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
 }

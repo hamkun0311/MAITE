@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { storedSeriesArcSchema } from "./series.ts";
 import {sharedChangeSchema} from "../chat/canon.ts";
+import {dialogueRegisterChange,storedDialogueRegister,unjustifiedRegisterChanges,sceneAuditSchema} from "./dialogue.ts";
 
 const short = z.string().trim().min(1).max(240);
 const facts = z.array(short).max(24);
@@ -25,6 +26,7 @@ export const storyStateSchema = z.object({
   previousEnding: z.string().max(700),
   nextChapterGoal: z.string().max(240),
   previousProse: z.string().max(8000),
+  dialogueRegisters:z.array(storedDialogueRegister).max(12).optional(),
 }).strict().refine(value => (value.seriesStartChapter ?? 0) <= value.chapter, "Invalid series start")
   .refine(value => JSON.stringify(value).length <= 16000, "Story memory is too large");
 export type StoryState = z.infer<typeof storyStateSchema>;
@@ -44,9 +46,10 @@ const quoteSchema = z.string().trim().min(1).max(400);
 const evidence = (citation: z.ZodType<string>) => z.object({ text: short, evidence: citation }).strict();
 export const createReviewSchema = (citation: z.ZodType<string> = quoteSchema) => z.object({
   pass: z.boolean(),
+  sceneAudit:sceneAuditSchema.optional(),
   conceptAlignment: z.object({ satisfied: z.boolean(), evidence: citation, fix: short }).strict(),
   blockingIssues: z.array(z.object({
-    type: z.enum(["repetition", "continuity", "causality", "no_progress", "missing_beat"]),
+    type: z.enum(["repetition", "continuity", "causality", "no_progress", "missing_beat","dialogue","language"]),
     evidence: citation, fix: short,
   }).strict()).max(6),
   completedBeats: z.array(z.number().int().min(1).max(5)).max(5),
@@ -78,6 +81,7 @@ export const createMemoryPatchSchema = (citation: z.ZodType<string> = quoteSchem
   }).strict()).max(6),
   nextChapterGoal: short,
   sharedChanges:z.array(sharedChangeSchema(citation)).max(4).optional(),
+  dialogueRegisters:z.array(dialogueRegisterChange(citation)).max(6).optional(),
 }).strict();
 export const memoryPatchSchema = createMemoryPatchSchema();
 
@@ -107,6 +111,15 @@ export function mergeMemory(old: StoryState, patch: z.infer<typeof memoryPatchSc
     else characters.push(character);
   }
   const closed = checked(patch.closedThreads);
+  const registers=[...(old.dialogueRegisters??[])];
+  if(unjustifiedRegisterChanges(registers,patch.dialogueRegisters??[],prose).length)throw new Error("Unsupported dialogue register change");
+  for(const change of patch.dialogueRegisters??[]){
+    checked([{text:change.style,evidence:change.evidence}]);
+    if(change.changeEvidence)checked([{text:change.style,evidence:change.changeEvidence}]);
+    const {changeEvidence:_changeEvidence,...stored}=change;
+    const index=registers.findIndex(old=>old.speaker===change.speaker&&old.addressee===change.addressee);
+    if(index>=0)registers[index]=stored;else registers.push(stored);
+  }
   const next: StoryState = {
     ...old, chapter: old.chapter + 1, summary: patch.summary,
     currentSituation: patch.currentSituation.text,
@@ -117,11 +130,12 @@ export function mergeMemory(old: StoryState, patch: z.infer<typeof memoryPatchSc
     worldFacts: merge(old.worldFacts, checked(patch.worldFacts), 16),
     characters: characters.slice(-6), previousEnding: prose.slice(-700),
     previousProse: prose, nextChapterGoal: patch.nextChapterGoal,
+    ...(registers.length?{dialogueRegisters:registers.slice(-12)}:{}),
   };
   // Keep the rolling summary and immediate ending. Trim oldest detail only when
   // the aggregate budget is reached, so a long session cannot get stuck forever.
   const queues = [next.recentEvents, ...next.characters.map(character => character.relationships),
-    ...next.characters.map(character => character.knowledge), next.resolvedEvents, next.worldFacts, next.openThreads];
+    ...next.characters.map(character => character.knowledge), next.resolvedEvents, next.worldFacts, next.openThreads,next.dialogueRegisters??[]];
   while (JSON.stringify(next).length > 16000) {
     const queue = queues.find(items => items.length > 0);
     if (!queue) break;

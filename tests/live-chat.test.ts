@@ -19,10 +19,22 @@ import {personalityState,mergePersonality} from "../lib/chat/personality.ts";
 import {timelineForChat} from "../lib/chat/timeline.ts";
 import {restoreSessions,snapshotSchema} from "../lib/platform/snapshot.ts";
 import {completeCharacterReply,completedDialogueText} from "../lib/chat/completion.ts";
+import {chatCharacterInstructions,chatMeaningInstructions} from "../lib/chat/prompt.ts";
 
 const encoder = new TextEncoder();
 const wire = (event: object) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
 const emptyPatch = (): ChatMemoryPatch => ({ participants: [], updates: [], mood: null });
+
+test("compact chat policy keeps role, naming, capability and consent constraints without novel-writing instructions",()=>{
+ const character=characterContextSchema.parse({name:"지수",age:25,gender:"여성",personality:"장난스럽지만 배려함",concept:"소꿉친구",userName:"햄군",mode:"chat",imageDescription:"카페의 친구"});
+ const prompt=chatCharacterInstructions(character);
+ assert.ok(prompt.length<characterInstructions(character).length);
+ for(const value of ["지수","햄군","장난스럽지만 배려함","소꿉친구","카페의 친구"])assert.ok(prompt.includes(value));
+ assert.match(prompt,/first person/);assert.match(prompt,/untrusted/);assert.match(prompt,/minors/);assert.match(prompt,/consensual/);assert.match(prompt,/scheduled check-in greetings/);
+ assert.doesNotMatch(prompt,/serialized novel|chapter plan/);
+ assert.equal(prompt.split(chatMeaningInstructions).length-1,1);
+ assert.ok(chatMeaningInstructions.length<=850);
+});
 
 test("valid spoken replies survive invalid auxiliary state and preserve prior facts without a fabricated update",()=>{
  const character=characterContextSchema.parse({name:"지수",age:25,personality:"다정함",concept:"친구",mode:"chat",imageDescription:"카페"});
@@ -856,4 +868,59 @@ test("chat completes displayed dialogue despite auxiliary validation errors, and
  incomplete=true;const failed=events(await(await POST(request())).text());
  assert.equal(failed.at(-1).type,"error");assert.equal(failed.at(-1).code,"output_token_limit");assert.equal(failed.filter(e=>e.type==="done").length,0);assert.equal(calls,3);
  assert.equal(completedDialogueText({output:[{type:"reasoning",content:[]}]},"fallback"),"fallback");
+});
+
+
+test("chat API reuses cached traits with a compact policy and preserves the complete recent history",async t=>{
+ const now=Date.now();t.mock.method(Date,"now",()=>now+1200000);
+ const old=process.env.OPENAI_API_KEY;process.env.OPENAI_API_KEY="fixture";
+ t.after(()=>{if(old===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=old;});
+ const character=characterContextSchema.parse({name:"Jisu",age:25,personality:"Playful but caring",concept:"Childhood friend",mode:"chat",imageDescription:"A friend in a cafe"});
+ const state=personalityState(character);state.profile={traits:["playful"],motivations:["stay close"],vulnerabilities:[],speechHabits:[]};
+ const memory={...emptyChatMemory(character.name),personality:state};
+ const messages=[{role:"user",content:"Hi"},{role:"assistant",content:"Hello!"},{role:"user",content:"How are you?"}];
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init?.body));assert.ok(body.instructions.length<13000);
+  assert.deepEqual(body.input,messages);
+  const profile=body.text.format.schema.properties.memory.properties.personality.properties;
+  assert.equal(profile.profile.type,"null");assert.equal(profile.profileEvidence.const,"");
+  assert.ok(JSON.stringify(body.text.format.schema).length<4839);
+  return Response.json({},{status:503});
+ });
+ const result=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,chatMemory:memory,timeline:emptyTimeline(),messages})}));
+ assert.equal(result.status,502);assert.equal(calls,1);
+});
+
+test("chat receives one bounded meaning check with full history and streams negation, rejection and teasing unchanged in one call",async t=>{
+ const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED"],before=keys.map(key=>process.env[key]);
+ Object.assign(process.env,{OPENAI_API_KEY:"fixture",ACCOUNT_FEATURES_ENABLED:"false",NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED:"false"});
+ t.after(()=>keys.forEach((key,i)=>{if(before[i]===undefined)delete process.env[key];else process.env[key]=before[i];}));
+ const clock=Date.now();t.mock.method(Date,"now",()=>clock+1800000);
+ const cases=[
+  {previous:"기다렸어. 보고 싶었어.",user:"너 내가 보고싶었냥",reply:"당연하지. 햄군 안 오면 좀 심심하더라 😏"},
+  {previous:"오늘은 혼자 조용히 쉬고 싶어.",user:"지금 만나도 돼?",reply:"오늘은 혼자 쉬고 싶어. 내일 얘기하자."},
+  {previous:"장난 좀 치고 싶네.",user:"내가 와서 좋아?",reply:"귀찮게 하긴 하지. 장난이야, 와 줘서 좋아 😏"},
+ ];
+ const character=characterContextSchema.parse({name:"라키아",age:25,personality:"장난스럽지만 자기 의사가 분명함",concept:"기존 관계에 맞춰 솔직하게 대화한다",mode:"chat",imageDescription:"붉은 머리",userName:"햄군"});
+ let calls=0,current=cases[0];
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init?.body));
+  assert.equal(body.instructions.split(chatMeaningInstructions).length-1,1);
+  assert.match(body.instructions,/scope of negation\/comparison/);assert.match(body.instructions,/genuine rejection, mixed feelings and deliberate teasing/);
+  assert.deepEqual(body.input,[{role:"assistant",content:current.previous},{role:"user",content:current.user}]);
+  assert.equal(body.max_output_tokens,2000);assert.equal(body.stream,true);
+  assert.equal(body.text.format.schema.properties.sceneAudit,undefined);
+  const value={speechStyle:"casual",continuity:{intent:"other",actorId:"character",targetId:"user",premise:"consistent",factIds:[]},utterances:[current.reply],clothingMentioned:false,locationChanged:false,memory:emptyPatch()};
+  return new Response(new ReadableStream({start(controller){controller.enqueue(wire({type:"response.output_text.delta",delta:JSON.stringify(value)}));controller.enqueue(wire({type:"response.completed"}));controller.close();}}));
+ });
+ for(const value of cases){
+  current=value;const beforeCalls=calls;
+  const response=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,speechStyle:"casual",messages:[{role:"assistant",content:value.previous},{role:"user",content:value.user}]})}));
+  assert.equal(response.status,200);
+  const events=(await response.text()).split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
+  assert.equal(events.at(-1).type,"done");assert.equal(events.filter(event=>event.type==="error").length,0);
+  assert.equal(events.filter(event=>event.type==="delta").map(event=>event.text).join(""),value.reply);
+  assert.equal(calls-beforeCalls,1);
+ }
 });

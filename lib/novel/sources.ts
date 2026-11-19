@@ -12,7 +12,8 @@ export function resolveSources<T>(value: T, sources: { id: string; text: string 
     if (Array.isArray(item)) return item.map(visit);
     if (!item || typeof item !== "object") return item;
     return Object.fromEntries(Object.entries(item).map(([key, child]) => {
-      if (key !== "evidence") return [key, visit(child)];
+      if (key !== "evidence"&&key!=="changeEvidence") return [key, visit(child)];
+      if(key==="changeEvidence"&&child===null)return [key,null];
       const quote = typeof child === "string" ? lookup.get(child) : undefined;
       if (!quote) throw new Error("Invalid manuscript source");
       return [key, quote];

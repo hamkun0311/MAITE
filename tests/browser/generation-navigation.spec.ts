@@ -1,4 +1,4 @@
-import { openNewFace } from "./character-helpers";
+import { openExistingCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import sharp from "sharp";
 import { fillCharacterProfile, generateCharacter, enterCharacterMode } from "./character-helpers";
@@ -16,7 +16,7 @@ test("character creation completes while another footer menu is open", async ({ 
   await expect(page).toHaveURL(/\/ideal\/store$/); release();
   await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
   await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
-  await openNewFace(page);
+  await openExistingCharacter(page);
   await expect(page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true })).toBeVisible();
   expect(requests).toBe(1);
   expect((await page.locator(".chat-header").boundingBox())!.height).toBe(52);

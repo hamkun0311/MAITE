@@ -1,4 +1,4 @@
-import { openNewFace } from "./character-helpers";
+import { openExistingCharacter } from "./character-helpers";
 import { startNewCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import sharp from "sharp";
@@ -150,7 +150,7 @@ test("plain dialogue, outfit images, story illustrations and shared background c
   await expect(gallery.getByRole("button", { name: "이미지 보기: 카페에서의 대화", exact: true })).toBeVisible();
   await page.goBack();
   await expect(chat).toBeVisible();
-  await openNewFace(page);
+  await openExistingCharacter(page);
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);
@@ -196,7 +196,7 @@ test("cancelled and failed illustrations preserve the gallery and a late respons
   await expect(story.getByRole("button", { name: "삽화 생성", exact: true })).toHaveAttribute("aria-busy", "true");
   // Cancel the modal before resetting; the server response is still deliberately late.
   await story.getByRole("button", { name: "이미지 생성 취소", exact: true }).click();
-  await openNewFace(page);
+  await openExistingCharacter(page);
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   finish();
   await expect(page).toHaveURL(/\/ideal$/);

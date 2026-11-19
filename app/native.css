@@ -275,3 +275,14 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .character-app .character-name-row { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
 .character-app .character-name-row h3,.character-app .character-name-row h2 { margin-bottom:0; }
 .character-app .checkin-arrival-badge { display:inline-flex; flex:none; border-radius:999px; padding:3px 7px; background:#fff0f5; color:#c8406b; font-size:10px; font-weight:700; line-height:1.4; white-space:nowrap; }
+.image-framing-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; min-width:0; padding:12px; margin:12px 0; border:1px solid #e7def5; border-radius:14px; background:rgba(255,255,255,.72); }
+.image-framing-fields legend { padding:0 6px; color:#795bee; font-size:12px; font-weight:700; }
+.image-framing-fields label { display:flex; flex-direction:column; gap:6px; min-width:0; color:#655475; font-size:12px; }
+.image-framing-fields input,.image-framing-fields select { box-sizing:border-box; width:100%; min-width:0; min-height:40px; border:1px solid #e2d8ef; border-radius:9px; padding:8px; background:#fff; color:#655475; font:inherit; }
+.image-framing-fields input:focus,.image-framing-fields select:focus { outline:2px solid #cbbaf4; outline-offset:1px; }
+.image-framing-fields>small { grid-column:1/-1; color:#9392a5; font-size:11px; line-height:1.5; }
+.image-framing-fields label small { color:#9392a5; font-size:11px; }
+.image-framing-options { position:relative; height:0; margin:0; color:#795bee; font-size:12px; z-index:2; }
+.image-framing-options summary { position:absolute; top:6px; left:10px; cursor:pointer; padding:6px 0; }
+.image-framing-options[open] .image-framing-fields { position:absolute; bottom:8px; left:0; right:0; max-height:55dvh; overflow-y:auto; background:#fff; box-shadow:0 8px 28px #65547526; }
+.action-confirm { max-height:calc(100dvh - 32px); overflow-y:auto; }

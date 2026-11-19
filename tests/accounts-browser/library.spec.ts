@@ -15,6 +15,150 @@ const snapshot = snapshotSchema.parse({ version: 1, id: characterId,
   art: { title: "희진", summary: "서점에서 시작된 이야기", prompt: "private", style: "neutral", description: "서점", profile: { name: "희진", age: 25, personality: "다정함", concept: "서점의 친구" }, width: 72, height: 128, jobId },
   chat: sessions.chat, story: { ...sessions.story, documentId: novelId, lastJobId: jobId, archive, storyState: { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content } }, timeline: sessions.chat.timeline.state });
 
+test("direct story and chat landings restore the selected character and remain on the activity after reload",async({page})=>{
+ await signIn(page);await accountRoutes(page);
+ const saved=structuredClone(snapshot);saved.story.started=true;saved.story.committed=archive;saved.story.storyPage=1;
+ saved.chat.committed=[{role:"user",content:"다시 만나서 반가워"},{role:"assistant",content:"우리 이야기를 이어가자"}];saved.chat.archive=saved.chat.committed;
+ let loads=0,aiCalls=0;
+ await page.route(`**/api/account?document=${characterId}*`,route=>{loads++;return route.fulfill({json:{id:characterId,title:"희진",payload:saved,media:{original:"https://example.test/image.jpg",gallery:{}}}});});
+ await page.route("**/api/chat",route=>{aiCalls++;return route.abort();});
+ for(const mode of ["story","chat"]){
+  await page.goto(`/ideal/${mode}`);
+  await expect(page.getByRole("log")).toContainText(mode==="story"?"2번째 회차":"우리 이야기를 이어가자");
+  await expect(page).toHaveURL(new RegExp(`/ideal/${mode}$`));
+  expect(await page.evaluate(key=>sessionStorage.getItem(key),`maite-active-character:${userId}`)).toBe(characterId);
+  await page.reload();
+  await expect(page.getByRole("log")).toContainText(mode==="story"?"2번째 회차":"우리 이야기를 이어가자");
+  await expect(page).toHaveURL(new RegExp(`/ideal/${mode}$`));
+  await expect(page.getByRole("heading",{name:"캐릭터를 먼저 만들어주세요."})).toHaveCount(0);
+ }
+ expect(loads).toBe(4);
+ // Reordering several owned characters must not replace the last selected one.
+ await page.route("**/api/account",route=>route.request().method()!=="GET"?route.fallback():route.fulfill({json:{userId,email:"test@example.com",profile:{display_name:"테스트"},wallet:{transferable:1000,bonus:5,free_chats:5},documents:[{id:"55555555-5555-4555-8555-555555555555",title:"수아",kind:"studio",character_name:"수아"},{id:characterId,title:"희진",kind:"studio",character_name:"희진"}],jobs:[]}}));
+ await page.reload();await expect(page.getByRole("log")).toContainText("우리 이야기를 이어가자");
+ await expect(page).toHaveURL(/\/ideal\/chat$/);expect(loads).toBe(5);expect(aiCalls).toBe(0);
+});
+
+test("activity restoration waits for cloud data, preserves navigation and offers character selection on failure",async({page})=>{
+ await signIn(page);await accountRoutes(page);let release!:()=>void;
+ const held=new Promise<void>(resolve=>{release=resolve;});
+ await page.route(`**/api/account?document=${characterId}*`,async route=>{await held;return route.fulfill({json:{id:characterId,title:"희진",payload:snapshot,media:{original:"https://example.test/image.jpg",gallery:{}}}});});
+ await page.goto("/ideal/story");await expect(page.getByText("이야기를 불러오고 있어요…",{exact:true})).toBeVisible();
+ await expect(page.getByRole("heading",{name:"캐릭터를 먼저 만들어주세요."})).toHaveCount(0);
+ await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"스토어",exact:true}).click();release();
+ await expect(page).toHaveURL(/\/ideal\/store$/);
+ await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({status:500,json:{error:"fixture failure"}}));
+ await page.goto("/ideal/story");
+ await expect(page.getByText("저장된 캐릭터를 불러오지 못했습니다.",{exact:true})).toBeVisible();
+ await expect(page.getByRole("link",{name:"나의 캐릭터에서 다시 선택"})).toBeVisible();
+ await expect(page).toHaveURL(/\/ideal\/story$/);
+});
+
+test("creation framing fields validate detail focus, send choices and reset for a fresh character",async({page})=>{
+ await signIn(page);await accountRoutes(page);let calls=0,choice:any;
+ const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#b9a6dc"}}).jpeg().toBuffer();
+ await page.route("**/api/characters",async route=>{
+  calls++;const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();choice=JSON.parse(String(form.get("framing")));
+  return route.fulfill({contentType:"image/jpeg",body:jpeg});
+ });
+ await page.goto("/ideal/new");await fillCharacterProfile(page);
+ await page.getByLabel("촬영 범위",{exact:true}).selectOption("detail");
+ await page.getByRole("button",{name:"캐릭터 생성",exact:true}).click();
+ await expect(page.locator(".chat-error[role=alert]")).toContainText("집중 대상");expect(calls).toBe(0);
+ await page.getByLabel("집중 대상",{exact:true}).fill("눈빛");
+ await page.getByLabel("촬영 범위",{exact:true}).selectOption("face");
+ await expect(page.getByLabel("집중 대상",{exact:true})).toHaveCount(0);
+ await expect(page.getByLabel("자세·동작 (선택)",{exact:true})).toHaveCount(0);
+ await page.getByLabel("카메라 각도",{exact:true}).selectOption("threeQuarter");
+ await page.getByLabel("시선",{exact:true}).selectOption("viewer");
+ await page.getByLabel("표정 (선택)",{exact:true}).fill("수줍은 미소");
+ await page.screenshot({path:".verification/image-framing-creation.png",fullPage:true});
+ await page.getByRole("button",{name:"캐릭터 생성",exact:true}).click();
+ await page.getByRole("dialog",{name:"새로운 캐릭터를 만날까요?"}).getByRole("button",{name:"캐릭터 생성",exact:true}).click();
+ await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+ expect(choice).toMatchObject({shot:"face",angle:"threeQuarter",gaze:"viewer",expression:"수줍은 미소"});expect(choice.focus).toBeUndefined();expect(calls).toBe(1);
+ await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
+ await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"캐릭터",exact:true}).click();
+ await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
+ await expect(page.getByLabel("촬영 범위",{exact:true})).toHaveValue("auto");
+ await expect(page.getByLabel("표정 (선택)",{exact:true})).toHaveValue("");
+});
+
+test("chat and story image confirmations accept cropped framing and require a detail target",async({page})=>{
+ await signIn(page);await accountRoutes(page);
+ const saved=structuredClone(snapshot);saved.story.started=true;saved.story.committed=archive;
+ await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({json:{id:characterId,title:"희진",payload:saved,media:{original:"https://example.test/image.jpg",gallery:{}}}}));
+ const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#bea7df"}}).jpeg().toBuffer();
+ const scenes:any[]=[];
+ await page.route("**/api/characters",async route=>{
+  const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();scenes.push(JSON.parse(String(form.get("scene"))));return route.fulfill({contentType:"image/jpeg",body:jpeg});
+ });
+ for(const mode of ["chat","story"]){
+  await page.goto(`/ideal/characters/${characterId}`);
+  if(mode==="story")await page.getByRole("tab",{name:"소설",exact:true}).click();
+  await page.getByRole("tabpanel",{name:mode==="chat"?"대화 목록":"소설 목록"}).getByRole("button").click();
+  await page.getByRole("button",{name:mode==="chat"?"이미지 생성":"삽화 생성",exact:true}).click();
+  const dialog=page.getByRole("dialog",{name:mode==="chat"?"대화 장면을 그릴까요?":"삽화를 그릴까요?"});
+  await dialog.getByLabel("장면 장소",{exact:true}).fill("카페 창가");
+  if(mode==="chat"){
+   await dialog.getByLabel("촬영 범위",{exact:true}).selectOption("face");
+   await dialog.getByLabel("카메라 각도",{exact:true}).selectOption("profile");
+   await dialog.getByLabel("장면 의상",{exact:true}).fill("");
+  }else{
+   await dialog.getByLabel("촬영 범위",{exact:true}).selectOption("detail");
+   await expect(dialog.getByRole("button",{name:"그림 만들기",exact:true})).toBeDisabled();
+   await dialog.getByLabel("집중 대상",{exact:true}).fill("책상 위의 꽃");
+  }
+  await expect(dialog.getByRole("button",{name:"그림 만들기",exact:true})).toBeEnabled();
+  await page.screenshot({path:`.verification/image-framing-${mode}-confirm.png`,fullPage:true});
+  expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
+  await dialog.getByRole("button",{name:"그림 만들기",exact:true}).click();
+  await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+  expect(scenes.at(-1).selection.framing).toMatchObject(mode==="chat"?{shot:"face",angle:"profile"}:{shot:"detail",focus:"책상 위의 꽃"});
+  expect(scenes.at(-1).kind).toBe(mode==="chat"?"outfit":"illustration");
+  await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
+ }
+ expect(scenes).toHaveLength(2);
+});
+
+test("both new-character entries clear the selected character and every form field without deleting it",async({page})=>{
+ await signIn(page);const deleted:string[]=[];await accountRoutes(page,true,deleted);
+ const footer=page.getByRole("navigation",{name:"하단 메뉴"});
+ for(const entry of ["plus","card"]){
+  await page.goto(`/ideal/characters/${characterId}`);
+  await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
+  await footer.getByRole("link",{name:"캐릭터",exact:true}).click();
+  if(entry==="plus")await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
+  else await page.locator(".new-character-card").click();
+  await expect(page).toHaveURL(/\/ideal\/new$/);
+  for(const label of ["캐릭터 이름","나이","외모","성격","컨셉"])await expect(page.getByLabel(label,{exact:true})).toHaveValue("");
+  await expect(page.getByRole("combobox",{name:"성별",exact:true})).toHaveValue("");
+  await expect(page.getByRole("button",{name:"캐릭터 이미지 전체화면 보기",exact:true})).toHaveCount(0);
+  await expect(page.locator(".chat-message")).toHaveCount(0);
+  await fillCharacterProfile(page);
+  await footer.getByRole("link",{name:"캐릭터",exact:true}).click();
+  await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
+  await expect(page.getByLabel("캐릭터 이름",{exact:true})).toHaveValue("");
+  expect(deleted).toEqual([]);
+ }
+});
+
+test("notification polling uses one combined request and collapses foreground event bursts",async({page})=>{
+ await signIn(page);await accountRoutes(page);await page.clock.install();
+ let combined=0,legacy=0;
+ await page.route("**/api/notifications**",route=>{
+  const url=new URL(route.request().url());
+  if(url.searchParams.has("sync"))combined++;
+  if(url.searchParams.has("inbox")||url.searchParams.has("schedule"))legacy++;
+  return route.fulfill({json:{unread:{},pushEnabled:false,quietHours:true,available:true,nickname:"테스트",activities:[],lastDeliveredByCharacter:[]}});
+ });
+ await page.goto("/ideal/characters");await expect.poll(()=>combined).toBe(1);
+ await page.evaluate(()=>{for(let i=0;i<20;i++){window.dispatchEvent(new Event("focus"));window.dispatchEvent(new Event("maite-foreground"));}});
+ await page.clock.runFor(300);expect(combined).toBe(1);
+ await page.clock.fastForward(60000);await expect.poll(()=>combined).toBe(2);
+ expect(legacy).toBe(0);await expect(page.locator(".checkin-footer-dot")).toHaveCount(0);
+});
+
 test("bookshelf replaces newface and remembers a separate last-read chapter",async({page})=>{
  await signIn(page);await accountRoutes(page);
  await page.route("**/api/store",route=>route.fulfill({json:{listings:[],owned:[]}}));
@@ -85,6 +229,37 @@ async function accountRoutes(page: Page, complete = true, deleted: string[] = []
   await page.route("https://example.test/**", route => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="128"/>' }));
   await page.route("**/api/notifications**",route=>route.fulfill({json:{pushEnabled:false,quietHours:true,available:true,activities:[],messages:[]}}));
 }
+
+test("character thumbnails reuse display URLs after six minutes and restore from disk before metadata", async ({page}) => {
+ await signIn(page);await accountRoutes(page);
+ let downloads=0,previewReads=0,hold=false,offline=false;
+ let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});
+ const bytes=await sharp({create:{width:72,height:128,channels:3,background:"#bca5df"}}).webp().toBuffer();
+ await page.route("**/api/account",route=>route.fulfill({json:{userId,email:"test@example.com",profile:{display_name:"테스트"},wallet:{transferable:1000,bonus:5,free_chats:5},documents:[{id:characterId,title:"희진",kind:"studio",character_name:"희진",job_id:jobId}],jobs:[]}}));
+ await page.route("**/api/account?previews=1",async route=>{
+  previewReads++;if(offline)return route.abort();if(hold)await gate;
+  return route.fulfill({json:{images:{[jobId]:`https://example.test/thumb.webp?token=${previewReads}`}}});
+ });
+ await page.route("https://example.test/thumb.webp**",route=>{downloads++;return offline?route.abort():route.fulfill({contentType:"image/webp",body:bytes});});
+ try {
+  await page.goto("/ideal/characters");
+  const image=page.locator(".native-character-card img");
+  await expect(image).toBeVisible();await expect(image).toHaveAttribute("aria-busy","false");
+  const source=await image.getAttribute("src");expect(source).toMatch(/^blob:/);expect(downloads).toBe(1);
+  await expect.poll(()=>page.evaluate(async()=>{const cache=await caches.open("maite-private-images-v1");return(await cache.keys()).length;})).toBeGreaterThan(0);
+  const footer=page.getByRole("navigation",{name:"하단 메뉴"});
+  await footer.getByRole("link",{name:"마이페이지",exact:true}).click();
+  await page.clock.setFixedTime(new Date(Date.now()+6*60*1000));hold=true;
+  await footer.getByRole("link",{name:"캐릭터",exact:true}).click();
+  await expect(image).toBeVisible();await expect(image).toHaveAttribute("src",source!);
+  await expect(image).toHaveAttribute("aria-busy","false");expect(downloads).toBe(1);
+  release();hold=false;
+  await expect(image).toHaveAttribute("src",source!);
+  offline=true;await page.reload();
+  await expect(image).toBeVisible();await expect(image).toHaveAttribute("aria-busy","false");
+  await expect(image).toHaveJSProperty("naturalWidth",72);expect(downloads).toBe(1);
+ }finally{release();}
+});
 
 test("initial anonymous launch requires Google login before showing the creation screen", async ({ page }) => {
   await page.goto("/ideal");
@@ -386,7 +561,10 @@ test("an ongoing novel can publish its generated chapters", async ({ page }) => 
 test("logging out hides private library data and returns to the login screen", async ({ page }) => {
   await signIn(page); await accountRoutes(page);
   await page.route("http://127.0.0.1:54321/auth/v1/logout**", route => route.fulfill({ status: 204 }));
-  await page.goto("/ideal/mypage");
+  await page.goto(`/ideal/characters/${characterId}`);
+  const image=page.locator(".character-detail img");await expect(image).toBeVisible();
+  const privateUrl=await image.getAttribute("src");expect(privateUrl).toMatch(/^blob:/);
+  await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"마이페이지",exact:true}).click();
   await expect(page.getByText("test@example.com", { exact: true })).toBeVisible();
   await page.evaluate(async () => { const cache = await caches.open("maite-private-images-v1"); await cache.put("/logout-cache-check", new Response("private")); });
   await page.getByRole("button", { name: "로그아웃", exact: true }).click();
@@ -394,6 +572,7 @@ test("logging out hides private library data and returns to the login screen", a
   await expect(page.getByText("test@example.com", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "하단 메뉴" })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => caches.has("maite-private-images-v1"))).toBe(false);
+  expect(await page.evaluate(async url=>{try{await fetch(url!);return false;}catch{return true;}},privateUrl)).toBe(true);
 });
 
 test("store groups a complete work, charges per chapter, and opens purchased prose", async ({ page }) => {
@@ -429,6 +608,9 @@ test("first login collects a profile and restores it on the next launch", async 
   });
   await page.goto("/ideal");
   await expect(page.getByRole("heading", { name: "당신을 알려주세요" })).toBeVisible();
+  await expect(page.locator(".profile-setup input[type=number]")).toHaveCount(0);
+  await page.reload();await expect(page.getByRole("heading",{name:"당신을 알려주세요"})).toBeVisible();
+  await expect(page.locator(".profile-setup input[type=number]")).toHaveCount(0);
   await page.getByLabel("사용자 닉네임").fill("별빛"); await page.getByLabel("사용자 성별").selectOption("여성"); await expect(page.getByLabel("사용자 나이")).toHaveCount(0);
   await page.screenshot({ path: ".verification/native-onboarding.png", caret: "initial" });
   await page.getByRole("button", { name: "시작하기", exact: true }).click();
@@ -551,7 +733,7 @@ test("an open local web chat receives its three-minute greeting once without an 
   if(route.request().method()==="POST"){receipts.push(route.request().postDataJSON());return route.fulfill({json:{ok:true}});}
   if(url.searchParams.has("document")){messageReads++;return route.fulfill({json:{messages:receipts.map(row=>({id:row.id,body:row.body,user_turns:row.userTurns,created_at:row.dueAt}))}});}
   const last=receipts.at(-1);
-  return route.fulfill({json:{pushEnabled:true,quietHours:false,available:true,nickname:"햄군",activities:[{documentId:characterId,userTurns:1,lastUserAt:now.toISOString(),characterName:"희진"}],lastDelivered:last??null}});
+  return route.fulfill({json:{unread:Object.fromEntries(receipts.map(row=>[row.documentId,1])),pushEnabled:true,quietHours:false,available:true,nickname:"햄군",activities:[{documentId:characterId,userTurns:1,lastUserAt:now.toISOString(),characterName:"희진"}],lastDelivered:last??null}});
  });
  await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
  await expect.poll(()=>page.evaluate(key=>JSON.parse(localStorage.getItem(key)||"{}").pending?.dueAt,`maite-local-checkins:${userId}`)).toBe(new Date(now.getTime()+180000).toISOString());
@@ -719,7 +901,7 @@ test("each character has an unread greeting marker; only opening its visible cha
    const body=route.request().postDataJSON();expect(body.action).toBe("read");expect(body.documentId).toBe(characterId);expect(body.ids).toEqual([greetingId]);
    reads++;delete unread[characterId];return route.fulfill({json:{ok:true}});
   }
-  if(url.searchParams.has("inbox"))return route.fulfill({json:{unread}});
+  if(url.searchParams.has("inbox")||url.searchParams.has("sync"))return route.fulfill({json:{unread,pushEnabled:false,quietHours:true,activities:[],lastDeliveredByCharacter:[]}});
   if(url.searchParams.has("document"))return route.fulfill({json:{messages:[{id:greetingId,body:"뭐해?",user_turns:0,created_at:new Date().toISOString(),read_at:unread[characterId]?null:new Date().toISOString()}]}});
   return route.fulfill({json:{pushEnabled:false,quietHours:true,activities:[],lastDeliveredByCharacter:[]}});
  });
@@ -747,12 +929,13 @@ test("all characters send their own three-minute greeting while another menu is 
   const url=new URL(route.request().url());
   if(route.request().method()==="POST"){const body=route.request().postDataJSON();expect(body.action).toBe("delivered");receipts.push(body);return route.fulfill({json:{ok:true}});}
   if(url.searchParams.has("inbox"))return route.fulfill({json:{unread:Object.fromEntries(receipts.map(row=>[row.documentId,1]))}});
-  return route.fulfill({json:{pushEnabled:true,quietHours:false,available:true,nickname:"햄군",activities:[{documentId:characterId,userTurns:1,lastUserAt:now.toISOString(),characterName:"희진"},{documentId:otherId,userTurns:2,lastUserAt:now.toISOString(),characterName:"희진"}],lastDeliveredByCharacter:receipts}});
+  return route.fulfill({json:{unread:Object.fromEntries(receipts.map(row=>[row.documentId,1])),pushEnabled:true,quietHours:false,available:true,nickname:"햄군",activities:[{documentId:characterId,userTurns:1,lastUserAt:now.toISOString(),characterName:"희진"},{documentId:otherId,userTurns:2,lastUserAt:now.toISOString(),characterName:"희진"}],lastDeliveredByCharacter:receipts}});
  });
  await page.goto("/ideal/mypage");
  await expect.poll(()=>page.evaluate(key=>{const state=JSON.parse(localStorage.getItem(key)||"{}");return Number(!!state.pending)+(state.pendingOthers?.length??0);},`maite-local-checkins:${userId}`)).toBe(2);
  await page.clock.fastForward(190000);await expect.poll(()=>receipts.length).toBe(2);
  expect(new Set(receipts.map(row=>row.documentId))).toEqual(new Set([characterId,otherId]));
+ expect(receipts.some(row=>row.body.includes("테스트"))).toBe(true);
  await expect(page.locator(".checkin-footer-dot")).toBeVisible();
  await page.clock.fastForward(86400000);expect(receipts).toHaveLength(2);
 });

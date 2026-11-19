@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
 import { characterProfileSchema } from "../../../lib/chat/character.ts";
+import {imageFramingSchema,framingDirection,requestedCamera} from "../../../lib/characters/framing.ts";
 import { ILLUSTRATION_DIRECTION, OVERLAP_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema, confirmedIllustrationTarget } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
@@ -119,6 +120,7 @@ async function handle(request: Request) {
     );
     const profile = form.has("profile") ? characterProfileSchema.parse(JSON.parse(String(form.get("profile")))) : undefined;
     const scene = form.has("scene") ? visualRequestSchema.parse(JSON.parse(String(form.get("scene")))) : undefined;
+    const framing=form.has("framing")?imageFramingSchema.parse(JSON.parse(String(form.get("framing")))):scene?.selection?.framing;
     if (messages.at(-1)?.role !== "user")
       throw new RequestError("캐릭터 설명을 입력해주세요.", 400);
     const priorProfile = form.get("previousStyle");
@@ -156,7 +158,7 @@ async function handle(request: Request) {
         signal,
         body: JSON.stringify({
           model: "omni-moderation-latest",
-          input: [profile ? JSON.stringify(profile) : "", scene?.context || "", scene?.selection ? JSON.stringify(scene.selection) : "", ...messages
+          input: [profile ? JSON.stringify(profile) : "", scene?.context || "", scene?.selection ? JSON.stringify(scene.selection) : "", framing?JSON.stringify(framing):"", ...messages
             .filter((m) => m.role === "user")
             .map((m) => m.content)]
             .join("\n"),
@@ -194,12 +196,12 @@ async function handle(request: Request) {
             JSON.stringify(CHARACTER_STYLES) +
             (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
             " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
-            (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : ""),
+            (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),
           input: [
             {
               role: "user",
               content: [
-                { type: "input_text", text: JSON.stringify({ messages, profile, previousStyle, scene }) },
+                { type: "input_text", text: JSON.stringify({ messages, profile, previousStyle, scene, framing }) },
                 ...(previousData && !scene
                   ? [
                       {
@@ -235,13 +237,15 @@ async function handle(request: Request) {
       )
       .find((c: { type: string }) => c.type === "output_text")?.text;
     const brief = briefSchema.parse(JSON.parse(output || "null"));
+    const camera=requestedCamera(framing);
+    if(camera&&"framing" in brief)brief.framing=camera;
     // Explicit profile gender fixes new-character rendering; scene casts can differ.
     if (!scene && brief.styleProfile !== "mixed" && profile?.gender === "여성") brief.styleProfile = "female";
     if (!scene && brief.styleProfile !== "mixed" && profile?.gender === "남성") brief.styleProfile = "male";
     const target = confirmedIllustrationTarget(scene);
     // A manually selected counterpart must never inherit the original character's identity image.
     if (target && target !== profile?.name && "characterPresent" in brief) brief.characterPresent = false;
-    const prompt = buildCharacterPrompt(brief, scene);
+    const prompt = buildCharacterPrompt(brief, scene,framing);
     const parameters = {
       model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       prompt, size: CHARACTER_SIZE,

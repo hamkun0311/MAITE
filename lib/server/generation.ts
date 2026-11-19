@@ -6,6 +6,7 @@ import type { UsageRecord } from "../usage.ts";
 import sharp from "sharp";
 import { uploadThumbnail } from "./image-assets.ts";
 import { storyStateSchema } from "../novel/state.ts";
+import {createNovelReviewLogger,manuscriptFingerprint} from "../novel/review-log.ts";
 
 type Job = { id: string; status: "reserved" | "completed" | "failed"; result: { events?: object[]; headers?: Record<string, string> } | null; storage_path: string | null };
 function completeOutput(kind: GenerationKind, events: object[]) {
@@ -127,7 +128,13 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
                 if (event.type !== "usage" && event.type !== "phase") { bytes += data.length; if (bytes > 400000) throw new Error("Result too large"); events.push(event); }
                 if (event.type === "done") {
                   if (request.signal.aborted || !completeOutput(kind, events)) throw new Error("Incomplete generation");
-                  await settle!({ events, usage: [...metrics.values()] }); finished = true;
+                  try{await settle!({ events, usage: [...metrics.values()] });}
+                  catch(error){if(kind==="story")createNovelReviewLogger({traceId:id}).event("generation_persistence_failed",{storage:"generation_jobs"});throw error;}
+                  finished = true;
+                  if(kind==="story"){
+                    const chapter=events.find(item=>{const event=item as {type?:string;text?:unknown;state?:{chapter?:unknown}};return event.type==="chapter"&&typeof event.text==="string"&&Number.isSafeInteger(event.state?.chapter);}) as {text:string;state:{chapter:number}}|undefined;
+                    if(chapter)createNovelReviewLogger({traceId:id,chapter:chapter.state.chapter}).event("generation_persisted",{...manuscriptFingerprint(chapter.text),storage:"generation_jobs"});
+                  }
                 }
                 if (!closed) controller.enqueue(encoder.encode(`${raw}\n\n`));
               }

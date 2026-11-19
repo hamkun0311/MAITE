@@ -1,4 +1,4 @@
-type Entry = { pending: Promise<Blob>; expires: number; bytes: number };
+type Entry = { pending: Promise<Blob>; expires: number; bytes: number; blob?: Blob };
 export class ImageBlobCache {
   private entries = new Map<string, Entry>();
   private bytes = 0; private epoch = 0;
@@ -6,11 +6,15 @@ export class ImageBlobCache {
   constructor(limit = 64 * 1024 * 1024, ttl = 24 * 60 * 60 * 1000) { this.limit = limit; this.ttl = ttl; }
   clear() { this.epoch++; this.entries.clear(); this.bytes = 0; }
   get sizeBytes() { return this.bytes; }
+  peek(scope: string, id: string) {
+    const entry = this.entries.get(`${scope}\n${id}`);
+    return entry && entry.expires > Date.now() ? entry.blob : undefined;
+  }
   put(scope: string, id: string, blob: Blob) {
     if (!blob.size || blob.size > 5_000_000 || !blob.type.startsWith("image/")) return;
     const key = `${scope}\n${id}`;
     this.remove(key);
-    this.entries.set(key, { pending: Promise.resolve(blob), expires: Date.now() + this.ttl, bytes: blob.size });
+    this.entries.set(key, { pending: Promise.resolve(blob), expires: Date.now() + this.ttl, bytes: blob.size, blob });
     this.bytes += blob.size;
     while (this.bytes > this.limit || this.entries.size > 100) this.remove(this.entries.keys().next().value!);
   }
@@ -34,7 +38,7 @@ export class ImageBlobCache {
     try {
       const blob = await entry.pending;
       if (epoch === this.epoch && this.entries.get(key) === entry) {
-        entry.bytes = blob.size; entry.expires = Date.now() + this.ttl; this.bytes += blob.size;
+        entry.blob = blob; entry.bytes = blob.size; entry.expires = Date.now() + this.ttl; this.bytes += blob.size;
         while (this.bytes > this.limit || this.entries.size > 100) this.remove(this.entries.keys().next().value!);
       }
       return blob;

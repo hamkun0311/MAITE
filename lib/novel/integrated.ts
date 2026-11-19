@@ -1,11 +1,12 @@
 import {z} from "zod";
 import {createFinalReviewSchema,createReviewSchema,createMemoryPatchSchema,hasEvidence,memoryPatchSchema,repeatsPrevious} from "./state.ts";
 import {plainDialogue} from "../chat/presentation.ts";
+import {sceneAuditPassed} from "./dialogue.ts";
 
 export const INTEGRATED_MIN_CHARS=2500,INTEGRATED_MAX_CHARS=3000;
 export function integratedEpisodeSchema(finale:boolean){
  return z.object({chapter:z.number().int().positive(),arcChapter:z.number().int().min(1).max(5),prose:z.string().min(1).max(8000),
-  review:(finale?createFinalReviewSchema():createReviewSchema()).extend({memoryPatch:createMemoryPatchSchema().required({sharedChanges:true})}),
+  review:(finale?createFinalReviewSchema():createReviewSchema()).required({sceneAudit:true}).extend({memoryPatch:createMemoryPatchSchema().required({sharedChanges:true,dialogueRegisters:true})}),
  }).strict();
 }
 export function validateIntegratedEpisode(value:unknown,chapter:number,arcChapter:number,previousProse:string){
@@ -16,6 +17,7 @@ export function validateIntegratedEpisode(value:unknown,chapter:number,arcChapte
  if(count<INTEGRATED_MIN_CHARS||count>INTEGRATED_MAX_CHARS)throw new Error("Integrated episode length mismatch");
  if(repeatsPrevious(result.prose,previousProse))throw new Error("Integrated episode repeats previous prose");
  const review=result.review;
+ if(!sceneAuditPassed(review.sceneAudit))throw new Error("Integrated scene audit failed");
  if(!review.pass||!review.conceptAlignment.satisfied||review.blockingIssues.some(issue=>issue.type!=="missing_beat"))throw new Error("Integrated episode review failed");
  if(![...review.newEvents,review.endingChange,review.conceptAlignment].every(item=>hasEvidence(result.prose,item.evidence)))throw new Error("Unsupported integrated review");
  if(arcChapter===5){
@@ -24,7 +26,7 @@ export function validateIntegratedEpisode(value:unknown,chapter:number,arcChapte
   if(!final.centralConflictResolved||!final.protagonistOutcomeShown||!final.relationshipOutcomeShown||final.hasSequelHook||!hasEvidence(result.prose,final.evidence))throw new Error("Integrated ending unresolved");
  }
  const patch=memoryPatchSchema.parse(review.memoryPatch);
- const changes=[patch.currentSituation,...patch.newEvents,...patch.resolvedEvents,...patch.openedThreads,...patch.closedThreads,...patch.worldFacts,...(patch.sharedChanges??[]),...patch.characters.flatMap(person=>[...(person.goal?[person.goal]:[]),...person.knowledge,...person.relationships])];
- if(!changes.every(item=>hasEvidence(result.prose,item.evidence)))throw new Error("Unsupported integrated memory");
+ const changes=[patch.currentSituation,...patch.newEvents,...patch.resolvedEvents,...patch.openedThreads,...patch.closedThreads,...patch.worldFacts,...(patch.sharedChanges??[]),...(patch.dialogueRegisters??[]),...patch.characters.flatMap(person=>[...(person.goal?[person.goal]:[]),...person.knowledge,...person.relationships])];
+ if(!changes.every(item=>hasEvidence(result.prose,item.evidence))||!(patch.dialogueRegisters??[]).every(change=>!change.changeEvidence||hasEvidence(result.prose,change.changeEvidence)))throw new Error("Unsupported integrated memory");
  return {text:result.prose,patch,charCount:count};
 }

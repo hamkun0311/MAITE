@@ -12,6 +12,8 @@ import { useAccount } from "./AccountProvider";
 import { jsonApi } from "@/lib/platform/commerce";
 import { apiFetch } from "@/lib/platform/api";
 import { imageAssetKey } from "@/lib/platform/image-cache";
+import ImageFramingFields from "./ImageFramingFields";
+import {defaultImageFraming,imageFramingSchema,type ImageFraming} from "@/lib/characters/framing";
 import { loadAccountImage } from "@/lib/platform/image-loader";
 import { accountEnabled } from "@/lib/account/client";
 import { isNative, saveFile } from "@/lib/platform/native";
@@ -46,10 +48,13 @@ type StyleProfile = keyof typeof CHARACTER_STYLES;
 type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile; description: string; profile: CharacterProfile; width: number; height: number; jobId?: string; listingId?: string };
 type StudioSession = {
   creation: ReactNode;
+  activityRestoring: boolean;
+  activityRestoreError: string;
   art?: Artwork;
   characterDocumentId: string;
   sessions: Record<"chat" | "story", ChatSession>;
   openMenu: (mode: "image" | "chat" | "story") => void;
+  startNewCharacter: () => void;
   editProfile: () => void;
   visuals: ReturnType<typeof useCharacterGallery>;
   loadDocument: (id: string) => Promise<void>;
@@ -74,8 +79,10 @@ export function CharacterGalleryScreen() {
   return <CharacterGallery images={from ? visuals.images : visuals.archive} mode={from} onOriginalLoaded={visuals.originalLoaded} onApply={from ? id => { visuals.selectBackground(from, id); router.push(`/ideal/${from}`); } : undefined} />;
 }
 export function CharacterActivityScreen({ mode }: { mode: "chat" | "story" }) {
-  const { art } = useStudioSession();
+  const { art, activityRestoring, activityRestoreError } = useStudioSession();
   if (art) return null; // The layout owns the mounted activity so navigation keeps generation alive.
+  if(activityRestoring)return <main className="character-missing"><p role="status">이야기를 불러오고 있어요…</p></main>;
+  if(activityRestoreError)return <main className="character-missing"><p role="alert">{activityRestoreError}</p><Link href="/ideal/characters">나의 캐릭터에서 다시 선택</Link></main>;
   return <main className="character-missing"><h1>캐릭터를 먼저 만들어주세요.</h1><p>생성한 캐릭터로 대화와 이야기를 시작할 수 있습니다.</p><Link href="/ideal">캐릭터 생성으로 이동</Link></main>;
 }
 function PersistentCharacterActivity({ mode, active }: { mode: "chat" | "story"; active: boolean }) {
@@ -89,6 +96,9 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   const confirm = useActionConfirm();
   const router = useRouter();
   const pathname = usePathname();
+  const currentPath=useRef(pathname);currentPath.current=pathname;
+  const restoreAttempt=useRef("");
+  const [activityRestore,setActivityRestore]=useState<{path:string;loading:boolean;error:string}>();
   const sessions = useRef(createStudioSessions());
   const documentId = useRef<string>(crypto.randomUUID());
   const suppressedDocuments = useRef(new Set<string>());
@@ -111,6 +121,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   const result = useRef<HTMLElement>(null);
   const profileFields = useRef<HTMLFieldSetElement>(null);
   const [draft, setDraft] = useState({ name: "", age: "", gender: "", appearance: "", personality: "", concept: "" });
+  const [framing,setFraming]=useState<ImageFraming>(defaultImageFraming);
   function focusCreation(target: "result" | "profile") {
     requestAnimationFrame(() => {
       if (target === "profile") {
@@ -161,14 +172,15 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     const { url: _url, ...savedArt } = art;
     return snapshotSchema.parse({ version: 1, id: documentId.current, art: savedArt, chat: sessionSnapshot(sessions.current.chat), story: sessionSnapshot(sessions.current.story), timeline: sessions.current.chat.timeline.state, gallery: visuals.images.map(({ url: _url, blob: _blob, ...image }) => image), backgrounds: visuals.backgrounds });
   }
-  function restore(data: StudioSnapshot, blob: Blob, gallery: { id: string; blob: Blob }[] = []) {
+  function restore(data: StudioSnapshot, blob: Blob, gallery: { id: string; blob: Blob }[] = [], navigate=true) {
     cancel(); visuals.clear(); documentId.current = data.id;
     sessions.current = restoreSessions(data); previous.current = blob; previousStyle.current = data.art.style;
     const url = URL.createObjectURL(blob); visuals.registerOriginal(blob, url, data.art.title, data.art);
     const metadataRows = gallery.length === data.gallery.length ? data.gallery : data.gallery.filter(image => image.id !== "original");
     visuals.restoreImages(gallery.flatMap((image, index) => { const metadata = data.gallery.find(meta => meta.id === image.id) ?? metadataRows[index]; return metadata ? [{ ...metadata, blob: image.blob }] : []; }), data.backgrounds);
+    setFraming(defaultImageFraming());
     setDraft({ ...data.art.profile, age: String(data.art.profile.age), gender: data.art.profile.gender ?? "", appearance: data.art.profile.appearance ?? "" });
-    setArt({ ...data.art, url }); setMessages([]); router.push(accountEnabled() ? "/ideal/new" : "/ideal");
+    setArt({ ...data.art, url }); setMessages([]); if(navigate)router.push(accountEnabled() ? "/ideal/new" : "/ideal");
   }
   async function persistSnapshot(snapshot: StudioSnapshot, currentOwner: string) {
     if (owner.current !== currentOwner || suppressedDocuments.current.has(snapshot.id)) return;
@@ -208,9 +220,9 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       router.replace("/ideal/characters");
     } catch (error) { suppressedDocuments.current.delete(id); throw error; }
   }
-  async function loadCloud(id: string) {
+  async function loadCloud(id: string, navigate=true, expectedPath?:string) {
     const load = ++loadSequence.current; const currentOwner = owner.current;
-    if (documentId.current === id && art) { router.push("/ideal/new"); return; }
+    if (documentId.current === id && art) { if(navigate)router.push("/ideal/new"); return; }
     // Persist the outgoing character before replacing the shared session refs.
     if (art && previous.current) await saveCloud();
     else await cloudQueue.current.catch(() => undefined);
@@ -221,8 +233,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     const original = await loadAccountImage(currentOwner, imageAssetKey(data.art), job.imageUrl);
     if (doc.media) {
       const blob = original;
-      if (load !== loadSequence.current || currentOwner !== owner.current || suppressedDocuments.current.has(id)) return;
-      restore(data, blob);
+      if (load !== loadSequence.current || currentOwner !== owner.current || suppressedDocuments.current.has(id) || (expectedPath&&currentPath.current!==expectedPath)) return;
+      restore(data, blob, [], navigate);
       visuals.restoreRemoteImages(data.gallery, doc.media.gallery || {}, data.backgrounds, doc.media.thumbnails || {});
       return;
     }
@@ -231,7 +243,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       const response = await fetch(result.imageUrl); if (!response.ok) throw new Error("갤러리 이미지를 불러오지 못했습니다."); return { id: image.id, blob: await response.blob() };
     }));
     const blob = original;
-    if (load === loadSequence.current && currentOwner === owner.current && !suppressedDocuments.current.has(id)) restore(data, blob, gallery);
+    if (load === loadSequence.current && currentOwner === owner.current && !suppressedDocuments.current.has(id) && (!expectedPath||currentPath.current===expectedPath)) restore(data, blob, gallery, navigate);
   }
   async function importCharacter(value: Record<string, unknown>) {
     const content = value.content as { profile?: unknown; description?: string };
@@ -241,6 +253,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     previous.current = blob; previousStyle.current = "neutral"; const url = URL.createObjectURL(blob);
     visuals.registerOriginal(blob, url, profile.name, { listingId: String(value.id) });
     setArt({ url, title: profile.name, summary: "구매한 캐릭터", prompt: "", style: "neutral", description: content.description ?? profile.concept, profile, width: 0, height: 0, listingId: String(value.id) });
+    setFraming(defaultImageFraming());
     setDraft({ ...profile, age: String(profile.age), gender: profile.gender ?? "", appearance: profile.appearance ?? "" }); router.push(accountEnabled() ? "/ideal/new" : "/ideal");
   }
   const snapshotRef = useRef<() => void>(() => undefined);
@@ -265,8 +278,23 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   useEffect(() => {
     owner.current = user?.id ?? "anonymous";
     const currentOwner = owner.current;
-    if (isNative() && user) void localSnapshot(currentOwner).then(async value => { if (value && owner.current === currentOwner && account?.documents.some(doc => doc.id === value.snapshot.id)) await loadCloud(value.snapshot.id); }).catch(() => setError("저장 내용을 불러오지 못했습니다. 캐릭터 목록에서 다시 선택해주세요."));
+    if (isNative() && user && menu!=="chat" && menu!=="story") void localSnapshot(currentOwner).then(async value => { if (value && owner.current === currentOwner && account?.documents.some(doc => doc.id === value.snapshot.id)) await loadCloud(value.snapshot.id); }).catch(() => setError("저장 내용을 불러오지 못했습니다. 캐릭터 목록에서 다시 선택해주세요."));
   }, [user?.id]);
+  const ownedCharacters=account?.documents.filter(doc=>doc.kind==="studio"||doc.kind==="character")??[];
+  const activityRestoring=!!(accountEnabled()&&user&&!art&&(menu==="chat"||menu==="story")&&ownedCharacters.length&&(activityRestore?.path!==pathname||activityRestore.loading));
+  useEffect(()=>{
+    if(menu!=="chat"&&menu!=="story"){restoreAttempt.current="";return;}
+    if(!accountEnabled()||!user||art||!ownedCharacters.length)return;
+    const attempt=`${user.id}:${pathname}`;if(restoreAttempt.current===attempt)return;restoreAttempt.current=attempt;
+    let selected="";try{selected=sessionStorage.getItem(`maite-active-character:${user.id}`)||"";}catch{}
+    const id=ownedCharacters.find(doc=>doc.id===selected)?.id??ownedCharacters[0].id;
+    const path=pathname;setActivityRestore({path,loading:true,error:""});
+    const work=loadCloud(id,false,path),request=loadSequence.current;
+    const finish=(error:string)=>{if(request===loadSequence.current&&currentPath.current===path)setActivityRestore({path,loading:false,error});};
+    void work.then(()=>finish("")).catch(()=>finish("저장된 캐릭터를 불러오지 못했습니다."));
+    return()=>{restoreAttempt.current="";};
+  },[user?.id,pathname,account?.documents]);
+  useEffect(()=>{if(user&&art){try{sessionStorage.setItem(`maite-active-character:${user.id}`,documentId.current);}catch{}}},[user?.id,art?.url]);
   useEffect(() => {
     const changed = (event: Event) => { owner.current = (event as CustomEvent<string>).detail; reset(); visuals.clearArchive(); if (isNative()) void localSnapshot(owner.current).then(value => { if (value && owner.current === (event as CustomEvent<string>).detail) restore(snapshotSchema.parse(value.snapshot), value.blob, value.gallery); }).catch(() => setError("기기의 저장 내용을 불러오지 못했습니다.")); };
     const background = () => { snapshotRef.current(); };
@@ -319,15 +347,25 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     router.replace(accountEnabled() ? "/ideal/new" : "/ideal", { scroll: false });
     if (menu === "image") focusCreation("profile");
     setDraft({ name: "", age: "", gender: "", appearance: "", personality: "", concept: "" });
+    setFraming(defaultImageFraming());
     previous.current = null;
     previousStyle.current = null;
     setError("");
     setStatus("새로운 캐릭터의 분위기를 설명해주세요.");
   }
+  function startNewCharacter() {
+    // Capture the outgoing character before clearing the shared creation session.
+    snapshotRef.current();
+    loadSequence.current++;
+    setCreatedPreview(undefined);
+    reset();
+  }
   async function submit() {
     if (controller.current) return;
     const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age), appearance: draft.appearance.trim() || undefined });
     if (!parsedProfile.success) { setError("캐릭터 이름·나이·성별·성격·컨셉을 입력해주세요."); return; }
+    const framingResult=imageFramingSchema.safeParse(framing);
+    if(!framingResult.success){setError("부분 클로즈업의 집중 대상을 입력해주세요.");return;}
     if (accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < HEART_COST.character) { setError("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
     if (accountEnabled() && !await confirm({ title: "새로운 캐릭터를 만날까요?", description: "입력한 설정으로 캐릭터 이미지를 만들어요.", lines: [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" })) return;
     if (controller.current) return;
@@ -354,6 +392,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       const body = new FormData();
       body.set("messages", JSON.stringify(history.slice(-13)));
       body.set("profile", JSON.stringify(profile));
+      body.set("framing",JSON.stringify(framingResult.data));
       if (previous.current)
         body.set("image", previous.current, "previous-character.jpg");
       if (previous.current && previousStyle.current)
@@ -456,6 +495,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
             <label>컨셉<textarea aria-label="컨셉" form="character-generation" name="concept" required maxLength={1000} value={draft.concept} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, concept: event.target.value }); }} placeholder="관계, 세계관, 배경 등 원하는 설정을 적어주세요" /></label>
             {art && <small>수정한 특성은 이미지를 다시 생성하면 대화·이야기에 적용됩니다.</small>}
           </fieldset>
+          <ImageFramingFields value={framing} onChange={setFraming} disabled={busy}/>
           <div className="message-list" aria-live="polite" hidden={!messages.length && !busy}>
             {messages.map((m, i) => (
                 <article key={i} className={`chat-message ${m.role}`}>
@@ -538,7 +578,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       </div>
   );
   return (
-    <StudioContext.Provider value={{ creation, art, characterDocumentId: documentId.current, sessions: sessions.current, openMenu, editProfile, visuals, loadDocument: loadCloud, importCharacter, deleteCharacter, flushSave: async () => { if (art && accountEnabled() && user) await saveCloud(); } }}>
+    <StudioContext.Provider value={{ creation, art, activityRestoring, activityRestoreError:activityRestore?.path===pathname?activityRestore.error:"", characterDocumentId: documentId.current, sessions: sessions.current, openMenu, startNewCharacter, editProfile, visuals, loadDocument: loadCloud, importCharacter, deleteCharacter, flushSave: async () => { if (art && accountEnabled() && user) await saveCloud(); } }}>
     <CheckinInbox key={user?.id ?? "demo"}><div ref={app} className={`chat-app character-app ${menu === "chat" || menu === "story" ? "is-character-reading" : ""} ${menu === "chat" ? "is-character-chat" : ""}`}>
       <header className="chat-header">
         <Link href="/ideal/mypage" className="native-user" aria-label="내 프로필"><span className="native-avatar">{account?.avatarUrl ? <CachedImage src={account.avatarUrl} cacheKey={`profile:${account.avatarUrl.split("?")[0]}`} alt=""/> : (account?.profile?.display_name || "당신").slice(0, 1)}</span><strong>{account?.profile?.display_name || "당신"}</strong></Link>

@@ -5,6 +5,7 @@ import { userProfileSchema } from "@/lib/account/profile";
 import { responseTimings } from "@/lib/server/timing";
 import { documentMedia } from "@/lib/server/document-media";
 import { signedImages, thumbnailPath } from "@/lib/server/image-assets";
+import {logNovelDocumentSaved} from "@/lib/novel/review-log";
 export const runtime = "nodejs";
 export const OPTIONS = preflight;
 const action = z.discriminatedUnion("action", [
@@ -92,6 +93,7 @@ export async function POST(request: Request) {
       const record = { title: input.kind === "chapter" && existing.data ? existing.data.title : input.title, kind: input.kind, payload: input.payload, updated_at: new Date().toISOString() };
       const result = existing.data ? await db.from("documents").update(record).eq("id", input.id).eq("user_id", user.id) : await db.from("documents").insert({ id: input.id, user_id: user.id, ...record });
       if (result.error) throw new AccountError("저장하지 못했습니다.", 503);
+      logNovelDocumentSaved(input.payload,input.id,input.kind);
     } else if (input.action === "deleteCharacter") {
       return Response.json(await rpc("delete_character", { p_user: user.id, p_document: input.id }), { headers });
     } else if (input.action === "delete") {

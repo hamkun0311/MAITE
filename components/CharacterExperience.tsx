@@ -1,5 +1,7 @@
 "use client";
 import type { ImageSceneSelection } from "@/lib/characters/visual";
+import ImageFramingFields from "./ImageFramingFields";
+import {defaultImageFraming,imageFramingSchema,type ImageFraming} from "@/lib/characters/framing";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Images, Image as ImageIcon } from "lucide-react";
 import { useAccount } from "./AccountProvider";
@@ -25,6 +27,7 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [preview, setPreview] = useState<CharacterGalleryImage | null>(null);
+  const [framing,setFraming]=useState<ImageFraming>(defaultImageFraming);
   useEffect(() => { if (!active) setPickerOpen(false); }, [active]);
   const confirm = useActionConfirm();
   const { account } = useAccount();
@@ -33,8 +36,11 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
       userNames: [userDisplayName({ concept: profile.concept, userName: account?.profile?.display_name }, session?.storyState?.seriesConcept), account?.profile?.display_name || "당신"],
       knownNames: [...(session?.chatMemory?.participants.filter(person => person.id !== "user").map(person => person.name) ?? []), ...(session?.storyState?.characters.map(person => person.name) ?? [])],
     });
+    selection={...selection,framing:!selection.target&&framing.shot!=="auto"&&framing.shot!=="detail"?defaultImageFraming():framing};
     if (accountEnabled() && !await confirm({ title: kind === "illustration" ? "삽화를 그릴까요?" : "대화 장면을 그릴까요?", description: "현재 장면과 인물의 모습으로 이미지를 만들어요.", sceneDetails: selection, editableTarget: kind === "illustration", onSceneChange:next=>{selection=next;}, imageNotice:true, lines: [{ label: "이미지 생성", value: `${kind === "illustration" ? 50 : 30}하트` }], confirmLabel: "그림 만들기" })) return;
     if(accountEnabled())selection={...selection,location:selection.location?.trim(),outfit:selection.outfit?.trim(),target:selection.target?.trim()||undefined,characters:[...new Set([...selection.characters,...(selection.target?.trim()?[selection.target.trim()]:[])])].slice(-8),confirmed:true};
+    if(!imageFramingSchema.safeParse(selection.framing).success)return;
+    setFraming(selection.framing!);
     const image = await onGenerateVisual(kind, context, scene, selection);
     if (image) setPreview(image);
   }
@@ -52,7 +58,7 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
   return <section className={`character-experience character-${mode}-experience${backgroundHidden ? " character-no-background" : ""}`} aria-label={mode === "chat" ? "대화하기" : "이야기 만들기"}>
     {!backgroundHidden && <CachedImage className="character-backdrop" src={imageUrl} cacheKey={imageAssetKey(gallery.find(image => image.id === backgroundId) || {})} alt="" />}
     <div className="character-experience-content">
-      <LiveChat characterDocumentId={characterDocumentId} character={character} active={active} session={session} headingContent={readerHeading} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} />
+      <LiveChat characterDocumentId={characterDocumentId} character={character} active={active} session={session} headingContent={readerHeading} imageOptions={!accountEnabled()?<details className="image-framing-options"><summary>이미지 구도</summary><ImageFramingFields value={framing} onChange={setFraming} disabled={!!imageJob}/></details>:undefined} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} />
     </div>
     <CharacterBackgroundPicker open={pickerOpen} images={gallery} selected={backgroundId} onSelect={onBackground} onClose={() => setPickerOpen(false)} />
     {preview && <CharacterImageViewer src={preview.url} title={preview.title} cacheKey={imageAssetKey(preview)} open={active} onClose={() => setPreview(null)} />}

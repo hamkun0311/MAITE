@@ -10,9 +10,16 @@ export function reasoningOptions(model = textModel()) {
   return { reasoning: { effort } };
 }
 
-// Separate novel experiments from conversation speech/continuity settings.
+export function chatReasoningOptions(model = textModel()) {
+  return configuredReasoning("OPENAI_CHAT_REASONING_EFFORT",model,reasoningOptions(model));
+}
+
+// Legacy novel setting remains the fallback for existing deployments.
 export function novelReasoningOptions(model = textModel()) {
   return configuredReasoning("OPENAI_NOVEL_REASONING_EFFORT",model,reasoningOptions(model));
+}
+export function novelWriteReasoningOptions(model = textModel()) {
+  return configuredReasoning("OPENAI_NOVEL_WRITE_REASONING_EFFORT",model,novelReasoningOptions(model));
 }
 export function novelPlanReasoningOptions(model = textModel()) {
   return configuredReasoning("OPENAI_NOVEL_PLAN_REASONING_EFFORT",model,novelReasoningOptions(model));

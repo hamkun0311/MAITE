@@ -3,7 +3,32 @@ import assert from "node:assert/strict";
 import { trackUsage, usageFetch, type UsageRecord } from "../lib/usage.ts";
 import { POST } from "../app/api/chat/route.ts";
 import { addUsageRecord, clearUsage, finishUsageTask, startUsageTask, sumUsage, usageSnapshot } from "../lib/usage-store.ts";
-import { imageDescriptionReasoningOptions, imageQuality, novelReviewMaxOutputTokens, novelReviewReasoningOptions, reasoningOptions } from "../lib/ai-model.ts";
+import { chatReasoningOptions, novelWriteReasoningOptions, novelPlanReasoningOptions, imageDescriptionReasoningOptions, imageQuality, novelReviewMaxOutputTokens, novelReviewReasoningOptions, reasoningOptions } from "../lib/ai-model.ts";
+
+test("operation effort overrides are independent, validated and retain legacy fallbacks", t => {
+ const keys=["OPENAI_REASONING_EFFORT","OPENAI_CHAT_REASONING_EFFORT","OPENAI_NOVEL_REASONING_EFFORT","OPENAI_NOVEL_WRITE_REASONING_EFFORT","OPENAI_NOVEL_PLAN_REASONING_EFFORT"];
+ const before=keys.map(key=>process.env[key]);
+ t.after(()=>keys.forEach((key,i)=>{if(before[i]===undefined)delete process.env[key];else process.env[key]=before[i];}));
+ for(const key of keys)delete process.env[key];
+ process.env.OPENAI_REASONING_EFFORT="medium";
+ process.env.OPENAI_CHAT_REASONING_EFFORT="low";
+ process.env.OPENAI_NOVEL_WRITE_REASONING_EFFORT="low";
+ assert.equal(chatReasoningOptions().reasoning?.effort,"low");
+ assert.equal(novelWriteReasoningOptions().reasoning?.effort,"low");
+ assert.equal(novelPlanReasoningOptions().reasoning?.effort,"medium");
+ assert.equal(reasoningOptions().reasoning?.effort,"medium");
+ process.env.OPENAI_NOVEL_REASONING_EFFORT="high";
+ assert.equal(novelWriteReasoningOptions().reasoning?.effort,"low");
+ assert.equal(novelPlanReasoningOptions().reasoning?.effort,"high");
+ process.env.OPENAI_NOVEL_PLAN_REASONING_EFFORT="medium";
+ assert.equal(novelPlanReasoningOptions().reasoning?.effort,"medium");
+ process.env.OPENAI_NOVEL_WRITE_REASONING_EFFORT="invalid";
+ process.env.OPENAI_CHAT_REASONING_EFFORT="invalid";
+ assert.equal(novelWriteReasoningOptions().reasoning?.effort,"high");
+ assert.equal(chatReasoningOptions().reasoning?.effort,"medium");
+ assert.deepEqual(chatReasoningOptions("gpt-4.1"),{});
+ assert.deepEqual(novelWriteReasoningOptions("gpt-4.1"),{});
+});
 
 test("shared generation quality settings default to medium and remain configurable",t=>{
  const keys=["OPENAI_REASONING_EFFORT","OPENAI_IMAGE_QUALITY","OPENAI_NOVEL_REVIEW_REASONING_EFFORT","OPENAI_NOVEL_REVIEW_MAX_OUTPUT_TOKENS","OPENAI_IMAGE_DESCRIPTION_REASONING_EFFORT"];
@@ -60,15 +85,20 @@ test("JSON instrumentation preserves upstream data and records incomplete/failed
 });
 
 test("tracked chat streams usage before completion and preserves consumed tokens on failed output", async t => {
+ const priorEffort=process.env.OPENAI_CHAT_REASONING_EFFORT;
+ process.env.OPENAI_CHAT_REASONING_EFFORT="low";
+ t.after(()=>{if(priorEffort===undefined)delete process.env.OPENAI_CHAT_REASONING_EFFORT;else process.env.OPENAI_CHAT_REASONING_EFFORT=priorEffort;});
   const old = process.env.OPENAI_API_KEY;
   process.env.OPENAI_API_KEY = "fake";
   t.after(() => { if (old === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = old; });
   const wire = (event: object) => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
-  t.mock.method(globalThis, "fetch", async () => new Response(new ReadableStream({ start(controller) {
+  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+   assert.deepEqual(JSON.parse(String(init?.body)).reasoning,{effort:"low"});
+   return new Response(new ReadableStream({ start(controller) {
     controller.enqueue(wire({ type: "response.output_text.delta", delta: "안녕하세요" }));
     controller.enqueue(wire({ type: "response.incomplete", response: { usage: { input_tokens: 60, output_tokens: 10, total_tokens: 70 } } }));
     controller.close();
-  } })));
+  } })); });
   const response = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json", "X-Track-Usage": "1" },
     body: JSON.stringify({ messages: [{ role: "user", content: "안녕" }] }) }));
   const text = await response.text();

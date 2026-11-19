@@ -1,4 +1,4 @@
-import { openNewFace } from "./character-helpers";
+import { openExistingCharacter } from "./character-helpers";
 import { test, expect } from "@playwright/test";
 import { generateCharacter, enterCharacterMode, storyWire, chapterEvent } from "./character-helpers";
 import type { StoryState } from "../../lib/novel/state";
@@ -113,7 +113,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   expect(bodies).toHaveLength(5);
   await expect(story.getByRole("button", { name: "AI 대화 초기화", exact: true })).toHaveCount(0);
   await expect(story.getByRole("button", { name: "캐릭터 설정", exact: true })).toHaveCount(0);
-  await openNewFace(page);
+  await openExistingCharacter(page);
   await expect(page.getByLabel("캐릭터 이름")).toHaveValue("서하");
   await expect(gender).toHaveValue("여성");
   await expect(page.getByLabel("외모", { exact: true })).toHaveValue("긴 은발, 보라색 눈동자, 갸름한 얼굴");
@@ -121,7 +121,7 @@ test("mobile profile precedes image generation and is shared by chat and story",
   await expect(chat.getByText("오랜만이야", { exact: true })).toBeVisible();
   await page.screenshot({ path: ".verification/character-chat-mobile.png", fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await openNewFace(page);
+  await openExistingCharacter(page);
   await page.getByRole("button", { name: "새 캐릭터 대화" }).click();
   await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toHaveCount(0);
   await expect(page.locator(".character-backdrop")).toHaveCount(0);

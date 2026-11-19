@@ -29,8 +29,8 @@ const storyPhases: Record<string, string> = { planning: "다음 전개 구상 �
 
 type Message = { role: "user" | "assistant"; content: string; checkinId?: string };
 const timelineRequests = new WeakMap<object, AbortController>();
-export default function LiveChat({ character, characterDocumentId, active = true, headingContent, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
-  characterDocumentId?: string; character?: CharacterContext; active?: boolean; headingContent?: ReactNode; session?: ChatSession;
+export default function LiveChat({ character, characterDocumentId, active = true, headingContent, imageOptions, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
+  characterDocumentId?: string; character?: CharacterContext; active?: boolean; headingContent?: ReactNode; imageOptions?:ReactNode; session?: ChatSession;
   onGenerateVisual?: (kind: VisualKind, context: string, scene?: IllustrationScene, selection?: ImageSceneSelection) => Promise<void>;
   imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void;
 }) {
@@ -342,6 +342,7 @@ export default function LiveChat({ character, characterDocumentId, active = true
         })}
       </div>
       {notice && <p className="chat-error" role="status">{notice}</p>}
+      {onGenerateVisual&&imageOptions}
       {imageJob && <div className="character-visual-status" role="status"><span>{imageJob.kind === "illustration" ? "삽화를 그리고 있어요" : "그림을 그리고 있어요"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
       {imageError && <p className="character-visual-error" role="alert">{imageError}</p>}
       {onGenerateVisual && character && (character.mode === "chat" || committed.current.some(message => message.role === "assistant" && message.content.trim())) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {

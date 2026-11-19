@@ -2,6 +2,7 @@
 import {useCheckinInbox} from "./CheckinInbox";
 import CachedImage from "./CachedImage";
 import { imageAssetKey } from "@/lib/platform/image-cache";
+import { cachedCharacterPreviews, characterPreviews } from "@/lib/platform/character-previews";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { BookOpen, ChevronRight, Gift, Heart, Plus, Sparkles, UserRound, UsersRound } from "lucide-react";
@@ -16,16 +17,17 @@ import { isNative } from "@/lib/platform/native";
 export function StudioHomeScreen() { return accountEnabled() ? <CharactersScreen/> : <CharacterCreationScreen/>; }
 
 export function CharactersScreen() {
-  const { account, user, refresh } = useAccount(); const { art, openMenu, flushSave } = useStudioSession();
+  const { account, user, refresh } = useAccount(); const { art, openMenu, flushSave, startNewCharacter } = useStudioSession();
   const unread=useCheckinInbox();
-  const [previews, setPreviews] = useState<Record<string, string>>({}), [error, setError] = useState("");
-  useEffect(() => { if (!user) return; let active = true; void flushSave().catch(() => { if (active) setError("저장된 캐릭터 목록을 새로고침하지 못했습니다."); }); void jsonApi("/api/account?previews=1").then(data => { if (active) setPreviews(data.images ?? {}); }).catch(() => {}); return () => { active = false; }; }, []);
+  const [previewState, setPreviews] = useState(() => ({ owner: user?.id, images: cachedCharacterPreviews(user?.id || "demo") })), [error, setError] = useState("");
+  const previews = previewState.owner === user?.id ? previewState.images : cachedCharacterPreviews(user?.id || "demo");
+  useEffect(() => { if (!user) return; let active = true; const owner = user.id; void flushSave().catch(() => { if (active) setError("저장된 캐릭터 목록을 새로고침하지 못했습니다."); }); void characterPreviews(owner).then(images => { if (active) setPreviews({ owner, images }); }).catch(() => {}); return () => { active = false; }; }, [user?.id]);
   const characters = account?.documents.filter(doc => doc.kind === "studio" || doc.kind === "character") ?? [];
-  return <main className="native-page characters-page"><div className="native-page-title"><div><h1>나의 캐릭터</h1><p>오늘은 누구와 이야기를 나눌까요?</p></div><Link href="/ideal/new" aria-label="새 캐릭터 만들기"><Plus size={23}/></Link></div>
+  return <main className="native-page characters-page"><div className="native-page-title"><div><h1>나의 캐릭터</h1><p>오늘은 누구와 이야기를 나눌까요?</p></div><Link href="/ideal/new" aria-label="새 캐릭터 만들기" onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); startNewCharacter(); }}><Plus size={23}/></Link></div>
     <div className="native-section-title"><h2>함께하는 캐릭터 <span>{characters.length || (art ? 1 : 0)}</span></h2></div>
     <div className="native-character-grid">{art && !characters.some(doc => doc.character_name === art.profile.name) && <button className="native-character-card" type="button" onClick={() => openMenu("image")}><img src={art.url} alt={art.profile.name}/><div><h3>{art.profile.name}</h3><p>우리의 이야기를 이어가요</p><span><Heart size={12}/> 함께하는 중</span></div></button>}
-      {characters.map(doc => <Link className="native-character-card" href={`/ideal/characters/${doc.id}`} key={doc.id}>{(doc.job_id && previews[doc.job_id]) || (art && art.profile.name === doc.character_name && art.url) ? <CachedImage src={(doc.job_id && previews[doc.job_id]) || art?.url || ""} cacheKey={imageAssetKey({ jobId: doc.job_id, id: doc.id }, "thumbnail")} loading="lazy" alt={doc.character_name || doc.title}/> : <div className="character-placeholder"><UserRound size={56}/></div>}<div><div className="character-name-row"><h3>{doc.character_name || doc.title}</h3>{unread[doc.id]>0&&<small className="checkin-arrival-badge">안부 도착</small>}</div><p>대화와 소설을 이어가세요</p><span><BookOpen size={12}/> {Number(doc.chapter) > 0 ? `이야기 ${doc.chapter}편` : "새로운 이야기를 기다려요"}</span></div></Link>)}
-      <Link className="new-character-card" href="/ideal/new"><div><Plus size={32}/></div><h3>새로운 인연</h3><p>나만의 캐릭터 만들기</p></Link>
+      {characters.map(doc => <Link className="native-character-card" href={`/ideal/characters/${doc.id}`} key={doc.id}>{doc.job_id || (art && art.profile.name === doc.character_name && art.url) ? <CachedImage src={(doc.job_id && previews[doc.job_id]) || (art?.profile.name === doc.character_name ? art?.url || "" : "")} cacheKey={imageAssetKey({ jobId: doc.job_id, id: doc.id }, "thumbnail")} loading="lazy" alt={doc.character_name || doc.title}/> : <div className="character-placeholder"><UserRound size={56}/></div>}<div><div className="character-name-row"><h3>{doc.character_name || doc.title}</h3>{unread[doc.id]>0&&<small className="checkin-arrival-badge">안부 도착</small>}</div><p>대화와 소설을 이어가세요</p><span><BookOpen size={12}/> {Number(doc.chapter) > 0 ? `이야기 ${doc.chapter}편` : "새로운 이야기를 기다려요"}</span></div></Link>)}
+      <Link className="new-character-card" href="/ideal/new" onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); startNewCharacter(); }}><div><Plus size={32}/></div><h3>새로운 인연</h3><p>나만의 캐릭터 만들기</p></Link>
     </div>{!characters.length && !art && <div className="native-empty"><UsersRound size={35}/><h2>첫 번째 인연을 만나보세요</h2><p>뉴페이스에서 원하는 캐릭터를 만들 수 있어요.</p></div>}{error && <p role="status">{error}</p>}
   </main>;
 }

@@ -3,7 +3,32 @@ import assert from "node:assert/strict";
 import sharp from "sharp";
 import {createClient} from "@supabase/supabase-js";
 import {ImageBlobCache} from "../lib/platform/image-cache.ts";
+import {ImageViewCache} from "../lib/platform/image-views.ts";
 import {SignedImageCache,thumbnailBytes,thumbnailPath} from "../lib/server/image-assets.ts";
+
+test("display URLs and decoded state survive navigation beyond signed URL expiry, scoped by account", t => {
+ let now=1000;t.mock.method(Date,"now",()=>now);
+ const cache=new ImageViewCache(),blob=new Blob(["image"],{type:"image/webp"});
+ const first=cache.acquire("a","job:1:thumbnail",blob);first.entry.decoded=true;const url=first.entry.url;
+ first.release();now+=6*60*1000;
+ assert.equal(cache.peek("a","job:1:thumbnail")?.url,url);
+ assert.equal(cache.peek("b","job:1:thumbnail"),undefined);
+ const again=cache.acquire("a","job:1:thumbnail",blob);
+ assert.equal(again.entry.url,url);assert.equal(again.entry.decoded,true);
+ again.release();again.release(); // Cleanup is idempotent, including Strict Mode lifecycles.
+ cache.clear();assert.equal(cache.peek("a","job:1:thumbnail"),undefined);
+});
+
+test("display cache bounds retained bytes, protects mounted images and revokes evicted URLs", t => {
+ const revoked:string[]=[];const revoke=URL.revokeObjectURL.bind(URL);
+ t.mock.method(URL,"revokeObjectURL",(url:string)=>{revoked.push(url);revoke(url);});
+ const cache=new ImageViewCache(5,1),blob=new Blob(["12345"],{type:"image/webp"});
+ const first=cache.acquire("a","one",blob),second=cache.acquire("a","two",blob);
+ assert.equal(revoked.length,0);first.release();
+ assert.deepEqual(revoked,[first.entry.url]);assert.equal(cache.peek("a","one"),undefined);
+ assert.equal(cache.peek("a","two")?.url,second.entry.url);
+ second.release();cache.clear();assert.deepEqual(revoked,[first.entry.url,second.entry.url]);
+});
 
 test("generated images are reused without a download and remain account scoped", async()=>{
  const cache=new ImageBlobCache();const blob=new Blob(["generated"],{type:"image/jpeg"});let calls=0;

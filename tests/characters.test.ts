@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import sharp from "sharp";
 import { readFile } from "node:fs/promises";
 import { POST } from "../app/api/characters/route.ts";
+import {imageFramingSchema,framingDirection,defaultImageFraming} from "../lib/characters/framing.ts";
 import { visualInstructions, visualRequestSchema, compositionSchema, OVERLAP_DIRECTION, COMPOSITION_DIRECTION } from "../lib/characters/visual.ts";
 import {
   MAX_CHARACTER_REQUEST,
@@ -424,4 +425,53 @@ test("style-only prompts preserve requested subject without gender defaults", ()
   assert.throws(() =>
     characterBrief.parse({ ...base, prompt: "x".repeat(801) }),
   );
+});
+
+test("image crops validate required focus and override visible anatomy without changing identity or canvas",()=>{
+ assert.equal(framingDirection(defaultImageFraming()),"");
+ assert.equal(imageFramingSchema.safeParse({shot:"detail"}).success,false);
+ assert.equal(imageFramingSchema.safeParse({shot:"invalid"}).success,false);
+ assert.equal(imageFramingSchema.safeParse({shot:"face",expression:"x".repeat(121)}).success,false);
+ const framing=imageFramingSchema.parse({shot:"face",angle:"threeQuarter",expression:"shy smile",pose:"show all legs"});
+ const prompt=buildCharacterPrompt({title:"test",summary:"test",styleProfile:"male",prompt:"A man in a blue shirt."},undefined,framing);
+ assert.match(prompt,/tight face close-up/);assert.match(prompt,/three-quarter view/);assert.match(prompt,/9:16/);
+ assert.match(prompt,/shy smile/);assert.doesNotMatch(prompt,/show all legs/);
+ assert.match(prompt,/do not zoom out/);assert.match(prompt,/Preserve identity, age/);
+ assert.match(framingDirection(imageFramingSchema.parse({shot:"detail",focus:"hand holding a flower"})),/hand holding a flower/);
+});
+
+test("creation, chat and illustration transmit chosen crops to both AI stages with no extra calls",async t=>{
+ const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","OPENAI_IMAGE_QUALITY"],before=keys.map(key=>process.env[key]);
+ Object.assign(process.env,{OPENAI_API_KEY:"fixture",ACCOUNT_FEATURES_ENABLED:"false",OPENAI_IMAGE_QUALITY:"medium"});
+ t.after(()=>keys.forEach((key,i)=>{if(before[i]===undefined)delete process.env[key];else process.env[key]=before[i];}));
+ let now=Date.parse("2032-01-01T00:00:00Z");t.mock.method(Date,"now",()=>now);
+ const jpeg=await sharp({create:{width:720,height:1280,channels:3,background:"#bda8de"}}).jpeg().toBuffer();
+ let calls=0,kind:"outfit"|"illustration"|undefined;
+ const framing=imageFramingSchema.parse({shot:"face",angle:"threeQuarter",expression:"shy smile"});
+ t.mock.method(globalThis,"fetch",async(url:unknown,init?:RequestInit)=>{
+  calls++;
+  if(String(url).endsWith("/moderations")){assert.match(JSON.parse(String(init?.body)).input,/shy smile/);return Response.json({results:[{categories:{}}]});}
+  if(String(url).endsWith("/responses")){
+   const body=JSON.parse(String(init?.body));assert.match(body.instructions,/tight face close-up/);
+   assert.deepEqual(JSON.parse(body.input[0].content[0].text).framing,framing);
+   const brief={title:"새 구도",summary:"얼굴 중심",styleProfile:"male",prompt:"A man in a blue shirt.",...(kind?{characterPresent:true,pose:"standing, arms at sides",framing:"full body",sceneLocation:"cafe",locationSource:kind==="outfit"?"conversation":"narrative"}:{}),...(kind==="outfit"?{outfit:"blue shirt",outfitSource:"conversation"}:{})};
+   return Response.json({status:"completed",output:[{content:[{type:"output_text",text:JSON.stringify(brief)}]}]});
+  }
+  const body=init?.body instanceof FormData?Object.fromEntries(init.body.entries()):JSON.parse(String(init?.body));
+  assert.match(String(body.prompt),/tight face close-up/);assert.match(String(body.prompt),/three-quarter view/);
+  assert.match(String(body.prompt),/only visible outfit details|only visible clothing details/);
+  assert.equal(body.size,"720x1280");assert.equal(body.quality,"medium");
+  return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
+ });
+ const make=()=>{const form=new FormData();form.set("messages",JSON.stringify([{role:"user",content:"민수의 얼굴을 그려줘"}]));form.set("profile",JSON.stringify({name:"민수",age:25,gender:"남성",personality:"다정함",concept:"카페의 친구"}));return form;};
+ for(const value of [undefined,"outfit","illustration"] as const){
+  kind=value;now+=60001;const form=make();
+  if(kind){form.set("image",new Blob([jpeg],{type:"image/jpeg"}),"original.jpg");form.set("scene",JSON.stringify({kind,context:"민수는 카페 창가에 있다.",selection:{confirmed:true,location:"카페",characters:["민수"],target:"민수",profileName:"민수",userNames:["당신"],framing}}));}
+  else form.set("framing",JSON.stringify(framing));
+  const previous=calls,response=await POST(new Request("http://localhost/api/characters",{method:"POST",body:form}));
+  assert.equal(response.status,200,response.status!==200?`${kind}: ${await response.text()}`:undefined);await response.arrayBuffer();assert.equal(calls-previous,3);
+  if(kind)assert.match(JSON.parse(decodeURIComponent(response.headers.get("X-Character-Composition")!)).framing,/tight face close-up/);
+ }
+ now+=60001;const invalid=make();invalid.set("framing",JSON.stringify({shot:"detail"}));const previous=calls;
+ assert.equal((await POST(new Request("http://localhost/api/characters",{method:"POST",body:invalid}))).status,400);assert.equal(calls,previous);
 });

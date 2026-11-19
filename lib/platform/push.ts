@@ -2,10 +2,12 @@
 import {isNative} from "./native";
 import {apiFetch} from "./api";
 import {invalidateApiReads} from "./commerce";
+import {notificationSync,readNotificationSync} from "./notification-sync";
 import {nextLocalPlans,pendingPlans,consumeLocalPlan,type LocalState,type LocalSettings} from "../notifications/local-checkins";
 const NOTIFICATION_ID=197003;
 type State=LocalState;
 let owner:string|undefined,epoch=0,queue:Promise<unknown>=Promise.resolve();
+let flight:{owner:string;epoch:number;promise:Promise<string|undefined>}|undefined;
 function serial<T>(work:()=>Promise<T>){const next=queue.catch(()=>undefined).then(work);queue=next;return next;}
 function read(userId:string):State{
  try{const data=JSON.parse(localStorage.getItem(`maite-local-checkins:${userId}`)||"null");return data&&Array.isArray(data.outbox)?data:{outbox:[]};}catch{return {outbox:[]};}
@@ -13,6 +15,7 @@ function read(userId:string):State{
 function write(userId:string,state:State){localStorage.setItem(`maite-local-checkins:${userId}`,JSON.stringify(state));}
 export function localCheckinStatus(userId:string){try{return localStorage.getItem(`maite-checkin-status:${userId}`)||"안부 예약을 확인하고 있어요.";}catch{return "안부 예약을 확인하고 있어요.";}}
 export function updateCheckinStatus(userId:string,message:string){
+ if(localCheckinStatus(userId)===message)return;
  try{localStorage.setItem(`maite-checkin-status:${userId}`,message);}catch{/* Storage can be unavailable. */}
  window.dispatchEvent(new Event("maite-checkin-status"));
 }
@@ -20,7 +23,7 @@ async function notificationApi(path:string,body?:object){
  const response=await apiFetch(path,{...(body?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(8000)});
  const data=await response.json();if(!response.ok)throw new Error(data.error||"알림 연결을 확인해주세요.");return data;
 }
-export function activateLocalCheckins(userId:string){if(owner!==userId){owner=userId;epoch++;}}
+export function activateLocalCheckins(userId:string){if(owner!==userId){owner=userId;epoch++;}notificationSync.activate(userId);}
 export async function registerPush(requestPermission:boolean){
  if(!isNative())return;
  const {LocalNotifications}=await import("@capacitor/local-notifications");
@@ -28,9 +31,10 @@ export async function registerPush(requestPermission:boolean){
  if(permission.display!=="granted"&&requestPermission)permission=await LocalNotifications.requestPermissions();
  if(permission.display!=="granted"&&requestPermission)throw new Error("기기 설정에서 알림 권한을 허용해주세요.");
 }
-export function syncLocalCheckins(userId:string){
+export function syncLocalCheckins(userId:string,nickname?:string){
  const revision=epoch;
- return serial(async()=>{
+ if(flight?.owner===userId&&flight.epoch===revision)return flight.promise;
+ const promise=serial(async()=>{
   if(owner!==userId||revision!==epoch)return;
   const LocalNotifications=isNative()?(await import("@capacitor/local-notifications")).LocalNotifications:undefined;
   const now=Date.now(),state=consumeLocalPlan(read(userId),now);write(userId,state);
@@ -42,12 +46,14 @@ export function syncLocalCheckins(userId:string){
     catch { break; /* Retain failed receipts; another character can still be recorded. */ }
    }
   }));
-  if(recorded){invalidateApiReads();if(owner===userId&&revision===epoch)window.dispatchEvent(new Event("maite-checkins-refresh"));}
+  if(recorded){invalidateApiReads();notificationSync.invalidate(userId);if(owner===userId&&revision===epoch)window.dispatchEvent(new Event("maite-checkins-refresh"));}
   if(owner!==userId||revision!==epoch)return;
-  const settings:LocalSettings=await notificationApi("/api/notifications?schedule=1");
+  const settings:LocalSettings|undefined=await readNotificationSync(userId);
+  if(!settings)return;
   if(owner!==userId||revision!==epoch)return;
   const granted=!LocalNotifications||(await LocalNotifications.checkPermissions()).display==="granted";
-  const plans=granted?nextLocalPlans(userId,settings,state,now):[];
+  // Profile edits can be newer than the signed token's cosmetic nickname claim.
+  const plans=granted?nextLocalPlans(userId,{...settings,nickname:nickname?.trim()||settings.nickname},state,now):[];
   const next=plans[0];
   updateCheckinStatus(userId,!settings.pushEnabled?"앱 알림이 꺼져 있어요.":!granted?"기기 설정에서 알림 권한을 허용해주세요.":!settings.activities.length?"캐릭터와 대화를 마치면 안부를 예약해요.":next?`다음 안부: ${new Date(next.dueAt).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})} (한국시간) · ${plans.length}명 예약` :"지난 안부에 답장하면 다음 안부를 예약해요.");
   const previous=pendingPlans(state);
@@ -69,10 +75,12 @@ export function syncLocalCheckins(userId:string){
    await LocalNotifications?.schedule({notifications:plans.map(plan=>({id:state.notificationIds![plan.documentId],title:plan.characterName,body:plan.body,channelId:"character-checkins",smallIcon:"ic_stat_checkin",autoCancel:true,schedule:{at:new Date(plan.dueAt),allowWhileIdle:true},isExactNotification:false,extra:{userId,documentId:plan.documentId,checkinId:plan.id}}))});
   }catch(error){state.pending=undefined;state.pendingOthers=[];write(userId,state);throw error;}
   return next?.dueAt;
- });
+ }).finally(()=>{if(flight?.promise===promise)flight=undefined;});
+ flight={owner:userId,epoch:revision,promise};return promise;
 }
 export function unregisterPush(){
  const previous=owner;owner=undefined;epoch++;
+ notificationSync.activate(undefined);
  return serial(async()=>{
   if(isNative()){
    const {LocalNotifications}=await import("@capacitor/local-notifications");

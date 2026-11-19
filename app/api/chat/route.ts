@@ -1,6 +1,6 @@
 import { changedCharacterLocation } from "../../../lib/chat/presentation.ts";
 import { timelineSchema, advanceTimeline, timelineChatMemory,timelineForChat } from "../../../lib/chat/timeline.ts";
-import { reasoningOptions, textModel } from "../../../lib/ai-model.ts";
+import { chatReasoningOptions, textModel } from "../../../lib/ai-model.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import { z } from "zod";
@@ -13,6 +13,8 @@ import { streamedDialogue } from "../../../lib/chat/dialogue.ts";
 import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
 import { storyComplete } from "../../../lib/novel/series.ts";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
+import {chatCharacterInstructions} from "../../../lib/chat/prompt.ts";
+import {personalityPatchSchema,personalityState} from "../../../lib/chat/personality.ts";
 import { userDisplayName } from "../../../lib/chat/identity.ts";
 import {completeCharacterReply,completedDialogueText} from "../../../lib/chat/completion.ts";
 
@@ -98,6 +100,7 @@ async function handle(request: Request) {
           publishUsage = record => send({ type: "usage", record });
           try {
             const chapter = await generateChapter({ character, state: storyState, additionalConcept,
+              traceId:request.headers.get("X-Request-Id")??undefined,
               previous: messages.filter(message => message.role === "assistant").at(-1)?.content,
               direction: messages.at(-1)!.content, key, signal,
               phase: phase => { stage = phase; send({ type: "phase", phase }); }, onUsage, timeline,
@@ -124,13 +127,17 @@ async function handle(request: Request) {
     }
     const requestedSpeech = explicitSpeechRequest(messages.at(-1)!.content);
     const speechPolicy = character?.mode === "chat" ? replySpeechPolicy(character, messages, speechStyle, speechPreference) : undefined;
-    const registerInstructions = `Before continuity and utterances, select speechStyle for THIS reply and use it consistently throughout. Current register: ${speechStyle ?? "unset"}. Clear direct request: ${requestedSpeech ?? "none"}. The latest request addressed to the CHARACTER overrides the current register. Interpret negations, quotations, hypotheticals and third-party speech in context; asking the user to speak casually is not a request to change your register. Otherwise follow the Korean register priority and personality-based initial choice specified above; preserve an agreed register unless the concept or conversation establishes a change. Never mix polite and casual endings or switch merely because of mood. After utterances, set clothingMentioned from ONLY the latest user message and this reply when the CHARACTER has changed clothes, chosen a new outfit, or is explicitly asked to wear/change an outfit (including uncommon garments). Exclude unchanged outfits, compliments, incidental names, unrelated homonyms, metaphors, other people's clothing and old memory. Set locationChanged when this exchange establishes a new/current changed location for the CHARACTER or a shared scene. Distinguish actual arrival/move from plans, invitations, flashbacks, negated moves, absent NPC places or the user moving alone. Do not require outfit changes for a location change. No explanations.`;
+    const registerInstructions = `Before continuity/utterances, select speechStyle. Current=${speechStyle??"unset"}; latest clear request=${requestedSpeech??"none"}. Respect personality, concept and relationship and the register priority; quotations, negations and the user's own register are not switches. Privately resolve intent/actor/target against supplied facts. After dialogue, set clothingMentioned/locationChanged only for newly established character outfits/locations in THIS exchange, not old memory, compliments, plans, flashbacks, negations or another person moving alone.`;
     const originalMemory = character?.mode === "chat" ? chatMemory ?? emptyChatMemory(character.name) : undefined;
     const rawMemory = originalMemory ? { ...originalMemory, participants: originalMemory.participants.map(p => p.id === "user" ? { ...p, name: userName } : p.id==="character"&&character?{...p,name:character.name}:p) } : undefined;
     const memory = rawMemory && timeline ? timelineChatMemory(rawMemory, timelineForChat(timeline,messages.at(-1)!.content)) : rawMemory;
     const factIds=memory?.facts.map(fact=>fact.id)??[];
     const continuity=characterDialogueSchema.shape.continuity.extend({factIds:factIds.length?z.array(z.enum(factIds as [string,...string[]])).max(4):characterDialogueSchema.shape.continuity.shape.factIds.max(0)});
-    const outputSchema=characterDialogueSchema.extend({continuity,memory:characterDialogueSchema.shape.memory.required({personality:true}),...(speechPolicy?.style?{speechStyle:z.literal(speechPolicy.style)}:{})});
+    const personality=character&&personalityState(character,memory?.personality).profile?personalityPatchSchema.extend({profile:z.null(),profileEvidence:z.literal("")}):personalityPatchSchema;
+    const outputSchema=characterDialogueSchema.extend({continuity,memory:characterDialogueSchema.shape.memory.extend({personality}),...(speechPolicy?.style?{speechStyle:z.literal(speechPolicy.style)}:{})});
+    const instructions=[character?.mode==="chat"?chatCharacterInstructions(character):characterInstructions(character),...(character?.mode==="chat"?[registerInstructions,...(speechPolicy?.style?[speechInstructions(speechPolicy.style),"This register is fixed for this reply; mood/user sentence endings do not authorize switching."]:[])]:[]),...(memory&&character?[conversationInstructions(character,memory,messages.at(-1)!.content,timeline)]:[])].join("\n\n");
+    const formatSchema=character?.mode==="chat"?z.toJSONSchema(outputSchema):undefined;
+    if(character?.mode==="chat")console.info("chat-context",{instructionChars:instructions.length,schemaChars:JSON.stringify(formatSchema).length,historyChars:messages.reduce((sum,m)=>sum+m.content.length,0),facts:memory?.facts.length??0,sharedEvents:timeline?.canon?.length??0,profileCached:!!personalityState(character,memory?.personality).profile});
     finishReply = trackUsage("chat.reply", textModel(), onUsage);
     const upstream = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -138,11 +145,10 @@ async function handle(request: Request) {
       signal,
       body: JSON.stringify({
         model: textModel(), stream: true, store: false,
-        ...reasoningOptions(), max_output_tokens: 2000,
-        instructions: [characterInstructions(character), ...(character?.mode === "chat" ? [registerInstructions, ...(speechPolicy?.style ? [speechInstructions(speechPolicy.style), "This register is fixed for this reply. Ordinary tone, affection, mood and casual user speech do not authorize changing it."] : [])] : []),
-          ...(memory && character ? [conversationInstructions(character, memory, messages.at(-1)!.content, timeline)] : [])].join("\n\n"),
+        ...chatReasoningOptions(), max_output_tokens: 2000,
+        instructions,
         input: messages,
-        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: z.toJSONSchema(outputSchema) } } } : {}),
+        ...(character?.mode === "chat" ? { text: { format: { type: "json_schema", name: "character_dialogue", strict: true, schema: formatSchema } } } : {}),
       }),
     });
     if (!upstream.ok || !upstream.body) {

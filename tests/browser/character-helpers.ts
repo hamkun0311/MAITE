@@ -22,7 +22,7 @@ export async function fillCharacterProfile(page: Page) {
 }
 
 export async function startNewCharacter(page: Page) {
-  await openNewFace(page);
+  await openExistingCharacter(page);
   await page.getByRole("button", { name: "새 캐릭터 대화", exact: true }).click();
   await expect(page).toHaveURL(/\/ideal$/);
   await expect(page.getByLabel("나이", { exact: true })).toHaveValue("");
@@ -30,9 +30,12 @@ export async function startNewCharacter(page: Page) {
   await enterCharacterMode(page);
 }
 
-export async function openNewFace(page: Page) {
+export async function openExistingCharacter(page: Page) {
   await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"캐릭터",exact:true}).click();
-  await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
+  await expect(page.getByRole("heading",{name:"나의 캐릭터",exact:true})).toBeVisible();
+  const selected=page.locator("button.native-character-card");
+  if(await selected.count())await selected.click();
+  else await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
 }
 
 export async function generateCharacter(page: Page) {

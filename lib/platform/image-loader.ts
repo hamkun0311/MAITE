@@ -5,6 +5,15 @@ import { persistentImages } from "./persistent-images";
 
 export function loadAccountImage(scope: string, key: string, url: string) {
   const revision = persistentImages.revision;
+  const memory = imageBlobs.peek(scope, key);
+  if (memory) return Promise.resolve(memory);
+  // Cache-only misses must not join (and fail) a concurrent real download.
+  if (!url) {
+    return persistentImages.get(scope, key).then(blob => {
+      if (!blob || persistentImages.revision !== revision) throw new Error("이미지 캐시가 없습니다.");
+      imageBlobs.put(scope, key, blob); return blob;
+    });
+  }
   return imageBlobs.get(scope, key, url, async (input, init) => {
     const cached = await persistentImages.get(scope, key);
     return cached ? new Response(cached) : fetch(input, init);
