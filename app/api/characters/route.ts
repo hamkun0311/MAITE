@@ -119,8 +119,13 @@ async function handle(request: Request) {
       JSON.parse(String(form.get("messages") || "null")),
     );
     const profile = form.has("profile") ? characterProfileSchema.parse(JSON.parse(String(form.get("profile")))) : undefined;
-    const scene = form.has("scene") ? visualRequestSchema.parse(JSON.parse(String(form.get("scene")))) : undefined;
-    const framing=form.has("framing")?imageFramingSchema.parse(JSON.parse(String(form.get("framing")))):scene?.selection?.framing;
+    const sceneInput=form.has("scene")?JSON.parse(String(form.get("scene"))):undefined;
+    // Old tabs may still send crop settings: only novel illustrations use them.
+    if(sceneInput?.kind!=="illustration"&&sceneInput?.selection&&typeof sceneInput.selection==="object"&&!Array.isArray(sceneInput.selection)){
+      const {framing:_ignored,...selection}=sceneInput.selection;sceneInput.selection=selection;
+    }
+    const scene = form.has("scene") ? visualRequestSchema.parse(sceneInput) : undefined;
+    const framing=scene?.kind==="illustration"?(form.has("framing")?imageFramingSchema.parse(JSON.parse(String(form.get("framing")))):scene.selection?.framing):undefined;
     if (messages.at(-1)?.role !== "user")
       throw new RequestError("캐릭터 설명을 입력해주세요.", 400);
     const priorProfile = form.get("previousStyle");

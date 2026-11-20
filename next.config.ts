@@ -4,6 +4,7 @@ const nextConfig: NextConfig = {
   distDir: process.env.MAITE_TEST_MODE === "1" ? ".next-test" : ".next",
   devIndicators: false,
   outputFileTracingIncludes: {
+    "/api/chat": ["./novel_prompt.md"],
     "/api/characters": ["./public/references/anime-style.png", "./public/references/female-nurse-style.jpg"],
   },
   webpack(config) {

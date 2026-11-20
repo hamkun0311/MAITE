@@ -42,7 +42,7 @@ export function mergePersonality(character:Profile,old:PersonalityState|undefine
  }
  return personalityStateSchema.parse(next);
 }
-export const personalityRules=`PERSONALITY IN ACTION: Explicit settings outrank derived traits and genre. Let motives, vulnerabilities and established events shape interpretation, choices and causal emotions; no automatic assent, generic counseling, forced questions or repeated tics. First address the actual user words; advance a relevant character-specific goal when useful. Fictional attachment traits are not diagnoses or permission for threats, isolation or real-user dependency. Preserve consent and the user's choices; check current facts/register privately before utterances.`;
+export const personalityRules=`PERSONALITY IN ACTION: Explicit settings outrank derived traits and genre. Let motives, vulnerabilities and established events shape interpretation, choices and causal emotions; no automatic assent, generic counseling, forced questions or repeated tics. First address the actual user words; advance a relevant character-specific goal when useful. Fictional characters may have flaws, not diagnoses; preserve real-user autonomy and explicit boundaries. Preserve consent and the user's choices; check current facts/register privately before utterances.`;
 export function personalityInstructions(character:Profile,old?:PersonalityState){
  const state=personalityState(character,old);
  const {profileKey:_key,...context}=state;

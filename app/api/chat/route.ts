@@ -1,6 +1,7 @@
+import {createNovelReviewLogger} from "../../../lib/novel/review-log.ts";
 import { changedCharacterLocation } from "../../../lib/chat/presentation.ts";
 import { timelineSchema, advanceTimeline, timelineChatMemory,timelineForChat } from "../../../lib/chat/timeline.ts";
-import { chatReasoningOptions, textModel } from "../../../lib/ai-model.ts";
+import { chatReasoningOptions, geminiNovelWriteModel, textModel } from "../../../lib/ai-model.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import { z } from "zod";
@@ -81,6 +82,8 @@ async function handle(request: Request) {
       }
     } finally { reader.releaseLock(); }
     const { messages, character, storyState, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (character?.mode === "story" && geminiNovelWriteModel() && !process.env.GEMINI_API_KEY?.trim())
+      return fail("서버에 GEMINI_API_KEY를 설정해주세요.", 503);
     if (character?.mode !== "story") signal = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
     const userName = character ? userDisplayName(character, additionalConcept || storyState?.seriesConcept) : "당신";
     const timeline = rawTimeline ? { ...rawTimeline, participants: rawTimeline.participants.map(p => p.id === "user" ? { ...p, name: userName } : p.id==="character"&&character?{...p,name:character.name}:p) } : undefined;
@@ -109,7 +112,7 @@ async function handle(request: Request) {
             send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter });
             send({ type: "done" });
           } catch (error) {
-            const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Invalid chapter length", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
+            const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
             console.warn("novel-failed", { stage, reason: signal.aborted ? "cancelled_or_timeout" : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });
             if (!request.signal.aborted && !abort.signal.aborted)
               controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", ...(error instanceof NovelOutputLimitError ? { code: "output_token_limit" } : {}), message: error instanceof NovelOutputLimitError ? "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." : "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." })}\n\n`));
@@ -197,6 +200,14 @@ async function handle(request: Request) {
                 clothingMentioned = result.reply.clothingMentioned;
                 nextMemory = result.memory;
                 nextSharedTimeline=result.timeline;
+                if (timeline) {
+                  const nextPromises = nextSharedTimeline?.promises ?? timeline.promises;
+                  createNovelReviewLogger({traceId:request.headers.get("X-Request-Id")??undefined}).event("chat_promise_update", {
+                    beforeRevision:timeline.revision, afterRevision:nextSharedTimeline?.revision ?? timeline.revision,
+                    beforeCount:timeline.promises.length, afterCount:nextPromises.length, degraded:result.degraded ?? null,
+                    keys:nextPromises.map(p=>({key:p.key,subjectId:p.subjectId,objectId:p.objectId})),
+                  }, {promises:nextPromises});
+                }
                 locationChanged = result.reply.locationChanged || changedCharacterLocation(memory, nextMemory);
                 if(result.degraded)console.warn("chat-metadata-discarded",{reason:result.degraded,turn:memory!.turn});
               }

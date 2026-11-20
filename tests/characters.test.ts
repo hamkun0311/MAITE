@@ -440,7 +440,7 @@ test("image crops validate required focus and override visible anatomy without c
  assert.match(framingDirection(imageFramingSchema.parse({shot:"detail",focus:"hand holding a flower"})),/hand holding a flower/);
 });
 
-test("creation, chat and illustration transmit chosen crops to both AI stages with no extra calls",async t=>{
+test("only illustrations apply camera settings; legacy creation and chat settings are ignored without extra calls",async t=>{
  const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","OPENAI_IMAGE_QUALITY"],before=keys.map(key=>process.env[key]);
  Object.assign(process.env,{OPENAI_API_KEY:"fixture",ACCOUNT_FEATURES_ENABLED:"false",OPENAI_IMAGE_QUALITY:"medium"});
  t.after(()=>keys.forEach((key,i)=>{if(before[i]===undefined)delete process.env[key];else process.env[key]=before[i];}));
@@ -450,28 +450,29 @@ test("creation, chat and illustration transmit chosen crops to both AI stages wi
  const framing=imageFramingSchema.parse({shot:"face",angle:"threeQuarter",expression:"shy smile"});
  t.mock.method(globalThis,"fetch",async(url:unknown,init?:RequestInit)=>{
   calls++;
-  if(String(url).endsWith("/moderations")){assert.match(JSON.parse(String(init?.body)).input,/shy smile/);return Response.json({results:[{categories:{}}]});}
+  if(String(url).endsWith("/moderations")){if(kind==="illustration")assert.match(JSON.parse(String(init?.body)).input,/shy smile/);else assert.doesNotMatch(JSON.parse(String(init?.body)).input,/shy smile/);return Response.json({results:[{categories:{}}]});}
   if(String(url).endsWith("/responses")){
-   const body=JSON.parse(String(init?.body));assert.match(body.instructions,/tight face close-up/);
-   assert.deepEqual(JSON.parse(body.input[0].content[0].text).framing,framing);
+   const body=JSON.parse(String(init?.body)),input=JSON.parse(body.input[0].content[0].text);
+   if(kind==="illustration"){assert.match(body.instructions,/tight face close-up/);assert.deepEqual(input.framing,framing);}
+   else{assert.doesNotMatch(body.instructions,/USER IMAGE FRAMING/);assert.equal(input.framing,undefined);assert.equal(input.scene?.selection?.framing,undefined);}
    const brief={title:"새 구도",summary:"얼굴 중심",styleProfile:"male",prompt:"A man in a blue shirt.",...(kind?{characterPresent:true,pose:"standing, arms at sides",framing:"full body",sceneLocation:"cafe",locationSource:kind==="outfit"?"conversation":"narrative"}:{}),...(kind==="outfit"?{outfit:"blue shirt",outfitSource:"conversation"}:{})};
    return Response.json({status:"completed",output:[{content:[{type:"output_text",text:JSON.stringify(brief)}]}]});
   }
   const body=init?.body instanceof FormData?Object.fromEntries(init.body.entries()):JSON.parse(String(init?.body));
-  assert.match(String(body.prompt),/tight face close-up/);assert.match(String(body.prompt),/three-quarter view/);
-  assert.match(String(body.prompt),/only visible outfit details|only visible clothing details/);
+  if(kind==="illustration"){assert.match(String(body.prompt),/tight face close-up/);assert.match(String(body.prompt),/three-quarter view/);assert.match(String(body.prompt),/only visible outfit details|only visible clothing details/);}
+  else assert.doesNotMatch(String(body.prompt),/USER IMAGE FRAMING/);
   assert.equal(body.size,"720x1280");assert.equal(body.quality,"medium");
   return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
  });
  const make=()=>{const form=new FormData();form.set("messages",JSON.stringify([{role:"user",content:"민수의 얼굴을 그려줘"}]));form.set("profile",JSON.stringify({name:"민수",age:25,gender:"남성",personality:"다정함",concept:"카페의 친구"}));return form;};
  for(const value of [undefined,"outfit","illustration"] as const){
   kind=value;now+=60001;const form=make();
-  if(kind){form.set("image",new Blob([jpeg],{type:"image/jpeg"}),"original.jpg");form.set("scene",JSON.stringify({kind,context:"민수는 카페 창가에 있다.",selection:{confirmed:true,location:"카페",characters:["민수"],target:"민수",profileName:"민수",userNames:["당신"],framing}}));}
-  else form.set("framing",JSON.stringify(framing));
+  if(kind){form.set("image",new Blob([jpeg],{type:"image/jpeg"}),"original.jpg");form.set("scene",JSON.stringify({kind,context:"민수는 카페 창가에 있다.",selection:{confirmed:true,location:"카페",characters:["민수"],target:"민수",profileName:"민수",userNames:["당신"],framing:kind==="illustration"?framing:{shot:"detail"}}}));}
+  else form.set("framing",JSON.stringify({shot:"detail"}));
   const previous=calls,response=await POST(new Request("http://localhost/api/characters",{method:"POST",body:form}));
   assert.equal(response.status,200,response.status!==200?`${kind}: ${await response.text()}`:undefined);await response.arrayBuffer();assert.equal(calls-previous,3);
-  if(kind)assert.match(JSON.parse(decodeURIComponent(response.headers.get("X-Character-Composition")!)).framing,/tight face close-up/);
+  if(kind==="illustration")assert.match(JSON.parse(decodeURIComponent(response.headers.get("X-Character-Composition")!)).framing,/tight face close-up/);
  }
- now+=60001;const invalid=make();invalid.set("framing",JSON.stringify({shot:"detail"}));const previous=calls;
+ now+=60001;const invalid=make();invalid.set("scene",JSON.stringify({kind:"illustration",context:"민수는 카페에 있다.",selection:{characters:["민수"],target:"민수",framing:{shot:"detail"}}}));const previous=calls;
  assert.equal((await POST(new Request("http://localhost/api/characters",{method:"POST",body:invalid}))).status,400);assert.equal(calls,previous);
 });

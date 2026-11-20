@@ -6,6 +6,7 @@ import { jsonApi, invalidateApiReads } from "@/lib/platform/commerce";
 import { isNative } from "@/lib/platform/native";
 import type { AccountData } from "@/lib/account/library";
 import ProfileSetup, { ProfileEditModal } from "./ProfileSetup";
+import {useScreenLoading} from "./ScreenLoading";
 import type { UserProfile } from "@/lib/account/profile";
 import type { StudioSnapshot } from "@/lib/platform/snapshot";
 import type { LibraryDocument } from "@/lib/account/library";
@@ -30,6 +31,8 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
   const active = useRef<string | undefined>(undefined); const pending = useRef<Promise<void> | undefined>(undefined);
   const checkedDay = useRef(""); const dailyPending = useRef(false);
   const hasAccount=!!account,profileReady=account?.profile?.onboarded!==false;
+  const preparingImages=!!(enabled&&user&&account&&profileReady&&account.documents.some(doc=>(doc.kind==="studio"||doc.kind==="character")&&doc.job_id)&&(imagePreparation?.owner!==user.id||!imagePreparation.ready));
+  useScreenLoading(enabled&&(!ready||(busy&&!user)||(!!user&&((!account&&!error)||preparingImages))));
   useEffect(()=>{
     if(!enabled||!user||!hasAccount||!profileReady)return;
     const owner=user.id;let alive=true;
@@ -116,7 +119,7 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
     } catch (error) { setError(error instanceof Error ? error.message : "로그인하지 못했습니다."); } finally { setBusy(false); }
   }
   async function logout() { await unregisterPush().catch(() => undefined); const { error } = await client!.auth.signOut(); if (error) throw error; router.replace("/ideal"); }
-  if (enabled && (!ready || !user)) return <main className="login-screen"><div className="login-card"><span className="login-brand">maite.</span><h1>당신의 상상, <br/> 시작되는 이야기</h1><p>캐릭터를 만들고, 대화하고, 당신만의 소설을 완성하세요.</p>{ready ? <button disabled={busy || !client} onClick={() => void login()}>{busy ? "로그인 연결 중…" : "Google로 로그인"}</button> : <p role="status">로그인 확인 중…</p>}{(!client || error) && <p role="alert">{error || "로그인 설정을 확인해주세요."}</p>}</div></main>;
+  if (enabled && (!ready || !user)) return <main className="login-screen"><div className="login-card"><span className="login-brand">maite.</span><h1>당신의 상상, <br/> 시작되는 이야기</h1><p>캐릭터를 만들고, 대화하고, 당신만의 소설을 완성하세요.</p>{ready ? <button disabled={busy || !client} onClick={() => void login()}>Google로 로그인</button> : null}{(!client || error) && <p role="alert">{error || "로그인 설정을 확인해주세요."}</p>}</div></main>;
   async function saveProfile(profile: UserProfile, photo?: File | null) {
     const owner = active.current;
     let avatar: { avatarUrl?: string | null } = {};
@@ -132,8 +135,8 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
     setAccount(current => current && ({ ...current, ...avatar, profile: { ...current.profile, display_name: profile.nickname, gender: profile.gender, age: profile.age, onboarded: true } }));
     const first = account?.profile?.onboarded === false; setEditing(false); if (first) router.replace("/ideal/characters");
   }
-  if (enabled && user && !account) return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">{error || "당신의 이야기를 준비하고 있어요"}</p>{error && <button onClick={() => { setError(""); void refresh().catch(() => setError("계정 연결을 확인해주세요.")); }}>다시 시도</button>}</main>;
+  if (enabled && user && !account) return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span>{error && <p role="alert">{error}</p>}{error && <button onClick={() => { setError(""); void refresh().catch(() => setError("계정 연결을 확인해주세요.")); }}>다시 시도</button>}</main>;
   if (enabled && user && account?.profile?.onboarded === false) return <ProfileSetup initial={{ nickname: account.profile.display_name }} onSave={saveProfile}/>;
-  if(enabled&&user&&account?.documents.some(doc=>(doc.kind==="studio"||doc.kind==="character")&&doc.job_id)&&(imagePreparation?.owner!==user.id||!imagePreparation.ready))return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span><p role="status">캐릭터 이미지를 준비하고 있어요{imagePreparation?.owner===user.id?` · ${imagePreparation.loaded}/${imagePreparation.total}`:""}</p></main>;
+  if(preparingImages)return <main className="native-standalone account-preparing" aria-busy="true"/>;
   return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal avatarUrl={account?.avatarUrl} initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"] }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
 }

@@ -1,5 +1,6 @@
 "use client";
 import CheckinInbox from "./CheckinInbox";
+import {useScreenLoading} from "./ScreenLoading";
 import PushBridge from "./PushBridge";
 import TokenUsage from "./TokenUsage";
 import CachedImage from "./CachedImage";
@@ -12,8 +13,6 @@ import { useAccount } from "./AccountProvider";
 import { jsonApi } from "@/lib/platform/commerce";
 import { apiFetch } from "@/lib/platform/api";
 import { imageAssetKey } from "@/lib/platform/image-cache";
-import ImageFramingFields from "./ImageFramingFields";
-import {defaultImageFraming,imageFramingSchema,type ImageFraming} from "@/lib/characters/framing";
 import { loadAccountImage } from "@/lib/platform/image-loader";
 import { accountEnabled } from "@/lib/account/client";
 import { isNative, saveFile } from "@/lib/platform/native";
@@ -80,8 +79,9 @@ export function CharacterGalleryScreen() {
 }
 export function CharacterActivityScreen({ mode }: { mode: "chat" | "story" }) {
   const { art, activityRestoring, activityRestoreError } = useStudioSession();
+  useScreenLoading(activityRestoring);
   if (art) return null; // The layout owns the mounted activity so navigation keeps generation alive.
-  if(activityRestoring)return <main className="character-missing"><p role="status">이야기를 불러오고 있어요…</p></main>;
+  if(activityRestoring)return <main className="character-missing" aria-busy="true"/>;
   if(activityRestoreError)return <main className="character-missing"><p role="alert">{activityRestoreError}</p><Link href="/ideal/characters">나의 캐릭터에서 다시 선택</Link></main>;
   return <main className="character-missing"><h1>캐릭터를 먼저 만들어주세요.</h1><p>생성한 캐릭터로 대화와 이야기를 시작할 수 있습니다.</p><Link href="/ideal">캐릭터 생성으로 이동</Link></main>;
 }
@@ -99,6 +99,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   const currentPath=useRef(pathname);currentPath.current=pathname;
   const restoreAttempt=useRef("");
   const [activityRestore,setActivityRestore]=useState<{path:string;loading:boolean;error:string}>();
+  const [documentLoad,setDocumentLoad]=useState<{path:string;loading:boolean}>();
+  useScreenLoading(!!documentLoad?.loading&&documentLoad.path===pathname);
   const sessions = useRef(createStudioSessions());
   const documentId = useRef<string>(crypto.randomUUID());
   const suppressedDocuments = useRef(new Set<string>());
@@ -121,7 +123,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   const result = useRef<HTMLElement>(null);
   const profileFields = useRef<HTMLFieldSetElement>(null);
   const [draft, setDraft] = useState({ name: "", age: "", gender: "", appearance: "", personality: "", concept: "" });
-  const [framing,setFraming]=useState<ImageFraming>(defaultImageFraming);
   function focusCreation(target: "result" | "profile") {
     requestAnimationFrame(() => {
       if (target === "profile") {
@@ -178,7 +179,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     const url = URL.createObjectURL(blob); visuals.registerOriginal(blob, url, data.art.title, data.art);
     const metadataRows = gallery.length === data.gallery.length ? data.gallery : data.gallery.filter(image => image.id !== "original");
     visuals.restoreImages(gallery.flatMap((image, index) => { const metadata = data.gallery.find(meta => meta.id === image.id) ?? metadataRows[index]; return metadata ? [{ ...metadata, blob: image.blob }] : []; }), data.backgrounds);
-    setFraming(defaultImageFraming());
     setDraft({ ...data.art.profile, age: String(data.art.profile.age), gender: data.art.profile.gender ?? "", appearance: data.art.profile.appearance ?? "" });
     setArt({ ...data.art, url }); setMessages([]); if(navigate)router.push(accountEnabled() ? "/ideal/new" : "/ideal");
   }
@@ -222,6 +222,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   }
   async function loadCloud(id: string, navigate=true, expectedPath?:string) {
     const load = ++loadSequence.current; const currentOwner = owner.current;
+    const loadingPath=currentPath.current;setDocumentLoad({path:loadingPath,loading:true});
+    try{
     if (documentId.current === id && art) { if(navigate)router.push("/ideal/new"); return; }
     // Persist the outgoing character before replacing the shared session refs.
     if (art && previous.current) await saveCloud();
@@ -244,6 +246,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     }));
     const blob = original;
     if (load === loadSequence.current && currentOwner === owner.current && !suppressedDocuments.current.has(id) && (!expectedPath||currentPath.current===expectedPath)) restore(data, blob, gallery, navigate);
+    }finally{if(load===loadSequence.current)setDocumentLoad({path:loadingPath,loading:false});}
   }
   async function importCharacter(value: Record<string, unknown>) {
     const content = value.content as { profile?: unknown; description?: string };
@@ -253,7 +256,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     previous.current = blob; previousStyle.current = "neutral"; const url = URL.createObjectURL(blob);
     visuals.registerOriginal(blob, url, profile.name, { listingId: String(value.id) });
     setArt({ url, title: profile.name, summary: "구매한 캐릭터", prompt: "", style: "neutral", description: content.description ?? profile.concept, profile, width: 0, height: 0, listingId: String(value.id) });
-    setFraming(defaultImageFraming());
     setDraft({ ...profile, age: String(profile.age), gender: profile.gender ?? "", appearance: profile.appearance ?? "" }); router.push(accountEnabled() ? "/ideal/new" : "/ideal");
   }
   const snapshotRef = useRef<() => void>(() => undefined);
@@ -337,6 +339,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     setBusy(false);
   }
   function reset() {
+    setDocumentLoad(undefined);
     cancel();
     visuals.clear();
     setMessages([]);
@@ -347,7 +350,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     router.replace(accountEnabled() ? "/ideal/new" : "/ideal", { scroll: false });
     if (menu === "image") focusCreation("profile");
     setDraft({ name: "", age: "", gender: "", appearance: "", personality: "", concept: "" });
-    setFraming(defaultImageFraming());
     previous.current = null;
     previousStyle.current = null;
     setError("");
@@ -364,8 +366,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     if (controller.current) return;
     const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age), appearance: draft.appearance.trim() || undefined });
     if (!parsedProfile.success) { setError("캐릭터 이름·나이·성별·성격·컨셉을 입력해주세요."); return; }
-    const framingResult=imageFramingSchema.safeParse(framing);
-    if(!framingResult.success){setError("부분 클로즈업의 집중 대상을 입력해주세요.");return;}
     if (accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < HEART_COST.character) { setError("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
     if (accountEnabled() && !await confirm({ title: "새로운 캐릭터를 만날까요?", description: "입력한 설정으로 캐릭터 이미지를 만들어요.", lines: [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" })) return;
     if (controller.current) return;
@@ -392,7 +392,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       const body = new FormData();
       body.set("messages", JSON.stringify(history.slice(-13)));
       body.set("profile", JSON.stringify(profile));
-      body.set("framing",JSON.stringify(framingResult.data));
       if (previous.current)
         body.set("image", previous.current, "previous-character.jpg");
       if (previous.current && previousStyle.current)
@@ -495,7 +494,6 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
             <label>컨셉<textarea aria-label="컨셉" form="character-generation" name="concept" required maxLength={1000} value={draft.concept} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, concept: event.target.value }); }} placeholder="관계, 세계관, 배경 등 원하는 설정을 적어주세요" /></label>
             {art && <small>수정한 특성은 이미지를 다시 생성하면 대화·이야기에 적용됩니다.</small>}
           </fieldset>
-          <ImageFramingFields value={framing} onChange={setFraming} disabled={busy}/>
           <div className="message-list" aria-live="polite" hidden={!messages.length && !busy}>
             {messages.map((m, i) => (
                 <article key={i} className={`chat-message ${m.role}`}>

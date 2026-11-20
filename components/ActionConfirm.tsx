@@ -5,7 +5,7 @@ import { Heart, Trash2, X } from "lucide-react";
 import ImageFramingFields from "./ImageFramingFields";
 import {defaultImageFraming,imageFramingSchema,outfitVisible} from "@/lib/characters/framing";
 
-type Confirmation = { title: string; description: string; keywords?: string[]; sceneDetails?: ImageSceneSelection; editableTarget?: boolean; onSceneChange?: (scene:ImageSceneSelection)=>void; imageNotice?: boolean; lines?: { label: string; value: string }[]; confirmLabel?: string; danger?: boolean };
+type Confirmation = { title: string; description: string; keywords?: string[]; sceneDetails?: ImageSceneSelection; editableTarget?: boolean; editableFraming?: boolean; onSceneChange?: (scene:ImageSceneSelection)=>void; imageNotice?: boolean; lines?: { label: string; value: string }[]; confirmLabel?: string; danger?: boolean };
 const Context = createContext<(value: Confirmation) => Promise<boolean>>(async () => false);
 export const useActionConfirm = () => useContext(Context);
 export default function ActionConfirmProvider({ children }: { children: ReactNode }) {
@@ -24,7 +24,7 @@ export default function ActionConfirmProvider({ children }: { children: ReactNod
     const next={...value.sceneDetails,[key]:text,...(key==="target"?{targetConfirmed:true,outfit:undefined}:{})};
     value.onSceneChange?.(next);setValue({...value,sceneDetails:next});
   }
-  const sceneIncomplete=!!value?.sceneDetails&&(!value.sceneDetails.location?.trim()||(!!value.sceneDetails.target&&outfitVisible(value.sceneDetails.framing)&&!value.sceneDetails.outfit?.trim())||(value.editableTarget&&value.sceneDetails.targetConfirmed&&!value.sceneDetails.target?.trim())||!imageFramingSchema.safeParse(value.sceneDetails.framing??defaultImageFraming()).success);
+  const sceneIncomplete=!!value?.sceneDetails&&(!value.sceneDetails.location?.trim()||(!!value.sceneDetails.target&&outfitVisible(value.editableFraming?value.sceneDetails.framing:undefined)&&!value.sceneDetails.outfit?.trim())||(value.editableTarget&&value.sceneDetails.targetConfirmed&&!value.sceneDetails.target?.trim())||(value.editableFraming&&!imageFramingSchema.safeParse(value.sceneDetails.framing??defaultImageFraming()).success));
   return <Context.Provider value={confirm}>{children}{value && <dialog ref={dialog} className={`action-confirm${value.danger ? " is-danger" : ""}`} aria-labelledby="action-confirm-title" aria-describedby="action-confirm-description" onCancel={event => { event.preventDefault(); finish(false); }}>
     <div className="sheet-handle"/><button type="button" className="sheet-close" aria-label="확인 팝업 닫기" onClick={() => finish(false)}><X size={20}/></button>
     <div className="confirm-symbol">{value.danger ? <Trash2 size={25}/> : <Heart size={25}/>}</div><h2 id="action-confirm-title">{value.title}</h2><p id="action-confirm-description">{value.description}</p>
@@ -34,8 +34,8 @@ export default function ActionConfirmProvider({ children }: { children: ReactNod
       {value.editableTarget&&<div><dt><label htmlFor="scene-target">대상 인물</label></dt><dd><input id="scene-target" aria-label="삽화 대상 인물" value={value.sceneDetails.target||""} maxLength={80} list="scene-target-suggestions" placeholder="예: 롤랑, 경비대장" onChange={event=>changeScene("target",event.target.value)}/><datalist id="scene-target-suggestions">{value.sceneDetails.characters.map(name=><option key={name} value={name}/>)}</datalist></dd></div>}
       <div><dt>등장인물</dt><dd>{value.sceneDetails.characters.length ? value.sceneDetails.characters.map(name => name === value.sceneDetails?.target ? `${name} (이미지 대상)` : name).join(" · ") : "없음 (배경만 생성)"}</dd></div>
     </dl></section>}
-    {value.sceneDetails&&<ImageFramingFields value={value.sceneDetails.framing??defaultImageFraming()} hasPerson={!!value.sceneDetails.target} onChange={framing=>{const next={...value.sceneDetails!,framing};value.onSceneChange?.(next);setValue({...value,sceneDetails:next});}}/>}
-    {value.sceneDetails&&<p className="scene-confirm-help">장소와 화면에 보일 의상을 확인해주세요.{!outfitVisible(value.sceneDetails.framing)?" 클로즈업의 의상 입력은 선택이에요.":""}{sceneIncomplete?" 비어 있는 필수 항목을 입력하면 생성할 수 있어요.":""}</p>}
+    {value.sceneDetails&&value.editableFraming&&<ImageFramingFields value={value.sceneDetails.framing??defaultImageFraming()} hasPerson={!!value.sceneDetails.target} onChange={framing=>{const next={...value.sceneDetails!,framing};value.onSceneChange?.(next);setValue({...value,sceneDetails:next});}}/>}
+    {value.sceneDetails&&<p className="scene-confirm-help">장소와 화면에 보일 의상을 확인해주세요.{!outfitVisible(value.editableFraming?value.sceneDetails.framing:undefined)?" 클로즈업의 의상 입력은 선택이에요.":""}{sceneIncomplete?" 비어 있는 필수 항목을 입력하면 생성할 수 있어요.":""}</p>}
     {value.editableTarget&&<p className="scene-confirm-help">대상 인물을 직접 입력하면 그 인물을 중심으로 그려요. 대상을 바꾸면 해당 인물의 의상을 다시 입력해주세요.</p>}
     {!!value.keywords?.length && <section className="confirm-scene-keywords" aria-label="장면 키워드"><h3>장면 키워드</h3><p>{value.keywords.join(" · ")}</p></section>}
     {value.lines && <dl>{value.lines.map(line => <div key={line.label}><dt>{line.label}</dt><dd>{line.value}</dd></div>)}</dl>}

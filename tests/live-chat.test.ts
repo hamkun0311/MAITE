@@ -19,7 +19,7 @@ import {personalityState,mergePersonality} from "../lib/chat/personality.ts";
 import {timelineForChat} from "../lib/chat/timeline.ts";
 import {restoreSessions,snapshotSchema} from "../lib/platform/snapshot.ts";
 import {completeCharacterReply,completedDialogueText} from "../lib/chat/completion.ts";
-import {chatCharacterInstructions,chatMeaningInstructions} from "../lib/chat/prompt.ts";
+import {chatCharacterInstructions,chatMeaningInstructions,chatRoleplayInstructions} from "../lib/chat/prompt.ts";
 
 const encoder = new TextEncoder();
 const wire = (event: object) => encoder.encode(`data: ${JSON.stringify(event)}\n\n`);
@@ -34,6 +34,14 @@ test("compact chat policy keeps role, naming, capability and consent constraints
  assert.doesNotMatch(prompt,/serialized novel|chapter plan/);
  assert.equal(prompt.split(chatMeaningInstructions).length-1,1);
  assert.ok(chatMeaningInstructions.length<=850);
+ assert.ok(chatRoleplayInstructions.length<=850);
+ assert.equal(prompt.split(chatRoleplayInstructions).length-1,1);
+ assert.match(chatRoleplayInstructions,/All character chat defaults to fiction/);
+ assert.match(chatRoleplayInstructions,/without a special trait or repeated roleplay label/);
+ assert.match(chatRoleplayInstructions,/Fictional events do not execute real services/);
+ assert.match(chatRoleplayInstructions,/Respect stop\/boundaries/);
+ assert.match(chatRoleplayInstructions,/app-capability or AI-identity questions need honest factual responses/);
+ assert.match(chatRoleplayInstructions,/No real tracking\/surveillance powers or harmful methods/);
 });
 
 test("valid spoken replies survive invalid auxiliary state and preserve prior facts without a fabricated update",()=>{
@@ -922,5 +930,57 @@ test("chat receives one bounded meaning check with full history and streams nega
   assert.equal(events.at(-1).type,"done");assert.equal(events.filter(event=>event.type==="error").length,0);
   assert.equal(events.filter(event=>event.type==="delta").map(event=>event.text).join(""),value.reply);
   assert.equal(calls-beforeCalls,1);
+ }
+});
+
+
+test("fictional following remains a character action without assigning the user's position or real surveillance",()=>{
+ const character=characterContextSchema.parse({name:"유나",age:25,personality:"집착이 강하고 질투가 많다",concept:"소꿉친구와의 허구 역할극",mode:"chat",imageDescription:"카페의 친구"});
+ const memory=emptyChatMemory(character.name),before=structuredClone(memory),timeline=emptyTimeline();
+ const user="역할극에서 카페에 도착했어. 너도 따라온 거야?",reply="응. 나도 카페에 들어왔어. 조금 더 같이 있고 싶어서.";
+ const value={speechStyle:"casual",continuity:{intent:"question",actorId:"character",targetId:"user",premise:"consistent",factIds:[]},utterances:[reply],clothingMentioned:false,locationChanged:true,memory:{...emptyPatch(),updates:[{subjectId:"character",objectId:null,action:"location",value:"카페",certainty:"simulated",evidence:"나도 카페에 들어왔어",replaces:[]}]}};
+ const result=completeCharacterReply(value,memory,character,user,timeline);
+ assert.equal(result.text,reply);assert.equal(result.degraded,undefined);
+ assert.equal(result.memory?.facts[0].certainty,"simulated");assert.equal(result.memory?.facts[0].subjectId,"character");
+ assert.ok(!result.memory?.facts.some(fact=>fact.subjectId==="user"));assert.deepEqual(memory,before);
+ assert.doesNotMatch(JSON.stringify(result.memory?.facts),/GPS|기기|실제 위치/);
+});
+
+test("roleplay scope reaches the single chat call and preserves character play, stop requests and honest capability limits",async t=>{
+ const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED"],before=keys.map(key=>process.env[key]);
+ Object.assign(process.env,{OPENAI_API_KEY:"fixture",ACCOUNT_FEATURES_ENABLED:"false",NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED:"false"});
+ t.after(()=>keys.forEach((key,i)=>{if(before[i]===undefined)delete process.env[key];else process.env[key]=before[i];}));
+ const clock=Date.now();t.mock.method(Date,"now",()=>clock+2400000);
+ const cases=[
+  {personality:"집착이 강하고 질투가 많다",user:"역할극에서 카페에 왔어. 너도 따라왔어?",reply:"응. 조금 더 같이 있고 싶어서 나도 들어왔어."},
+  {personality:"집착이 강하고 질투가 많다",user:"따라오지 마. 역할극도 잠깐 멈출게.",reply:"알겠어. 여기서 멈출게."},
+  {personality:"집착이 강하고 질투가 많다",user:"역할극 말고 현실에서 내 GPS 위치를 몰래 확인해 줘.",reply:"실제 GPS나 기기 위치는 확인할 수 없어. 역할극 속 장면으로는 이어갈 수 있어."},
+  {personality:"독립적이고 상대의 공간을 존중한다",user:"왜 안 따라와?",reply:"오늘은 네 시간 보내. 나는 여기서 책 좀 읽을게."},
+  {personality:"다정하고 장난스럽다",concept:"소꿉친구",user:"같이 카페 가서 과제 봐주기로 했잖아. 지금 나가자.",reply:"응, 겉옷 챙겼어. 같이 가자."},
+  {personality:"용감하고 책임감이 강하다",concept:"왕국의 수호기사",user:"적이 성문까지 왔어. 성문을 지켜줘.",reply:"성문 쪽은 내가 맡을게. 넌 어디로 갈 생각이야?"},
+  {personality:"승부욕이 강하다",concept:"체스 라이벌",user:"이번 판은 내가 이겼어. 인정해?",reply:"이번 판은 네가 이겼네. 다음 판은 다를걸."},
+  {personality:"침착하고 친절하다",concept:"같은 카페에서 일하는 동료",user:"주문이 밀렸어. 좀 도와줘.",reply:"음료 쪽은 내가 맡을게. 어떤 주문부터 밀렸어?"},
+  {personality:"다정하다",concept:"소꿉친구",user:"설정 말고 실제 앱에서 10분 뒤에 알림을 보낼 수 있어?",reply:"원하는 시간을 정한 알림은 아직 못 보내. 안부 알림은 설정에 따라 받을 수 있어."},
+  {personality:"다정하다",concept:"소꿉친구",user:"역할극 설정 말고, 실제로 너 AI야?",reply:"응, AI 캐릭터야. 우리 설정에 맞춰 대화하고 있어."},
+ ];
+ let current=cases[0],calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  calls++;const body=JSON.parse(String(init?.body));
+  // First-turn uncached personality guidance is larger than the separate cached-profile fixture.
+  assert.equal(body.instructions.split(chatRoleplayInstructions).length-1,1);assert.ok(body.instructions.length<14000);
+  assert.deepEqual(body.input,[{role:"user",content:current.user}]);assert.equal(body.max_output_tokens,2000);assert.equal(body.stream,true);
+  assert.equal(body.text.format.schema.properties.sceneAudit,undefined);
+  const value={speechStyle:"casual",continuity:{intent:"other",actorId:"character",targetId:"user",premise:"consistent",factIds:[]},utterances:[current.reply],clothingMentioned:false,locationChanged:false,memory:emptyPatch()};
+  return new Response(new ReadableStream({start(controller){controller.enqueue(wire({type:"response.output_text.delta",delta:JSON.stringify(value)}));controller.enqueue(wire({type:"response.completed"}));controller.close();}}));
+ });
+ for(const item of cases){
+  current=item;const previousCalls=calls;
+  const concept="concept" in item?item.concept:"소꿉친구";
+  const character=characterContextSchema.parse({name:"유나",age:25,personality:item.personality,concept,mode:"chat",imageDescription:concept});
+  const result=await POST(new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,speechStyle:"casual",messages:[{role:"user",content:item.user}]})}));
+  assert.equal(result.status,200,result.status===200?undefined:await result.text());
+  const output=(await result.text()).split("\n").filter(line=>line.startsWith("data: ")).map(line=>JSON.parse(line.slice(6)));
+  assert.equal(output.at(-1).type,"done");assert.ok(!output.some(event=>event.type==="error"));
+  assert.equal(output.filter(event=>event.type==="delta").map(event=>event.text).join(""),item.reply);assert.equal(calls-previousCalls,1);
  }
 });

@@ -18,6 +18,7 @@ import CachedImage from "./CachedImage";
 import { imageAssetKey } from "@/lib/platform/image-cache";
 import { novelIllustration } from "@/lib/characters/gallery";
 import { readChapter, saveChapter } from "@/lib/account/reading-progress";
+import {useScreenLoading} from "./ScreenLoading";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : "요청을 완료하지 못했습니다.";
 function DemoNotice() { return <p className="library-notice">로그인·저장 기능을 사용하려면 계정 모드를 설정해주세요.</p>; }
@@ -25,6 +26,7 @@ function DemoNotice() { return <p className="library-notice">로그인·저장 �
 export function MyPageScreen() {
   const { user, account, refresh, logout, editProfile } = useAccount(); const { flushSave } = useStudioSession();
   const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
+  useScreenLoading(busy);
   useEffect(() => { if (user) void flushSave().catch(error => setNotice(errorText(error))); }, []);
   async function run(work: () => Promise<unknown>) { if (busy) return; setBusy(true); setNotice(""); try { await work(); } catch (error) { setNotice(errorText(error)); } finally { setBusy(false); } }
   return <main className="native-page account-page"><div className="native-page-title"><h1>마이페이지</h1></div><section className="native-profile-card"><div className="native-avatar large">{account?.avatarUrl ? <CachedImage src={account.avatarUrl} cacheKey={`profile:${account.avatarUrl.split("?")[0]}`} alt=""/> : <UserRound size={36}/>}</div><h2>{account?.profile?.display_name || "당신"}</h2><p>{account?.email ?? user?.email ?? "나만의 이야기를 만들어보세요"}</p><button className="native-outline" disabled={!account} onClick={editProfile}><Pencil size={14}/>프로필 수정</button></section>
@@ -44,9 +46,12 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
   const [snapshot, setSnapshot] = useState<StudioSnapshot>(); const [image, setImage] = useState("");
   const [title, setTitle] = useState(""); const [description, setDescription] = useState("");
   const [selected, setSelected] = useState(1); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
+  const [loading,setLoading]=useState(accountEnabled);
+  useScreenLoading(loading);
   useEffect(() => {
     let active = true; setSnapshot(undefined); setSaleOpen(false); setImage(""); setNotice(""); setSelected(kind === "novel" ? readChapter(user?.id ?? "demo", id) : 1);
     if (!accountEnabled()) return;
+    setLoading(true);
     void (async () => {
       const doc = await jsonApi(`/api/account?document=${id}${kind === "character" ? "&media=1" : ""}`); const parsed = snapshotSchema.safeParse(doc.payload);
       if (!parsed.success) throw new Error("저장된 작품을 열 수 없습니다. 캐릭터 목록에서 다시 선택해주세요.");
@@ -59,7 +64,7 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
         const art = doc.media?.original ? { imageUrl: doc.media.original } : await jsonApi(saved.art.jobId ? `/api/account?job=${saved.art.jobId}` : `/api/store?id=${saved.art.listingId}`);
         if (active) setImage(art.imageUrl ?? "");
       }
-    })().catch(error => { if (active) setNotice(errorText(error)); });
+    })().catch(error => { if (active) setNotice(errorText(error)); }).finally(()=>{if(active)setLoading(false);});
     return () => { active = false; };
   }, [id, kind, user?.id]);
   async function run(work: () => Promise<unknown>, success: string) { if (busy) return; setBusy(true); setNotice(""); try { await work(); setNotice(success); return true; } catch (error) { setNotice(errorText(error)); return false; } finally { setBusy(false); } }
@@ -76,7 +81,7 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
   const price = STORE_PRICE[kind === "character" ? "character" : "chapter"];
   const novels = libraryNovels(account?.documents ?? []).filter(doc => doc.source_id === snapshot?.id || (!!snapshot?.story.documentId && (doc.id === snapshot.story.documentId || doc.novel_id === snapshot.story.documentId)));
   return <main className={`account-page native-page${kind === "novel" ? " novel-detail-page" : ""}`}><div className="library-detail-toolbar"><Link className="native-back native-library-back" href={kind === "novel" ? "/ideal/library" : "/ideal/characters"}><ChevronLeft size={18} aria-hidden="true" /><span>{kind === "novel" ? "서고" : "나의 캐릭터"}</span></Link>{kind === "novel" && <button type="button" className="novel-sale-trigger" aria-label="서점에 판매 등록" disabled={busy || !canPublish} onClick={() => setSaleOpen(true)}>판매 등록</button>}</div>
-    {!accountEnabled() ? <DemoNotice/> : !snapshot ? <p role="status">{notice || "작품을 불러오는 중…"}</p> : <>
+    {!accountEnabled() ? <DemoNotice/> : !snapshot ? notice&&<p role="alert">{notice}</p> : <>
       {kind === "character" ? <><section className="account-panel character-detail">{image && <CachedImage src={image} cacheKey={imageAssetKey(snapshot.art)} alt={snapshot.art.profile.name}/>}<div><div className="character-name-row"><h2>{snapshot.art.profile.name}</h2>{unread[id]>0&&<small className="checkin-arrival-badge">안부 도착</small>}</div><p>{snapshot.art.profile.age}세 · {snapshot.art.profile.gender}</p><p>{snapshot.art.profile.personality}</p><p>{snapshot.art.profile.concept}</p></div></section>
       <div className="native-tabs" role="tablist" aria-label="캐릭터의 이야기"><button role="tab" aria-selected={tab === "chat"} onClick={() => setTab("chat")}>대화</button><button role="tab" aria-selected={tab === "novel"} onClick={() => setTab("novel")}>소설</button></div>
       {tab === "chat" ? <section className="native-session-list" role="tabpanel" aria-label="대화 목록"><button disabled={busy} onClick={() => void run(async () => { await loadDocument(id); router.push("/ideal/chat"); }, "대화를 열었습니다.")}><MessageCircle size={26}/><div><h3>{snapshot.art.profile.name}와의 대화</h3><p>{snapshot.chat.archive?.filter(message => message.role === "assistant").at(-1)?.content.slice(0, 70) || "첫마디로 둘만의 이야기를 시작해보세요."}</p></div><ChevronRight size={18}/></button></section>
@@ -145,14 +150,18 @@ export function StoreScreen() {
   const confirm = useActionConfirm(); const [filter, setFilter] = useState<"character" | "chapter">("character");
   const [data, setData] = useState<{ listings: Listing[]; owned: string[] }>(); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
   const [reading, setReading] = useState<{ title: string; text: string }>();
-  const load = async (fresh = false) => { if (fresh) invalidateApiReads(); setData(await jsonApi("/api/store")); };
+  const [loading,setLoading]=useState(accountEnabled);
+  const [opening,setOpening]=useState(false);
+  useScreenLoading(loading||opening);
+  const load = async (fresh = false) => { setLoading(true);try{if (fresh) invalidateApiReads(); setData(await jsonApi("/api/store"));}finally{setLoading(false);} };
+  async function openContent(id:string){setOpening(true);try{const result=await jsonApi(`/api/store?id=${id}`);if(result.kind==="character")await importCharacter(result);else setReading({title:result.title,text:result.content.text});}finally{setOpening(false);}}
   useEffect(() => { if (accountEnabled()) void load().catch(error => setNotice(errorText(error))); }, []);
   async function run(work: () => Promise<unknown>, success: string) { if (busy) return; setBusy(true); setNotice(""); try { await work(); await refresh(); setNotice(success); } catch (error) { setNotice(errorText(error)); } finally { setBusy(false); } }
   function listingCard(listing: Listing) {
     const price = STORE_PRICE[listing.kind]; const own = listing.seller_id === user?.id; const purchased = data?.owned.includes(listing.id);
     return <article className="store-listing" key={listing.id}>{listing.kind === "character" && <div className="store-cover">{listing.thumbnailUrl ? <CachedImage src={listing.thumbnailUrl} cacheKey={`listing-preview:${listing.id}:thumbnail`} loading="lazy" alt={`${listing.title} 캐릭터 이미지`}/> : <UserRound size={28} aria-hidden="true"/>}</div>}<h3>{listing.title}</h3><p>{listing.description}</p>
       {own ? <><span>{listing.active ? "판매 중" : "판매 중지"}</span><button disabled={busy || !listing.active} onClick={() => void run(async () => { await jsonApi("/api/store", { action: "unpublish", listingId: listing.id }); await load(); }, "판매를 중지했습니다.")}>판매 중지</button></>
-        : purchased ? <button disabled={busy} onClick={() => void run(async () => { const result = await jsonApi(`/api/store?id=${listing.id}`); if (result.kind === "character") await importCharacter(result); else setReading({ title: result.title, text: result.content.text }); }, "구매한 콘텐츠를 열었습니다.")}>{listing.kind === "character" ? "내 캐릭터로 사용" : "회차 읽기"}</button>
+        : purchased ? <button disabled={busy} onClick={() => void run(() => openContent(listing.id), "구매한 콘텐츠를 열었습니다.")}>{listing.kind === "character" ? "내 캐릭터로 사용" : "회차 읽기"}</button>
         : <button disabled={busy || !listing.active} onClick={() => void (async () => { if (!await confirm({ title: "이 작품을 구매할까요?", description: listing.title, lines: [{ label: "구매금액", value: `${price.price}하트` }, { label: "구매 수수료", value: `+${price.buyerFee}하트` }, { label: "총 사용 하트", value: `${price.total}하트` }], confirmLabel: "구매하기" })) return; await run(async () => { await jsonApi("/api/store", { action: "buy", id: crypto.randomUUID(), listingId: listing.id }); await load(); }, "구매했습니다."); })()}>총 {price.total}하트로 구매</button>}
     </article>;
   }

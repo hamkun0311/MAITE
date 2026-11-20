@@ -78,7 +78,7 @@ export function advanceTimeline(old: Timeline, name: string, chat?: ChatMemory, 
       if (promise.test(f.action) && !(f.subjectId === "character" && unsupportedFollowUp(f.value))) {
         next.promises = next.promises.filter(e => e.subjectId !== f.subjectId || e.key !== f.action);
         if (!/^(fulfilled|cancelled):/i.test(f.value)) {
-          next.promises.push({ subjectId: f.subjectId, text: f.value, key: f.action });
+          next.promises.push({ subjectId: f.subjectId, text: f.value, key: f.action, objectId: f.objectId });
           next.promises = next.promises.slice(-6);
         }
       }
@@ -98,6 +98,10 @@ export function advanceTimeline(old: Timeline, name: string, chat?: ChatMemory, 
     if(sharedChanges===undefined)for (const text of story.openThreads.filter(text => promise.test(text) && !previous?.openThreads.includes(text))) add("promises", "character", text);
     const closed = previous?.openThreads.filter(text => !story.openThreads.includes(text)) ?? [];
     next.promises = next.promises.filter(e => !closed.includes(e.text) && !closedPromises.includes(e.text));
+    if (closedPromises.length && next.canon) {
+      next.canon = next.canon.filter(entry => entry.kind !== "promise" ||
+        !["planned", "ongoing"].includes(entry.status) || !closedPromises.includes(entry.text));
+    }
     for(const change of sharedChanges??[]){
       if(!story.previousProse.replace(/\s+/g,"").includes(change.evidence.replace(/\s+/g,""))||hypothetical(change.evidence))continue;
       const subjectId=change.subjectName===name?"character":change.subjectName===userName?"user":story.previousProse.includes(change.subjectName)?register(change.subjectName):undefined;

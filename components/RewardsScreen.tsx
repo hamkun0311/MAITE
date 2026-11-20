@@ -5,11 +5,13 @@ import {CalendarDays,ChevronLeft,ChevronRight,Heart,LoaderCircle} from "lucide-r
 import {useAccount} from "./AccountProvider";
 import {jsonApi,invalidateApiReads} from "@/lib/platform/commerce";
 import {koreaDay} from "@/lib/account/policy";
+import {useScreenLoading} from "./ScreenLoading";
 type Calendar={today:string;month:string;claims:{day:string;kind:"attendance"|"pass";amount:number}[];passes:{starts_on:string;ends_on:string;daily_hearts:number}[]};
 const dateKey=(year:number,month:number,day:number)=>`${year}-${String(month+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
 export default function RewardsScreen(){
  const {user,refresh}=useAccount();const [month,setMonth]=useState(()=>koreaDay().slice(0,7)+"-01"),[selected,setSelected]=useState(koreaDay);
  const [data,setData]=useState<Calendar>(),[busy,setBusy]=useState(false),[loading,setLoading]=useState(false),[notice,setNotice]=useState("");
+ useScreenLoading(!!user&&(loading||(!data&&!notice)));
  const [year,m]=month.split("-").map(Number);const days=new Date(Date.UTC(year,m,0)).getUTCDate(),offset=new Date(Date.UTC(year,m-1,1)).getUTCDay();
  async function load(){return await jsonApi(`/api/rewards?month=${month}`) as Calendar;}
  useEffect(()=>{let alive=true;setData(undefined);setNotice("");if(!user)return;setLoading(true);void load().then(value=>{if(alive)setData(value);}).catch(error=>{if(alive)setNotice(error.message);}).finally(()=>{if(alive)setLoading(false);});return()=>{alive=false;};},[month,user?.id]);
@@ -31,5 +33,5 @@ export default function RewardsScreen(){
  })}</div></section>
  <section className="reward-claims" aria-label="선택 날짜 보상"><h2>{selected} {selected===today?"· 오늘":""}</h2><div className="reward-claim-row"><div><strong>출석 보상</strong><span><Heart size={15}/> {attendance}하트</span></div><button className="native-primary" disabled={busy||loading||!data||selected!==today||received(selected,"attendance")} onClick={()=>void claim("attendance")}>{busy?<LoaderCircle size={16} className="spin"/>:received(selected,"attendance")?"수령 완료":selected<today?"수령 불가":selected>today?"아직 받을 수 없어요":"보상 받기"}</button></div>
  {pass&&<div className="reward-claim-row"><div><strong>패스 보상</strong><span><Heart size={15}/> {pass.daily_hearts}하트</span></div><button className="native-primary" disabled={busy||loading||!data||selected>today||received(selected,"pass")} onClick={()=>void claim("pass")}>{busy?<LoaderCircle size={16} className="spin"/>:received(selected,"pass")?"수령 완료":selected>today?"아직 받을 수 없어요":"패스 보상 받기"}</button></div>}
- <p>출석 보상은 당일에만 받을 수 있어요. 패스 보상은 구매한 유효기간의 지난 날짜도 선택해 받을 수 있어요.</p>{loading&&<p role="status">보상을 불러오고 있어요.</p>}{notice&&<p role="status">{notice}</p>}</section></main>;
+ <p>출석 보상은 당일에만 받을 수 있어요. 패스 보상은 구매한 유효기간의 지난 날짜도 선택해 받을 수 있어요.</p>{notice&&<p role="status">{notice}</p>}</section></main>;
 }

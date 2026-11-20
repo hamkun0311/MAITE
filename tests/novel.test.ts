@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { generateChapter, novelJsonSchema } from "../lib/novel/generate.ts";
 import { createReviewSchema, createMemoryPatchSchema, emptyStoryState, mergeMemory, repeatsPrevious, storyStateSchema } from "../lib/novel/state.ts";
@@ -29,7 +30,8 @@ const patch = { summary: "서하가 계약서를 찾아 친구와 서점 정리�
 const unpack = (value: any): any[] => Array.isArray(value)?value:value?.rows?.map((row:any[])=>Object.fromEntries(value.columns.map((name:string,index:number)=>[name,row[index]])))??[];
 const response = (value: unknown, init?: RequestInit) => {
   if (value && typeof value === "object" && "pass" in value) value = { memoryPatch: patch, ...value };
-  const input = init ? JSON.parse(JSON.parse(String(init.body)).input) : {};
+  const body = init ? JSON.parse(String(init.body)) : undefined;
+  const input = body ? JSON.parse(body.input) : {};
   const cite = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(cite);
     if (!item || typeof item !== "object") return item;
@@ -89,11 +91,12 @@ test("summary failures record a safe reason and never publish rejected prose as 
  assert.doesNotMatch(JSON.stringify(logs),/SECRET_PROVIDER_OR_KEY|PRIVATE_KEY/);
 });
 
-test("sparse concept direction is bounded, respects explicit preferences and does not add adult content to ambiguous ages",()=>{
+test("sparse concept direction is bounded, respects explicit preferences and does not add adult content to ambiguous ages",async()=>{
+ const writer=await novelWriterQualityInstructions();
  assert.ok(novelConceptInstructions.length<=1300);
- assert.ok(novelWriterQualityInstructions.length+novelConceptInstructions.length<=4900);
+ assert.ok(writer.length+novelConceptInstructions.length<=4900);
  assert.ok(novelReviewerQualityInstructions.length+novelConceptInstructions.length<=5300);
- assert.ok(novelWriterQualityInstructions.length+novelIntegratedReviewInstructions.length+novelConceptInstructions.length<=6200);
+ assert.ok(writer.length+novelIntegratedReviewInstructions.length+novelConceptInstructions.length<=6200);
  assert.match(novelConceptInstructions,/actual mutual encounters/);assert.match(novelConceptInstructions,/Explicit user facts, tone limits and endings outrank/);
  assert.match(novelConceptInstructions,/Default to strong, grounded conflict\/reversals/);
  assert.match(novelConceptInstructions,/not new user requirements or automatic review failures/);
@@ -133,7 +136,8 @@ test("novel registers persist by speaker and addressee without forcing reciproca
  assert.equal(changed.dialogueRegisters?.length,2);assert.equal(changed.dialogueRegisters?.find(p=>p.speaker==="지호")?.style,"casual");
  assert.throws(()=>mergeMemory(state,{...patch,dialogueRegisters:[{...first,evidence:"원고에 없는 말투 전환"}]},prose,"서점"),/Unsupported memory/);
  assert.equal(storyStateSchema.safeParse({...state,dialogueRegisters:[{...first,style:"unknown"}]}).success,false);
- assert.match(novelDialogueRules,/Different speakers/);
+ assert.match(novelDialogueRules,/actual addressee/);
+ assert.match(novelDialogueRules,/even without a stored entry/);
  const sources=manuscriptSources(prose);
  assert.deepEqual(resolveSources({changeEvidence:sources[0].id,unchanged:{changeEvidence:null}},sources),{changeEvidence:sources[0].text,unchanged:{changeEvidence:null}});
  assert.throws(()=>resolveSources({changeEvidence:"missing_source"},sources),/Invalid manuscript source/);
@@ -196,6 +200,15 @@ test("per-chapter scene review uses the previous chapter and repairs grounded ro
 
 test("all genres require explicit scene audit and repair only evidence-backed intent/action errors",async t=>{
  const cases=[
+  {genre:"모험",flag:"speechIntentClear",type:"dialogue",context:"담당 관리가 루루의 지원서를 보고 직접 말했다.",bad:"너 같은 초보가 벌써 지원하겠다고?",good:"“너 같은 초보가 벌써 지원하겠다고?”"},
+  {genre:"학원극",flag:"speechIntentClear",type:"dialogue",context:"태오는 선생님께 존댓말로 증언했다. 이어 친구 준호가 태오에게만 작게 물었다. 둘은 평소 반말로 이야기한다.",bad:"태오는 준호에게 몸을 돌려 “선생님이 혼자 곤란해지는 게 보기 싫어서요”라고 답했다.",good:"태오는 준호에게 몸을 돌려 “선생님 혼자 곤란해지는 게 보기 싫었어”라고 답했다."},
+  {genre:"직장극",flag:"speechIntentClear",type:"dialogue",context:"팀장은 지민에게 자기 실수만 책임지면 되고 동료의 실수까지 떠안을 필요는 없다고 말했다.",bad:"“네 실수를 심각하게 받아들이라는 뜻은 아니야.”",good:"“네 실수는 바로잡되 다른 사람 몫까지 책임질 필요는 없어.”"},
+  {genre:"일상극",flag:"actionsCoherent",type:"causality",context:"동아리에서 신청서를 잃어버려 제출 경로를 찾아야 했다.",bad:"“신청서를 잃어버린 이유를 찾으려면 다 같이 창문부터 닦아요.”",good:"“먼저 신청서를 마지막으로 받은 사람부터 확인해요.”"},
+  {genre:"학원극",flag:"speechIntentClear",type:"language",context:"수현과 태오는 이미 복도에 서 있었고 다른 학생들은 계단 앞에서 기다렸다.",bad:"“지금 나가면 누가 이 반을 흔들려고 했는지, 당신이 도구가 됩니다.”",good:"“태오야, 저 애들 따라가면 네가 먼저 수업을 박차고 나간 것처럼 보일 수 있어.”"},
+  {genre:"직장극",flag:"rolesStable",type:"continuity",context:"지수는 동료가 회의실을 나가며 고개를 끄덕이는 모습만 보았다.",bad:"지수는 그 고갯짓만으로 동료가 자신을 해고할 서류를 준비했다는 사실을 알아냈다.",good:"지수는 동료가 자기 쪽을 본 것이 마음에 걸렸지만 그 뜻은 알 수 없었다."},
+  {genre:"우정극",flag:"actionsCoherent",type:"causality",context:"친구가 내일 다시 올지 묻자 민아는 반드시 오겠다고 답했다.",bad:"“다음엔 혼자 안 남겠습니다”라는 메모를 보고 민아는 친구가 내일 오겠다는 답장을 했음을 알았다.",good:"“내일은 나도 기다리고 있을게”라는 메모를 보고 민아는 웃었다."},
+  {genre:"학원극",flag:"speechIntentClear",type:"language",context:"수현은 새 담임으로서 수업과 학생 모두 포기하지 않겠다고 말하려 했다.",bad:"“이 교실에서 제가 포기하는 건 수업이 아니라 여러분이 아닙니다.”",good:"“저는 수업도, 여러분도 포기할 생각 없습니다.”"},
+  {genre:"동료극",flag:"speechIntentClear",type:"dialogue",context:"민서는 준호가 와서 기쁘고 혼자 있을 때 심심했다고 말하려 했다.",bad:"“기다렸어, 네가 오면 심심하거든.”",good:"“기다렸어. 네가 없으면 심심하거든.”"},
   {genre:"회사",flag:"speechIntentClear",type:"dialogue",context:"퇴근 시간이 지난 사무실에서 수진은 민호에게 남아 있어도 되는지 허락을 구하려 했다.",bad:"수진은 민호에게 하는 질문을 자신만의 혼잣말이라고 설명했다.",good:"수진은 민호를 바라보며 남아 있어도 괜찮은지 물었다."},
   {genre:"판타지",flag:"rolesStable",type:"continuity",context:"리오는 숲속 오두막의 주인이었고, 에단은 처음 방문한 여행자였다.",bad:"집주인 에단이 손님 리오에게 다음 방문을 약속했다.",good:"여행자 에단이 집주인 리오에게 다음 방문을 약속했다."},
   {genre:"추리",flag:"actionsCoherent",type:"language",context:"탐정과 의뢰인은 넓은 책상을 사이에 두고 마주 앉아 계약서를 확인했다.",bad:"탐정은 두 손을 계속 주머니에 넣은 채 손으로 계약서를 건넸다.",good:"탐정은 주머니에서 손을 꺼내 의뢰인 쪽으로 계약서를 내밀었다."},
@@ -229,12 +242,17 @@ test("all genres require explicit scene audit and repair only evidence-backed in
    calls++;const body=JSON.parse(String(init?.body)),input=JSON.parse(body.input);
    if(body.text?.format?.name==="chapter_review"){
     assert.ok(body.text.format.schema.required.includes("sceneAudit"));assert.equal(input.previousProse,item.context);
+    assert.doesNotMatch(body.instructions,/# 집필 스타일/);
     assert.match(body.instructions,/closing exchange/);assert.match(body.instructions,/All four must be true/);
     assert.match(body.instructions,/REGISTER MEMORY/);assert.match(body.instructions,/Preserve compatible truths/);
-    assert.match(body.instructions,/Do not invent past facts/);
+    assert.match(body.instructions,/Do not supply missing links from guessed intent/);
+    assert.match(body.instructions,/even with no register patch/);
+    assert.match(body.instructions,/Flag unquoted direct speech or unclear speakers/);
    }else{
     assert.match(body.instructions,/every genre/);
     assert.match(body.instructions,/genuine denial/);
+    assert.match(body.instructions,/Enclose every spoken line in double quotation marks/);
+    assert.equal(body.instructions.split("# 집필 스타일").length-1,1);
     assert.match(body.instructions,/NOVEL QUALITY PRINCIPLES/);
     assert.doesNotMatch(body.instructions,/nurse's assigned ward|routine chart request/);
     if(calls===3)assert.equal(JSON.parse(input.corrections).sceneAudit[item.flag],false);
@@ -246,21 +264,31 @@ test("all genres require explicit scene audit and repair only evidence-backed in
  }
 });
 
-test("quality instructions keep a bounded shared core and separate prose from review duties",()=>{
- assert.ok(novelWriterQualityInstructions.length<=3600);
+test("quality instructions keep a bounded shared core and separate prose from review duties",async()=>{
+ const writer=await novelWriterQualityInstructions();
+ const style=(await readFile("novel_prompt.md","utf8")).trim();
+ assert.equal(writer.split(style).length-1,1);
+ assert.ok(!novelReviewerQualityInstructions.includes(style));
+ assert.ok(writer.length<=3600);
  assert.ok(novelReviewerQualityInstructions.length<=4200);
- assert.ok(novelWriterQualityInstructions.length+novelIntegratedReviewInstructions.length<=5000);
- for(const text of [novelWriterQualityInstructions,novelReviewerQualityInstructions,novelWriterQualityInstructions+novelIntegratedReviewInstructions]){
+ assert.ok(writer.length+novelIntegratedReviewInstructions.length<=5000);
+ for(const text of [writer,novelReviewerQualityInstructions,writer+novelIntegratedReviewInstructions]){
   assert.equal(text.split("NOVEL QUALITY PRINCIPLES").length-1,1);
+  assert.match(text,/each clause affirms or denies/);assert.match(text,/negation scope and contrast/);
+  assert.match(text,/Check how clauses connect/);
+  assert.match(text,/A decisive inference needs a visible cue/);
+  assert.match(text,/Link a closing gesture, message or promise/);
   assert.match(text,/possibly mixed feelings/);assert.match(text,/supported omniscient viewpoint/);
   assert.match(text,/Risky, impulsive or mistaken choices are valid/);
   assert.match(text,/action enabling escape or success/);assert.match(text,/plot-critical props/);
   assert.match(text,/who can see\/hear/);assert.match(text,/Mark time jumps\/returns/);
   assert.match(text,/ordinary ellipsis/);assert.match(text,/explicitly unresolved danger/);
  }
- assert.doesNotMatch(novelWriterQualityInstructions,/SCENE AUDIT:|REGISTER MEMORY:/);
+ assert.match(novelReviewerQualityInstructions,/speechIntentClear checks clause links, referents and literal assertions\/negations before inferred intent/);
+ assert.match(novelIntegratedReviewInstructions,/speechIntentClear checks clause links, referents and literal assertions\/negations before inferred intent/);
+ assert.doesNotMatch(writer,/SCENE AUDIT:|REGISTER MEMORY:/);
  assert.doesNotMatch(novelReviewerQualityInstructions,/WRITING TASK:/);
- assert.match(novelWriterQualityInstructions,/in JSON mode place requested metadata only in its separate fields/);
+ assert.match(writer,/in JSON mode place requested metadata only in its separate fields/i);
 });
 
 test("mixed feelings, a knowingly risky choice and a tentative interpretation preserve character voice without extra rewrites",async t=>{
@@ -339,11 +367,11 @@ test("integrated trace distinguishes the model verdict from server rejection and
  t.after(()=>keys.forEach((key,i)=>{if(before[i]===undefined)delete process.env[key];else process.env[key]=before[i];}));
  Object.assign(process.env,{NOVEL_REVIEW_LOG_LEVEL:"summary",OPENAI_NOVEL_GENERATION_MODE:"integrated"});
  const logs:any[]=[];t.mock.method(console,"info",(prefix:unknown,line:unknown)=>{if(prefix==="novel-review-trace")logs.push(JSON.parse(String(line)));});
- let calls=0;t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{calls++;const body=JSON.parse(String(init?.body));assert.equal(body.instructions.split("CONCEPT-LED DRAMA:").length-1,1);return response(calls===1?{...bundle(3,3),prose}:bundle(3,3));});
+ let calls=0;t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{calls++;const body=JSON.parse(String(init?.body));assert.equal(body.instructions.split("CONCEPT-LED DRAMA:").length-1,1);return response(calls===1?{...bundle(3,3),prose:"***"}:bundle(3,3));});
  const result=await generateChapter({character,state:{...emptyStoryState(),chapter:2,seriesArc},direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
  assert.equal(calls,2);assert.equal(result.text,longProse);
  assert.ok(logs.some(row=>row.event==="integrated_draft"&&row.pass===true&&row.attempt===1));
- assert.ok(logs.some(row=>row.event==="rewrite_requested"&&row.accepted===false&&row.reason==="Integrated episode length mismatch"));
+ assert.ok(logs.some(row=>row.event==="rewrite_requested"&&row.accepted===false&&row.reason==="Integrated episode empty prose"));
  assert.equal(logs.at(-1).event,"completed");assert.equal(logs.at(-1).source,"rewrite");assert.equal(logs.at(-1).proseHash,manuscriptFingerprint(longProse).proseHash);
  assert.ok(!logs.some(row=>row.event==="content"));
 });
@@ -360,16 +388,141 @@ test("novel prompt tables preserve every canon and source field without mutating
 
 test("integrated episodes enforce numbering, full length, grounding, repetition and final resolution",()=>{
  assert.equal(validateIntegratedEpisode(bundle(),1,1,"").charCount,2700);
+ const longer = {...bundle(),prose:longProse+"가".repeat(501)};
+ assert.equal(validateIntegratedEpisode(longer,1,1,"").charCount,3201);
  assert.throws(()=>validateIntegratedEpisode({...bundle(),review:{...bundle().review,sceneAudit:{...review.sceneAudit,actionsCoherent:false}}},1,1,""),/scene audit/);
  const {sceneAudit:_missing,...noAudit}=bundle().review;
  assert.equal(integratedEpisodeSchema(false).safeParse({...bundle(),review:noAudit}).success,false);
  assert.throws(()=>validateIntegratedEpisode(bundle(),2,1,""),/numbering/);
- assert.throws(()=>validateIntegratedEpisode({...bundle(),prose},1,1,""),/length/);
+ assert.equal(validateIntegratedEpisode({...bundle(),prose},1,1,"").text,prose);
+ assert.throws(()=>validateIntegratedEpisode({...bundle(),prose:"***"},1,1,""),/empty prose/);
  assert.throws(()=>validateIntegratedEpisode(bundle(),1,1,longProse),/repeats/);
  assert.throws(()=>validateIntegratedEpisode({...bundle(),review:{...review,memoryPatch:{...patch,sharedChanges:[{subjectName:"서하",targetName:null,key:"event_missing",kind:"event",status:"completed",visibility:"character",text:"결혼했다",evidence:"없는 결혼"}]}}},1,1,""),/Unsupported/);
  assert.equal(validateIntegratedEpisode(bundle(5,5),5,5,"").charCount,2700);
  assert.throws(()=>validateIntegratedEpisode({...bundle(5,5),review:{...bundle(5,5).review,resolution:{...bundle(5,5).review.resolution!,hasSequelHook:true}}},5,5,""),/unresolved/);
  assert.equal(integratedEpisodeSchema(false).safeParse({...bundle(),extra:"bad"}).success,false);
+});
+
+test("a missed departure promise rejects an otherwise passing draft and logs the repaired outcome",async t=>{
+ const prior=process.env.NOVEL_REVIEW_LOG_LEVEL;
+ process.env.NOVEL_REVIEW_LOG_LEVEL="summary";
+ t.after(()=>{if(prior===undefined)delete process.env.NOVEL_REVIEW_LOG_LEVEL;else process.env.NOVEL_REVIEW_LOG_LEVEL=prior;});
+ const logs:{event:string;count?:number;results?:{status:string}[]}[]=[];
+ t.mock.method(console,"info",(prefix:unknown,line:unknown)=>{if(prefix==="novel-review-trace")logs.push(JSON.parse(String(line)));});
+ const promise={key:"promise_depart",subjectId:"character",objectId:"user",text:"정문에서 만나 함께 출발하기"};
+ const timeline={...emptyTimeline(),revision:4,participants:[{id:"character",name:"서하"},{id:"user",name:"당신"}],promises:[promise]};
+ const missed="서하는 정문에서 혼자 출발했다.", fulfilled="서하는 정문에서 당신과 함께 출발했다.";
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body)),input=JSON.parse(body.input);
+  calls++;
+  assert.deepEqual(input.context.sharedTimeline.promises,[promise]);
+  if(!body.text){
+   assert.match(body.instructions,/agreed participants and action on-page/);
+   if(calls===3)assert.match(input.corrections,/"status":"missed"/);
+   return response(prose+" "+(calls===1?missed:fulfilled),init);
+  }
+  const status=calls===2?"missed":"fulfilled";
+  return response({...review,promiseAudit:[{status,evidence:calls===2?missed:fulfilled}]},init);
+ });
+ const result=await generateChapter({character,timeline,state:{...emptyStoryState(),chapter:1,seriesArc},direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(calls,4);
+ assert.match(result.text,/당신과 함께 출발/);
+ assert.deepEqual(result.closedPromises,[promise.text]);
+ assert.equal(logs.find(row=>row.event==="promise_context")?.count,1);
+ assert.deepEqual(logs.filter(row=>row.event==="promise_audit").map(row=>row.results?.[0].status),["missed","fulfilled"]);
+ assert.doesNotMatch(JSON.stringify(logs.filter(row=>row.event.startsWith("promise_"))),/정문/);
+});
+
+test("Gemini writes prose only and reports tokens while OpenAI plans and reviews", async t => {
+ const keys = ["GEMINI_NOVEL_WRITE_MODEL", "GEMINI_API_KEY", "OPENAI_NOVEL_GENERATION_MODE"] as const;
+ const saved = keys.map(key => process.env[key]);
+ t.after(() => keys.forEach((key, i) => {
+  if (saved[i] === undefined) delete process.env[key];
+  else process.env[key] = saved[i];
+ }));
+ process.env.GEMINI_NOVEL_WRITE_MODEL = "gemini-3.5-flash-lite";
+ process.env.OPENAI_NOVEL_GENERATION_MODE = "integrated";
+ delete process.env.GEMINI_API_KEY;
+ const providers: string[] = [];
+ const records: import("../lib/usage.ts").UsageRecord[] = [];
+ let truncated = false;
+ t.mock.method(globalThis, "fetch", async (url: string, init?: RequestInit) => {
+  const body = JSON.parse(String(init?.body));
+  const headers = new Headers(init?.headers);
+  if (url.includes("generativelanguage.googleapis.com")) {
+   providers.push("gemini");
+   assert.match(url, /gemini-3\.5-flash-lite:generateContent$/);
+   assert.equal(headers.get("x-goog-api-key"), "gemini-fixture");
+   assert.equal(headers.get("authorization"), null);
+   assert.match(body.systemInstruction.parts[0].text, /# 집필 스타일/);
+   assert.equal(body.generationConfig.maxOutputTokens, 6000);
+   assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, "LOW");
+   return Response.json({
+    responseId: "gemini-result", modelVersion: "gemini-3.5-flash-lite",
+    candidates: [{finishReason: truncated ? "MAX_TOKENS" : "STOP", content: {parts: [{text: "private thought", thought: true}, {text: prose}]}}],
+    usageMetadata: {promptTokenCount: 50, candidatesTokenCount: 40, thoughtsTokenCount: 10, totalTokenCount: 100},
+   });
+  }
+  assert.equal(url, "https://api.openai.com/v1/responses");
+  assert.equal(headers.get("x-goog-api-key"), null);
+  assert.equal(headers.get("authorization"), "Bearer openai-fixture");
+  const name = body.text.format.name;
+  providers.push(name);
+  return response(name === "chapter_plan" ? plan : review, init);
+ });
+ const options = {character, direction: "다음", key: "openai-fixture", signal: new AbortController().signal,
+  phase: () => {}, onUsage: (record: import("../lib/usage.ts").UsageRecord) => records.push(record)};
+ await assert.rejects(generateChapter(options), /Missing Gemini API key/);
+ assert.deepEqual(providers, []);
+ process.env.GEMINI_API_KEY = "gemini-fixture";
+ const result = await generateChapter(options);
+ assert.deepEqual(providers, ["chapter_plan", "gemini", "chapter_review"]);
+ assert.equal(result.text, prose);
+ const write = records.find(record => record.feature === "novel.write" && record.status === "completed");
+ assert.deepEqual([write?.inputTokens, write?.outputTokens, write?.reasoningTokens, write?.totalTokens], [50, 50, 10, 100]);
+ providers.length = 0;
+ truncated = true;
+ await assert.rejects(generateChapter({...options, state: {...emptyStoryState(), chapter: 1, seriesArc}}), /Novel output token limit/);
+ assert.deepEqual(providers, ["gemini"]);
+ assert.equal(records.at(-1)?.status, "failed");
+ assert.equal(records.at(-1)?.totalTokens, 100);
+});
+
+test("Gemini writes the whole chapter using scene targets and sends short drafts straight to review", async t => {
+ const keys=["GEMINI_API_KEY","GEMINI_NOVEL_WRITE_MODEL"] as const;
+ const previous=keys.map(key=>process.env[key]);
+ t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
+ process.env.GEMINI_API_KEY="fixture";
+ process.env.GEMINI_NOVEL_WRITE_MODEL="gemini-3.5-flash-lite";
+ const longerProse=longProse+"나".repeat(500);
+ let calls=0, short=true;
+ t.mock.method(globalThis,"fetch",async(url:string,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));
+  calls++;
+  if(calls===2){
+   assert.equal(url,"https://api.openai.com/v1/responses");
+   assert.equal(body.text.format.name,"chapter_review");
+   return response(review,init);
+  }
+  assert.match(url,/generativelanguage/);
+  const instructions=body.systemInstruction.parts[0].text;
+  assert.match(instructions,/Opening: about 600/);
+  assert.match(instructions,/Central action: about 1300/);
+  assert.match(instructions,/Consequence: about 800/);
+  assert.match(instructions,/one continuous chapter without section labels/);
+  const input=JSON.parse(body.contents[0].parts[0].text);
+  assert.equal(input.previousDraft,undefined);
+  const text=short?prose:longerProse;
+  return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text}]}}]});
+ });
+ const options={character,state:{...emptyStoryState(),chapter:1,seriesArc},direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
+ const result=await generateChapter(options);
+ assert.equal(calls,2);
+ assert.equal(result.text,prose);
+ calls=0;short=false;
+ assert.equal((await generateChapter(options)).text,longerProse);
+ assert.equal(calls,2);
 });
 
 test("integrated generation uses two calls for a new arc, one for existing and finale, and stays opt-in",async t=>{
@@ -381,8 +534,12 @@ test("integrated generation uses two calls for a new arc, one for existing and f
  let calls=0,currentChapter=1,arcChapter=1;
  t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
   calls++;const body=JSON.parse(String(init?.body));
-  if(body.text?.format.name==="chapter_plan")return response(plan,init);
-  assert.equal(body.text.format.name,"episode_bundle");assert.match(body.instructions,/2500–3000/);
+  if(body.text?.format.name==="chapter_plan"){
+   assert.doesNotMatch(body.instructions,/# 집필 스타일/);
+   return response(plan,init);
+  }
+  assert.equal(body.instructions.split("# 집필 스타일").length-1,1);
+  assert.equal(body.text.format.name,"episode_bundle");assert.match(body.instructions,/about 2700 Korean characters/);
   assert.match(body.instructions,/NOVEL QUALITY PRINCIPLES/);assert.match(body.instructions,/SCENE AUDIT/);
   return response(bundle(currentChapter,arcChapter));
  });
@@ -404,8 +561,8 @@ test("integrated repair is bounded and never advances state or repeats a token-e
  t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
   calls++;const input=JSON.parse(JSON.parse(String(init?.body)).input);
   if(exhausted)return Response.json({status:"incomplete",incomplete_details:{reason:"max_output_tokens"}});
-  if(calls===1||alwaysBad)return response({...bundle(3,3),prose});
-  assert.match(input.repair,/length mismatch/);return response(bundle(3,3));
+  if(calls===1||alwaysBad)return response({...bundle(3,3),prose:"***"});
+  assert.match(input.repair,/empty prose/);return response(bundle(3,3));
  });
  const options={character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
  const fixed=await generateChapter(options);assert.equal(calls,2);assert.equal(fixed.state.chapter,3);assert.deepEqual(state,before);
@@ -433,7 +590,7 @@ test("integrated API preserves the single-chapter event contract and never publi
  Object.assign(process.env,{OPENAI_API_KEY:"test",OPENAI_NOVEL_GENERATION_MODE:"integrated",ACCOUNT_FEATURES_ENABLED:"false",NEXT_PUBLIC_ACCOUNT_FEATURES_ENABLED:"false"});
  t.after(()=>keys.forEach((key,index)=>{if(before[index]===undefined)delete process.env[key];else process.env[key]=before[index];}));
  let calls=0,bad=false;
- t.mock.method(globalThis,"fetch",async()=>{calls++;return response(bad?{...bundle(3,3),prose}:bundle(3,3));});
+ t.mock.method(globalThis,"fetch",async()=>{calls++;return response(bad?{...bundle(3,3),prose:"***"}:bundle(3,3));});
  const state={...emptyStoryState(),chapter:2,seriesArc};
  const request=()=>new Request("http://localhost/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({character,storyState:state,timeline:emptyTimeline(),messages:[{role:"user",content:"다음 이야기"}]})});
  const wire=await(await POST(request())).text();

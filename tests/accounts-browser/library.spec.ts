@@ -41,11 +41,14 @@ test("direct story and chat landings restore the selected character and remain o
 
 test("activity restoration waits for cloud data, preserves navigation and offers character selection on failure",async({page})=>{
  await signIn(page);await accountRoutes(page);let release!:()=>void;
+ await page.goto("/ideal/store");
  const held=new Promise<void>(resolve=>{release=resolve;});
  await page.route(`**/api/account?document=${characterId}*`,async route=>{await held;return route.fulfill({json:{id:characterId,title:"희진",payload:snapshot,media:{original:"https://example.test/image.jpg",gallery:{}}}});});
- await page.goto("/ideal/story");await expect(page.getByText("이야기를 불러오고 있어요…",{exact:true})).toBeVisible();
+ await page.goto("/ideal/story");await expect(page.getByRole("dialog",{name:"불러오는 중",exact:true})).toBeVisible();
+ await expect(page.locator("dialog.screen-loading")).toHaveCount(1);
+ await page.keyboard.press("Escape");await expect(page.getByRole("dialog",{name:"불러오는 중",exact:true})).toBeVisible();
  await expect(page.getByRole("heading",{name:"캐릭터를 먼저 만들어주세요."})).toHaveCount(0);
- await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"스토어",exact:true}).click();release();
+ await page.goBack();release();
  await expect(page).toHaveURL(/\/ideal\/store$/);
  await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({status:500,json:{error:"fixture failure"}}));
  await page.goto("/ideal/story");
@@ -54,37 +57,44 @@ test("activity restoration waits for cloud data, preserves navigation and offers
  await expect(page).toHaveURL(/\/ideal\/story$/);
 });
 
-test("creation framing fields validate detail focus, send choices and reset for a fresh character",async({page})=>{
- await signIn(page);await accountRoutes(page);let calls=0,choice:any;
+test("screen loading reuses the writing artwork, clears on errors and excludes background notification sync",async({page})=>{
+ await signIn(page);await accountRoutes(page);let release!:()=>void;
+ const held=new Promise<void>(resolve=>{release=resolve;});
+ await page.route(`**/api/account?document=${characterId}*`,async route=>{await held;return route.fulfill({json:{id:characterId,title:"희진",payload:snapshot,media:{original:"https://example.test/image.jpg",gallery:{}}}});});
+ await page.goto(`/ideal/characters/${characterId}`);
+ const popup=page.getByRole("dialog",{name:"불러오는 중",exact:true});
+ await expect(popup).toBeVisible();await expect(popup).toHaveText("불러오는 중…");
+ await expect(page.getByText("작품을 불러오는 중…",{exact:true})).toHaveCount(0);
+ await expect.poll(()=>popup.locator("img").evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth>0)).toBe(true);
+ await page.screenshot({path:".verification/screen-loading.png",fullPage:true});
+ release();await expect(popup).toHaveCount(0);await expect(page.getByRole("tabpanel",{name:"대화 목록"})).toBeVisible();
+ let fail!:()=>void;const settingsHeld=new Promise<void>(resolve=>{fail=resolve;});
+ await page.route("**/api/notifications",async route=>{await settingsHeld;return route.fulfill({status:500,json:{error:"알림 설정 조회 실패"}});});
+ await page.goto("/ideal/mypage");await expect(popup).toBeVisible();fail();
+ await expect(page.getByText("알림 설정 조회 실패",{exact:true})).toBeVisible();await expect(popup).toHaveCount(0);
+ await page.route("**/api/notifications?sync=1",async route=>{await new Promise(resolve=>setTimeout(resolve,500));return route.fulfill({json:{unread:{},pushEnabled:false,quietHours:true,available:true,activities:[],messages:[]}});});
+ const sync=page.waitForRequest(request=>request.url().includes("/api/notifications?sync=1"));
+ await page.evaluate(()=>window.dispatchEvent(new Event("maite-checkins-refresh")));await sync;
+ await expect(popup).toHaveCount(0);
+});
+
+test("character creation uses automatic framing without camera detail inputs",async({page})=>{
+ await signIn(page);await accountRoutes(page);let calls=0,submittedFraming:boolean|undefined;
  const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#b9a6dc"}}).jpeg().toBuffer();
  await page.route("**/api/characters",async route=>{
-  calls++;const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();choice=JSON.parse(String(form.get("framing")));
+  calls++;const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();submittedFraming=form.has("framing");
   return route.fulfill({contentType:"image/jpeg",body:jpeg});
  });
  await page.goto("/ideal/new");await fillCharacterProfile(page);
- await page.getByLabel("촬영 범위",{exact:true}).selectOption("detail");
- await page.getByRole("button",{name:"캐릭터 생성",exact:true}).click();
- await expect(page.locator(".chat-error[role=alert]")).toContainText("집중 대상");expect(calls).toBe(0);
- await page.getByLabel("집중 대상",{exact:true}).fill("눈빛");
- await page.getByLabel("촬영 범위",{exact:true}).selectOption("face");
- await expect(page.getByLabel("집중 대상",{exact:true})).toHaveCount(0);
- await expect(page.getByLabel("자세·동작 (선택)",{exact:true})).toHaveCount(0);
- await page.getByLabel("카메라 각도",{exact:true}).selectOption("threeQuarter");
- await page.getByLabel("시선",{exact:true}).selectOption("viewer");
- await page.getByLabel("표정 (선택)",{exact:true}).fill("수줍은 미소");
- await page.screenshot({path:".verification/image-framing-creation.png",fullPage:true});
+ await expect(page.locator(".image-framing-fields")).toHaveCount(0);
+ await expect(page.getByLabel("촬영 범위",{exact:true})).toHaveCount(0);
  await page.getByRole("button",{name:"캐릭터 생성",exact:true}).click();
  await page.getByRole("dialog",{name:"새로운 캐릭터를 만날까요?"}).getByRole("button",{name:"캐릭터 생성",exact:true}).click();
  await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
- expect(choice).toMatchObject({shot:"face",angle:"threeQuarter",gaze:"viewer",expression:"수줍은 미소"});expect(choice.focus).toBeUndefined();expect(calls).toBe(1);
- await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
- await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"캐릭터",exact:true}).click();
- await page.getByRole("link",{name:"새 캐릭터 만들기",exact:true}).click();
- await expect(page.getByLabel("촬영 범위",{exact:true})).toHaveValue("auto");
- await expect(page.getByLabel("표정 (선택)",{exact:true})).toHaveValue("");
+ expect(submittedFraming).toBe(false);expect(calls).toBe(1);
 });
 
-test("chat and story image confirmations accept cropped framing and require a detail target",async({page})=>{
+test("camera controls are exclusive to story illustrations while chat keeps scene keywords",async({page})=>{
  await signIn(page);await accountRoutes(page);
  const saved=structuredClone(snapshot);saved.story.started=true;saved.story.committed=archive;
  await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({json:{id:characterId,title:"희진",payload:saved,media:{original:"https://example.test/image.jpg",gallery:{}}}}));
@@ -101,10 +111,16 @@ test("chat and story image confirmations accept cropped framing and require a de
   const dialog=page.getByRole("dialog",{name:mode==="chat"?"대화 장면을 그릴까요?":"삽화를 그릴까요?"});
   await dialog.getByLabel("장면 장소",{exact:true}).fill("카페 창가");
   if(mode==="chat"){
+   await expect(dialog.locator(".image-framing-fields")).toHaveCount(0);
+   await expect(page.getByText("이미지 구도",{exact:true})).toHaveCount(0);
+   await dialog.getByLabel("장면 의상",{exact:true}).fill("흰 셔츠");
+  }else{
+   await dialog.getByLabel("삽화 대상 인물",{exact:true}).fill("희진");
    await dialog.getByLabel("촬영 범위",{exact:true}).selectOption("face");
    await dialog.getByLabel("카메라 각도",{exact:true}).selectOption("profile");
-   await dialog.getByLabel("장면 의상",{exact:true}).fill("");
-  }else{
+   await expect(dialog.getByLabel("시선",{exact:true})).toBeVisible();
+   await expect(dialog.getByLabel("표정 (선택)",{exact:true})).toBeVisible();
+   await expect(dialog.getByRole("button",{name:"그림 만들기",exact:true})).toBeEnabled();
    await dialog.getByLabel("촬영 범위",{exact:true}).selectOption("detail");
    await expect(dialog.getByRole("button",{name:"그림 만들기",exact:true})).toBeDisabled();
    await dialog.getByLabel("집중 대상",{exact:true}).fill("책상 위의 꽃");
@@ -114,7 +130,8 @@ test("chat and story image confirmations accept cropped framing and require a de
   expect(await dialog.evaluate(el=>el.scrollWidth<=el.clientWidth)).toBe(true);
   await dialog.getByRole("button",{name:"그림 만들기",exact:true}).click();
   await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
-  expect(scenes.at(-1).selection.framing).toMatchObject(mode==="chat"?{shot:"face",angle:"profile"}:{shot:"detail",focus:"책상 위의 꽃"});
+  if(mode==="chat")expect(scenes.at(-1).selection.framing).toBeUndefined();
+  else expect(scenes.at(-1).selection.framing).toMatchObject({shot:"detail",angle:"profile",focus:"책상 위의 꽃"});
   expect(scenes.at(-1).kind).toBe(mode==="chat"?"outfit":"illustration");
   await page.getByRole("button",{name:"전체화면 닫기",exact:true}).click();
  }

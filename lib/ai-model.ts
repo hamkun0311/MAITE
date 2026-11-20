@@ -63,7 +63,13 @@ export function novelPlanMaxOutputTokens() {
 }
 
 // Independent review remains the quality-preserving default.
-export function novelGenerationMode(){return process.env.OPENAI_NOVEL_GENERATION_MODE?.trim()==="integrated"?"integrated":"reviewed";}
+export function geminiNovelWriteModel() {
+  return process.env.GEMINI_NOVEL_WRITE_MODEL?.trim() || "";
+}
+
+export function novelGenerationMode(geminiWriter = geminiNovelWriteModel()) {
+  return !geminiWriter && process.env.OPENAI_NOVEL_GENERATION_MODE?.trim() === "integrated" ? "integrated" : "reviewed";
+}
 export function novelIntegratedMaxOutputTokens(){
  const value=Number(process.env.OPENAI_NOVEL_INTEGRATED_MAX_OUTPUT_TOKENS);
  return Number.isInteger(value)&&value>=4000&&value<=32000?value:12000;
