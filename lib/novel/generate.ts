@@ -21,25 +21,20 @@ import {NovelUpstreamError} from "./upstream-error.ts";
 import {openAIResponsesEndpoint} from "../openai-endpoint.ts";
 import {findRepeatedPassage} from "./repetition.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v48-scene-repetition";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v49-in-scene-expansion";
 
 const sceneWriting = "Before drafting, privately plan 3–4 connected scenes from the current continuity and supplied plot. Map the five writing beats to these scenes as appropriate, giving each scene a distinct purpose. Dramatize each with concrete action, dialogue or reaction as appropriate. Carry each action's result forward: a completed exchange, arrival or departure happens once unless a new occurrence is explicitly established on page. Write one continuous chapter without outline or scene labels.";
 
 const propContinuity = "Preserve plot-critical props from the original and compatible earlier concepts, propStates and established events. Track who holds each item separately from who may operate it. Show a handoff or an explicit new agreement before changing either; a new scene is not a transfer. Only a newer explicit user requirement can override a concept constraint.";
 const propMemory = "Audit who holds and who may operate each plot-critical prop against the concepts and continuity. Cite the contradictory sentence as a blocking continuity issue. In memoryPatch.propChanges record at most two newly established or explicitly changed items, using the same item name as propStates. Use null for an unknown holder or operator. Cite current prose; a change of holder or operator requires changeEvidence showing the transfer or new agreement, not just possession or use. Omit routine objects and unchanged facts.";
+const locationAudit = "For each consequential move, check who occupies each place, relative directions from the speaker and the actual route. Cite the contradictory words as a continuity issue; never use them as evidence for a repaired location fact.";
 
 const MIN_CHAPTER_CHARS = 2000;
 
-function sceneInsertionPoint(prose: string, previousOffset?: number) {
+function expansionBoundaries(prose: string) {
   const paragraphs = [...prose.matchAll(/\r?\n(?:[^\S\r\n]*\r?\n)+/g)];
-  const boundaries = paragraphs.length ? paragraphs : [...prose.matchAll(/[.!?…。！？][”’"]*\s+/gu)];
-  const target = prose.length * 0.6;
-  const offsets = boundaries.map(match => {
-    const offset = match.index;
-    return /^[.!?…。！？]/u.test(match[0]) ? offset + match[0].trimEnd().length : offset;
-  }).filter(offset => offset !== previousOffset);
-  if (!offsets.length) return previousOffset ?? 0;
-  return offsets.reduce((best, offset) => Math.abs(offset - target) < Math.abs(best - target) ? offset : best);
+  const boundaries = paragraphs.length ? paragraphs : [...prose.matchAll(/(?<=[.!?…。！？])\s+/gu)];
+  return boundaries.filter(match => match.index > 0 && match.index + match[0].length < prose.length);
 }
 
 export class NovelOutputLimitError extends Error {
@@ -130,7 +125,7 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     const isProse = name === "prose" || name === "scene_insert";
     if (name === "episode_bundle") proseCalls++;
     const feature = name === "prose" ? (proseCalls ? "rewrite" : "write") : name;
-    if (isProse) proseCalls++;
+    if (name === "prose") proseCalls++;
     const callNumber=calls;
     if (isProse && geminiWriter && geminiKey) {
       const metadata = {call: callNumber, feature: `novel.${feature}`, reasoningEffort: "low"};
@@ -202,58 +197,54 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     if (cleaned !== prose) trace.event("repeated_dialogue_removed");
     return cleaned;
   }
-  async function insertMissingScenes(original: string) {
-    let draft = original;
-    let offset = sceneInsertionPoint(draft);
-    let chars = Array.from(draft).length;
-    let retryReason: "duplicate_scene" | "duplicate_boundary_dialogue" | "empty_scene" | undefined;
-    while (chars < MIN_CHAPTER_CHARS) {
-      phase("rewriting");
-      trace.event("chapter_length_short",{chars,missingChars:MIN_CHAPTER_CHARS-chars});
-      const before = draft.slice(0, offset);
-      const after = draft.slice(offset);
-      let rawScene: string;
-      try {
-        rawScene = await call(
-          `Write ONLY one new Korean fiction scene for the insertion point between before and after. Both excerpts are existing prose and remain verbatim. Bridge their situations without repeating their dialogue, recapping events, changing established outcomes or resolving the conflict early. Give the new scene a distinct action, exchange and emotional shift that lead into after. Preserve viewpoint, character voices, and causal continuity. Output only new scene prose, without headings, notes, or copies of the excerpts. ${retryReason ? "The previous insertion was unusable. Create a different action and exchange that have not happened anywhere in the supplied draft. Begin and end with fresh prose." : ""} ${propContinuity} ${promiseWriting}`,
-          JSON.stringify({ before, after, chars, minimumChapterChars:MIN_CHAPTER_CHARS, targetChapterChars:2800,
-            targetSceneChars:[2800-chars,2950-chars], plan, installmentGoal:chapterContext.installmentGoal,
-            ...(retryReason ? {retryReason} : {}),
-            character, seriesConcept, earlierConcepts, direction:schedule.direction,
-            sharedTimeline:timeline && novelTimelineContext(timeline), propStates:memory.propStates }),
-          undefined, "scene_insert", 3500
-        );
-      } catch (error) {
-        signal.throwIfAborted();
-        trace.event("chapter_length_fallback",{chars,reason:error instanceof NovelOutputLimitError ? "output_token_limit" : "scene_call_failed",
-          ...(error instanceof NovelUpstreamError ? error.diagnostics : {})});
-        break;
-      }
-      const scene = cleanRepeatedDialogue(plainDialogue(rawScene).trim());
-      const expandedBefore = before + (before && !before.endsWith("\n\n") ? "\n\n" : "") + scene;
-      const expanded = expandedBefore + (/^\r?\n[^\S\r\n]*\r?\n/.test(after) ? "" : "\n\n") + after;
-      const rejection = !scene ? "empty_scene"
-        : draft.includes(scene) || scene.includes(draft) || repeatsPrevious(scene,draft) ? "duplicate_scene"
-        : removeAdjacentRepeatedDialogue(expanded) !== expanded ? "duplicate_boundary_dialogue"
-        : findRepeatedPassage(expanded) ? "duplicate_scene"
-        : undefined;
-      if (rejection) {
-        trace.event("chapter_scene_rejected",{reason:rejection,chars,sceneChars:Array.from(scene).length,willRetry:!retryReason});
-        if (retryReason) {
-          trace.event("chapter_length_fallback",{chars,reason:rejection});
-          break;
-        }
-        retryReason = rejection;
-        offset = sceneInsertionPoint(draft, offset);
-        continue;
-      }
-      retryReason = undefined;
-      draft = expanded;
-      offset = expandedBefore.length;
-      chars = Array.from(draft).length;
-      trace.event("chapter_scene_inserted",{chars,addedChars:Array.from(scene).length});
+  async function expandExistingScene(original: string) {
+    const chars = Array.from(original).length;
+    const boundaries = expansionBoundaries(original);
+    const fallback = (reason: string, details: Record<string, unknown> = {}) => {
+      trace.event("chapter_length_fallback",{chars,reason,...details});
+      return null;
+    };
+    if (!boundaries.length) return fallback("no_internal_boundary");
+
+    const starts = [0,...boundaries.map(match=>match.index+match[0].length)];
+    const passages = starts.map((start,index)=>({number:index+1,text:original.slice(start,boundaries[index]?.index)}));
+    const missingChars = MIN_CHAPTER_CHARS - chars;
+    phase("rewriting");
+    trace.event("chapter_length_short",{chars,missingChars});
+    let raw: string;
+    try {
+      raw = await call(
+        `Deepen ONE existing scene in this Korean chapter. Choose a boundary AFTER numbered passage N and BEFORE N+1 where the same scene is still in progress. Read the entire draft: locations, people, relative positions, time and events on both sides are fixed. Add concrete dialogue, reactions and choices that explain the next existing action. Keep the same location and participants; do not introduce a new event, arrival, departure, handoff, reveal or payoff, or perform an action from any later passage early. Add only new prose inside this scene. End immediately before the next existing action. Reply with AFTER N on its own line followed by the added prose; reply KEEP if no boundary supports meaningful expansion. ${propContinuity} ${promiseWriting}`,
+        JSON.stringify({ passages, chars, minimumChapterChars:MIN_CHAPTER_CHARS,
+          targetAddedChars:[missingChars+100,missingChars+500], installmentGoal:chapterContext.installmentGoal, plan,
+          character, seriesConcept, earlierConcepts, previousEnding:memory.previousEnding, worldFacts:memory.worldFacts,
+          sharedTimeline:timeline && novelTimelineContext(timeline), propStates:memory.propStates }),
+        undefined,"scene_insert",3500
+      );
+    } catch (error) {
+      signal.throwIfAborted();
+      return fallback(error instanceof NovelOutputLimitError ? "output_token_limit" : "scene_call_failed",
+        error instanceof NovelUpstreamError ? error.diagnostics : {});
     }
-    return draft;
+    if (raw.trim() === "KEEP") return fallback("no_safe_expansion");
+    const selection = raw.trim().match(/^AFTER ([1-9]\d*)\r?\n([\s\S]+)$/);
+    const boundary = boundaries[Number(selection?.[1])-1];
+    if (!selection || !boundary) return fallback("invalid_expansion_boundary");
+    const addition = cleanRepeatedDialogue(plainDialogue(selection[2]).trim());
+    const before = original.slice(0,boundary.index);
+    const after = original.slice(boundary.index);
+    const separator = boundary[0].includes("\n") ? "" : "\n\n";
+    const expanded = before + "\n\n" + addition + separator + after;
+    const rejection = !addition ? "empty_scene"
+      : expanded.length > 8000 ? "expansion_too_long"
+      : original.includes(addition) || addition.includes(original) || repeatsPrevious(addition,original) ? "duplicate_scene"
+      : removeAdjacentRepeatedDialogue(expanded) !== expanded || findRepeatedPassage(expanded) ? "duplicate_scene"
+      : undefined;
+    if (rejection) return fallback(rejection);
+    const firstSource = manuscriptSources(before).length+1;
+    const lastSource = firstSource+manuscriptSources(addition).length-1;
+    trace.event("chapter_scene_inserted",{chars:Array.from(expanded).length,addedChars:Array.from(addition).length,afterPassage:Number(selection[1])});
+    return {text:expanded,firstSource,lastSource};
   }
   let draft = "";
   let reviewRetryUsed = false;
@@ -261,7 +252,7 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     let repair="";
     for(let attempt=0;;attempt++){
       phase(attempt?"rewriting":"writing");
-      const raw=await call(`${base}\n${novelIntegratedReviewInstructions}\n${promiseReview}\n${arcInstruction}\n${schedule.direction}\nWrite ONE completed installment and its verified memory patch as JSON. Global chapter=${old.chapter+1}; arcChapter=${schedule.chapter}. ${sceneWriting} ${propMemory} Edit for logic and natural Korean, then fill review from the FINAL prose. Preserve character motives, established chat events and knowledge boundaries; adapt future milestones to current facts. All evidence fields quote exact substrings of this same prose, at most 400 characters; no source IDs, invented quotations or outline outcomes. memoryPatch.sharedChanges contains only important on-page changes with known/public/reader visibility. Reuse actor/event keys. Record no hypothetical or planned event as completed. A final installment must actually fulfill the required ending and relationships, with no sequel hook. Review and memory are private metadata; no editorial comments in prose. Output only the schema.`,
+      const raw=await call(`${base}\n${novelIntegratedReviewInstructions}\n${promiseReview}\n${arcInstruction}\n${schedule.direction}\nWrite ONE completed installment and its verified memory patch as JSON. Global chapter=${old.chapter+1}; arcChapter=${schedule.chapter}. ${sceneWriting} ${propMemory} ${locationAudit} Edit for logic and natural Korean, then fill review from the FINAL prose. Preserve character motives, established chat events and knowledge boundaries; adapt future milestones to current facts. All evidence fields quote exact substrings of this same prose, at most 400 characters; no source IDs, invented quotations or outline outcomes. memoryPatch.sharedChanges contains only important on-page changes with known/public/reader visibility. Reuse actor/event keys. Record no hypothetical or planned event as completed. A final installment must actually fulfill the required ending and relationships, with no sequel hook. Review and memory are private metadata; no editorial comments in prose. Output only the schema.`,
         JSON.stringify({context:{...chapterContext,character:undefined},plan,...(repair?{repair}:{})}),integratedEpisodeSchema(finale,promises.length),"episode_bundle",novelIntegratedMaxOutputTokens());
       try{
         const parsed=JSON.parse(raw),preview=integratedEpisodeSchema(finale,promises.length).safeParse(parsed);
@@ -303,6 +294,9 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
   let corrections = "";
   let patch: z.infer<typeof memoryPatchSchema> | undefined;
   let closedSharedPromises: string[] = [];
+  let expansionAttempted = false;
+  let originalDraft = "";
+  let expandedSources: {first:string;last:string} | undefined;
   for (let attempt = 0; ; attempt++) {
     if (!draft || corrections) {
       phase(attempt ? "rewriting" : "writing");
@@ -319,7 +313,15 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
       corrections = JSON.stringify({ repeated, instruction: "Remove the replayed exchange and any repeated actions around it. Keep the first occurrence and carry its outcome forward in chronological order. Preserve the original events and write the complete corrected chapter." });
       continue;
     }
-    draft = await insertMissingScenes(draft);
+    if (!expansionAttempted && Array.from(draft).length < MIN_CHAPTER_CHARS) {
+      expansionAttempted = true;
+      const expansion = await expandExistingScene(draft);
+      if (expansion) {
+        originalDraft = draft;
+        draft = expansion.text;
+        expandedSources = {first:"source_"+expansion.firstSource,last:"source_"+expansion.lastSource};
+      }
+    }
     const sourceUnits = manuscriptSources(draft);
     const citation = z.enum(sourceUnits.map(source => source.id) as [string, ...string[]]);
     phase("reviewing");
@@ -330,9 +332,12 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
       "Treat current sharedTimeline as newer than previousProse. Supported intervening changes in place, clothes or action status are not continuity errors. Only compare the same actor/event/time; do not flag a valid scene advance or a harmless stylistic choice as a blocking issue. " +
       "Extract a compact memory PATCH only from accepted draft and existing memory. Do not repeat unchanged facts or character entries: existing memory is merged automatically. Keep summary within about 500 Korean characters, factual descriptions within about 80 characters, at most 3 newEvents, at most 2 entries per other fact/thread array, and at most 3 changed characters with at most 2 new knowledge/relationship entries each. These are compression targets, not permission to change established facts. Do not extract planned-but-unwritten events. Summary compresses prior summary plus actual new events, retaining established causal facts. Every factual change must select a genuinely supporting sourceUnits ID as evidence. Keep worldFacts (confirmed truth) separate from each character's knowledge and beliefs; do not promote guesses to truth. Record only actual goal/knowledge/relationship changes for characters. Preserve existing facts: do not silently contradict them. closedThreads.text must exactly match an existing openThreads entry or sharedTimeline.promises text; resolvedEvents record what is now settled and must not be replayed. nextChapterGoal is a future suggestion, never a completed fact; for the final chapter write '완결'. Omit unsupported changes with empty arrays or null. currentSituation and newEvents must be supported by draft. " +
       "In sharedChanges extract at most 4 IMPORTANT on-page events, relationship changes, commitments or lasting statuses for both modes; use [] if none. subjectName/targetName must be exact existing participant names or names in the manuscript (null target when absent). Reuse sharedTimeline canon key/actor/target for the same event/relationship; new keys event_<slug>, relationship_<target>, promise_<slug> remain stable. Evidence selects sourceUnits IDs. status distinguishes planned, ongoing, completed, cancelled. visibility public means common knowledge established on page; character means the MAIN named character personally witnesses or learns it; reader means narrator-only revelation, another NPC's secret/private thought, or anything not known to the main character. Default unknown knowledge to reader, never treat a mentioned character as having witnessed every event. Public scene and main-character relationship entries must not disclose a reader-only secret. Do not extract outline outcomes or future directions as completed facts. Check each person's dialogue and decisions against explicit personality, motives and causal emotional response; vague generic reactions must be corrected within the current installment, without changing past chapters." +
-      "\n" + propMemory + "\n" + novelReviewerQualityInstructions + (promiseReview ? "\n" + promiseReview : "") +
+      "\n" + propMemory + "\n" + novelReviewerQualityInstructions +
+      "\n" + locationAudit +
+      (expandedSources ? " Examine expandedSources and both adjoining original passages. The added prose must stay in the same scene and lead into the next original action. Flag a blocking continuity issue if it performs an original action early, replays a completed move, changes location or requires an unstated move back. Cite the offending passage." : "") +
+      (promiseReview ? "\n" + promiseReview : "") +
       " If this draft has material blocking errors, concept violations, copied events or an unresolved final ending, set memoryPatch:null: it will be discarded, so do not spend output on a summary or memory for the rejected draft. Keep the full independent verdict and supporting evidence. For an acceptable draft (including advisory missing beats only), provide the complete grounded memoryPatch with sharedChanges and dialogueRegisters; null can NEVER be committed.",
-      JSON.stringify({ context: reviewContext, plan, previousProse, sourceUnits:sourceContext(sourceUnits) }), "chapter_review", novelReviewMaxOutputTokens()), sourceUnits);
+      JSON.stringify({ context: reviewContext, plan, previousProse, expandedSources, sourceUnits:sourceContext(sourceUnits) }), "chapter_review", novelReviewMaxOutputTokens()), sourceUnits);
     const promiseResult = auditPromises(reviewed.promiseAudit,draft,attempt+1);
     const resolution = finale ? createFinalReviewSchema().parse(Object.fromEntries(Object.entries(reviewed).filter(([key]) => key !== "memoryPatch" && key !== "promiseAudit"))).resolution : undefined;
     review = reviewSchema.parse(Object.fromEntries(Object.entries(reviewed).filter(([key]) => key !== "resolution" && key !== "memoryPatch" && key !== "promiseAudit")));
@@ -353,6 +358,12 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
       pass: review.pass, plannedBeats: plan.beats.length, completedBeats: review.completedBeats,
       groundedIssues:grounded,blockingTypes: grounded.map(issue => issue.type), copied, progress, endingSatisfied, conceptSatisfied, sceneSatisfied, accepted, retryReasons });
     if (accepted) { patch = memoryPatchSchema.parse(reviewed.memoryPatch); closedSharedPromises=promiseResult.closed; break; }
+    if (expandedSources) {
+      trace.event("chapter_expansion_discarded",{chars:Array.from(originalDraft).length,retryReasons});
+      draft = originalDraft;
+      expandedSources = undefined;
+      continue;
+    }
     // An unsupported criticism never authorizes a speculative rewrite.
     if (reviewRetryUsed || (!copied && !grounded.length && endingSatisfied && conceptSatisfied && promiseResult.accepted)) throw new Error("Chapter review failed");
     reviewRetryUsed = true;
