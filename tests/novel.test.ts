@@ -271,6 +271,7 @@ test("all genres require explicit scene audit and repair only evidence-backed in
   {genre:"학원극",flag:"speechIntentClear",type:"dialogue",context:"태오는 선생님께 존댓말로 증언했다. 이어 친구 준호가 태오에게만 작게 물었다. 둘은 평소 반말로 이야기한다.",bad:"태오는 준호에게 몸을 돌려 “선생님이 혼자 곤란해지는 게 보기 싫어서요”라고 답했다.",good:"태오는 준호에게 몸을 돌려 “선생님 혼자 곤란해지는 게 보기 싫었어”라고 답했다."},
   {genre:"직장극",flag:"speechIntentClear",type:"dialogue",context:"팀장은 지민에게 자기 실수만 책임지면 되고 동료의 실수까지 떠안을 필요는 없다고 말했다.",bad:"“네 실수를 심각하게 받아들이라는 뜻은 아니야.”",good:"“네 실수는 바로잡되 다른 사람 몫까지 책임질 필요는 없어.”"},
   {genre:"일상극",flag:"actionsCoherent",type:"causality",context:"동아리에서 신청서를 잃어버려 제출 경로를 찾아야 했다.",bad:"“신청서를 잃어버린 이유를 찾으려면 다 같이 창문부터 닦아요.”",good:"“먼저 신청서를 마지막으로 받은 사람부터 확인해요.”"},
+  {genre:"일상",flag:"speechIntentClear",type:"language",context:"화자는 거실에서 방금 본 장면을 떠올렸다.",bad:"아까 본 장 찬란했던 시각적 잔상이 지워지지 않았다.",good:"아까 본 장면이 자꾸 눈앞에 어른거렸다."},
   {genre:"학원극",flag:"speechIntentClear",type:"language",context:"수현과 태오는 이미 복도에 서 있었고 다른 학생들은 계단 앞에서 기다렸다.",bad:"“지금 나가면 누가 이 반을 흔들려고 했는지, 당신이 도구가 됩니다.”",good:"“태오야, 저 애들 따라가면 네가 먼저 수업을 박차고 나간 것처럼 보일 수 있어.”"},
   {genre:"직장극",flag:"rolesStable",type:"continuity",context:"지수는 동료가 회의실을 나가며 고개를 끄덕이는 모습만 보았다.",bad:"지수는 그 고갯짓만으로 동료가 자신을 해고할 서류를 준비했다는 사실을 알아냈다.",good:"지수는 동료가 자기 쪽을 본 것이 마음에 걸렸지만 그 뜻은 알 수 없었다."},
   {genre:"우정극",flag:"actionsCoherent",type:"causality",context:"친구가 내일 다시 올지 묻자 민아는 반드시 오겠다고 답했다.",bad:"“다음엔 혼자 안 남겠습니다”라는 메모를 보고 민아는 친구가 내일 오겠다는 답장을 했음을 알았다.",good:"“내일은 나도 기다리고 있을게”라는 메모를 보고 민아는 웃었다."},
@@ -353,6 +354,7 @@ test("quality instructions keep a bounded shared core and separate prose from re
  }
  assert.match(novelReviewerQualityInstructions,/speechIntentClear checks clause links, referents and literal assertions\/negations before inferred intent/);
  assert.match(novelIntegratedReviewInstructions,/speechIntentClear checks clause links, referents and literal assertions\/negations before inferred intent/);
+ for(const instructions of [novelReviewerQualityInstructions,novelIntegratedReviewInstructions]) assert.match(instructions,/서술·대사에서 뜻을 깨뜨리는 오탈자/);
  assert.doesNotMatch(writer,/SCENE AUDIT:|REGISTER MEMORY:/);
  assert.doesNotMatch(novelReviewerQualityInstructions,/WRITING TASK:/);
  assert.match(writer,/in JSON mode place requested metadata only in its separate fields/i);
@@ -632,8 +634,8 @@ test("Gemini expands one existing scene, then reviews the expansion or the origi
    if (input.expandedSources) {
     calls.push("review-expanded");
     assert.match(body.instructions,/performs an original action early/);
-    const first=units.find(unit=>unit.id===input.expandedSources.first);
-    const last=units.findIndex(unit=>unit.id===input.expandedSources.last);
+    const first=units.find(unit=>unit.id===input.expandedSources[0].first);
+    const last=units.findIndex(unit=>unit.id===input.expandedSources[0].last);
     assert.ok(first?.text && last>=0);
     assert.match(units[last+1].text,/건너편 가게의 불이 하나씩 꺼졌다/);
     if (supplement?.includes(returnHome)) {
@@ -670,7 +672,12 @@ test("Gemini expands one existing scene, then reviews the expansion or the origi
   assert.equal(result.text.length>=2000,addition===longAddition);
   assert.deepEqual(calls,["write","expand","review-expanded"]);
  }
- for(const candidate of ["KEEP","AFTER 2\n"+sceneOne,"AFTER 1\n"+prose,null]){
+ calls=[];supplement="AFTER 1\n"+sceneOne+"\nAFTER 2\n"+sceneTwo;
+ const developed=await generateChapter(options);
+ assert.equal(developed.text,prose+"\n\n"+sceneOne+sceneOpening.slice(prose.length)+"\n\n"+sceneTwo);
+ assert.ok(developed.text.length>2000);
+ assert.deepEqual(calls,["write","expand","review-expanded"]);
+ for(const candidate of ["KEEP","AFTER 3\n"+sceneOne,"AFTER 1\n"+prose,null]){
   calls=[];supplement=candidate;
   assert.equal((await generateChapter(options)).text,sceneOpening);
   assert.deepEqual(calls,["write","expand","review-original"]);
