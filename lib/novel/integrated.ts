@@ -2,6 +2,7 @@ import {z} from "zod";
 import {createFinalReviewSchema,createReviewSchema,createMemoryPatchSchema,hasEvidence,memoryPatchSchema,repeatsPrevious} from "./state.ts";
 import {plainDialogue} from "../chat/presentation.ts";
 import {sceneAuditPassed} from "./dialogue.ts";
+import {findRepeatedPassage} from "./repetition.ts";
 
 import {promiseAuditFields} from "./promises.ts";
 
@@ -16,6 +17,7 @@ export function validateIntegratedEpisode(value:unknown,chapter:number,arcChapte
  const count=Array.from(result.prose).length;
  if(result.chapter!==chapter||result.arcChapter!==arcChapter)throw new Error("Integrated episode numbering mismatch");
  if(!result.prose)throw new Error("Integrated episode empty prose");
+ if(findRepeatedPassage(result.prose))throw new Error("Integrated episode repeats a passage");
  if(repeatsPrevious(result.prose,previousProse))throw new Error("Integrated episode repeats previous prose");
  const review=result.review;
  if(!sceneAuditPassed(review.sceneAudit))throw new Error("Integrated scene audit failed");

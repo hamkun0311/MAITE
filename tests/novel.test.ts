@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import { generateChapter, novelJsonSchema } from "../lib/novel/generate.ts";
 import { createReviewSchema, createMemoryPatchSchema, emptyStoryState, mergeMemory, repeatsPrevious, storyStateSchema } from "../lib/novel/state.ts";
+import { findRepeatedPassage } from "../lib/novel/repetition.ts";
 import { z } from "zod";
 import { POST } from "../app/api/chat/route.ts";
 import { manuscriptSources, resolveSources } from "../lib/novel/sources.ts";
@@ -607,7 +608,8 @@ test("Gemini gateway writes through Chat Completions and preserves usage and err
 });
 
 const sceneOpening = prose + "\n\n" + "창문 너머로 건너편 가게의 불이 하나씩 꺼졌다.";
-const sceneOne = "서하는 공구함을 내려다봤다. 친구는 먼저 손전등을 건넸다. " + "나다라마바".repeat(160);
+const insertionDialogue = "“공구함에 있는 손전등을 켜면 서랍 깊숙한 곳에 손을 넣지 않아도 돼.”";
+const sceneOne = "서하는 공구함을 내려다봤다. 친구는 먼저 손전등을 건넸다. " + "나다라마바".repeat(160) + "\n\n" + insertionDialogue;
 const sceneTwo = "둘은 함께 수리할 곳을 하나씩 확인했다. " + "차카타파하".repeat(300);
 
 test("Gemini retries a duplicate insertion and reviews a short draft when expansion stops", async t => {
@@ -646,7 +648,8 @@ test("Gemini retries a duplicate insertion and reviews a short draft when expans
   if(providerError)return Response.json({error:{status:"UNAVAILABLE"}},{status:503});
   lastWasDuplicate=duplicateScenes>0 && acceptedScenes>=duplicateAfter;
   if(lastWasDuplicate)duplicateScenes--;
-  const text=lastWasDuplicate ? prose : acceptedScenes++===0 ? sceneOne : sceneTwo;
+  const partialOverlap = "친구가 서가 쪽으로 고개를 돌렸다.\n\n" + insertionDialogue + "\n\n" + "자차카타파".repeat(90);
+  const text=lastWasDuplicate ? (duplicateAfter ? partialOverlap : prose) : acceptedScenes++===0 ? sceneOne : sceneTwo;
   return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text}]}}]});
  });
  const state={...emptyStoryState(),chapter:1,seriesArc};
@@ -725,6 +728,44 @@ test("adjacent repeated dialogue is removed before chapter review without anothe
  const result=await generateChapter({character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
  assert.equal(result.text,expected);
  assert.deepEqual(calls,["write","review"]);
+});
+
+test("a repeated exchange across several paragraphs is corrected before review", async t => {
+ const line = "“이따가 공구함에서 드라이버 좀 찾아 주면 수리를 끝낼 수 있을 것 같아.”";
+ const exchange = "그녀는 친구의 연락처를 저장하고 다음 날 아침에 확인할 계약서 사진을 메시지로 보냈다.";
+ const departure = "친구는 종이 상자를 들고 가게를 나섰다.";
+ const clean = [longProse, line, exchange, departure].join("\n\n");
+ const replayed = [clean, line.replace("“", '"').replace("”", '"'), exchange, departure].join("\n\n");
+ const calls: string[] = [];
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));
+  const input=JSON.parse(body.input);
+  if (body.text?.format.name === "chapter_review") {
+   calls.push("review");
+   assert.equal(findRepeatedPassage(unpack(input.sourceUnits).map(unit=>unit.text).join("\n\n")),undefined);
+   return response(review,init);
+  }
+  if (input.corrections) {
+   calls.push("rewrite");
+   assert.equal(JSON.parse(input.corrections).repeated.first,line);
+   assert.equal(input.previousDraft,replayed);
+   return response(clean);
+  }
+  calls.push("write");
+  return response(replayed);
+ });
+ const result=await generateChapter({character,state:{...emptyStoryState(),chapter:1,seriesArc},direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(result.text,clean);
+ assert.equal(result.state.previousProse,clean);
+ assert.deepEqual(calls,["write","rewrite","review"]);
+});
+
+test("insertion overlap catches a repeated action surrounded by otherwise new prose", () => {
+ const action = "그녀는 친구의 연락처를 저장하고 다음 날 아침에 확인할 계약서 사진을 메시지로 보냈다.";
+ const later = "서하는 친구의 연락처를 저장하고 다음 날 아침에 확인할 계약서 사진을 메시지로 보냈다.";
+ const prose = [action, "계단 아래에서 창문을 닫는 소리가 들렸다.", later].join("\n\n");
+ assert.deepEqual(findRepeatedPassage(prose),{first:action,repeated:later,kind:"narration"});
+ assert.equal(findRepeatedPassage('“응.”\n\n그가 고개를 끄덕였다.\n\n“응.”'),undefined);
 });
 
 test("short integrated drafts use a scene-only request then verify the joined manuscript", async t=>{

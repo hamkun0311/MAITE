@@ -19,10 +19,11 @@ import {inspectPromiseAudit, promiseAuditFields, promiseReviewInstructions, prom
 import {geminiApiKey, writeGeminiProse} from "./gemini.ts";
 import {NovelUpstreamError} from "./upstream-error.ts";
 import {openAIResponsesEndpoint} from "../openai-endpoint.ts";
+import {findRepeatedPassage} from "./repetition.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v47-review-short-fallback";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v48-scene-repetition";
 
-const sceneWriting = "Before drafting, privately plan 3–4 connected scenes from the current continuity and supplied plot. Map the five writing beats to these scenes as appropriate, giving each scene a distinct purpose. Dramatize each with concrete action, dialogue or reaction as appropriate. Let each scene lead to the next; write one continuous chapter without outline or scene labels.";
+const sceneWriting = "Before drafting, privately plan 3–4 connected scenes from the current continuity and supplied plot. Map the five writing beats to these scenes as appropriate, giving each scene a distinct purpose. Dramatize each with concrete action, dialogue or reaction as appropriate. Carry each action's result forward: a completed exchange, arrival or departure happens once unless a new occurrence is explicitly established on page. Write one continuous chapter without outline or scene labels.";
 
 const propContinuity = "Preserve plot-critical props from the original and compatible earlier concepts, propStates and established events. Track who holds each item separately from who may operate it. Show a handoff or an explicit new agreement before changing either; a new scene is not a transfer. Only a newer explicit user requirement can override a concept constraint.";
 const propMemory = "Audit who holds and who may operate each plot-critical prop against the concepts and continuity. Cite the contradictory sentence as a blocking continuity issue. In memoryPatch.propChanges record at most two newly established or explicitly changed items, using the same item name as propStates. Use null for an unknown holder or operator. Cite current prose; a change of holder or operator requires changeEvidence showing the transfer or new agreement, not just possession or use. Omit routine objects and unchanged facts.";
@@ -234,6 +235,7 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
       const rejection = !scene ? "empty_scene"
         : draft.includes(scene) || scene.includes(draft) || repeatsPrevious(scene,draft) ? "duplicate_scene"
         : removeAdjacentRepeatedDialogue(expanded) !== expanded ? "duplicate_boundary_dialogue"
+        : findRepeatedPassage(expanded) ? "duplicate_scene"
         : undefined;
       if (rejection) {
         trace.event("chapter_scene_rejected",{reason:rejection,chars,sceneChars:Array.from(scene).length,willRetry:!retryReason});
@@ -308,6 +310,14 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
         JSON.stringify({ context: { ...chapterContext, character: undefined }, plan, ...(corrections ? {previousDraft: draft, corrections} : {}) }), undefined, "prose", 6000)).trim());
       trace.event("draft",{attempt:attempt+1,source:attempt?"rewrite":"initial",...manuscriptFingerprint(draft)},{prose:draft});
       if (!draft) throw new Error("Empty novel stage");
+    }
+    const repeated = findRepeatedPassage(draft);
+    if (repeated) {
+      trace.event("chapter_repetition_detected",{attempt:attempt+1,kind:repeated.kind,willRetry:!reviewRetryUsed});
+      if (reviewRetryUsed) throw new Error("Chapter review failed");
+      reviewRetryUsed = true;
+      corrections = JSON.stringify({ repeated, instruction: "Remove the replayed exchange and any repeated actions around it. Keep the first occurrence and carry its outcome forward in chronological order. Preserve the original events and write the complete corrected chapter." });
+      continue;
     }
     draft = await insertMissingScenes(draft);
     const sourceUnits = manuscriptSources(draft);
