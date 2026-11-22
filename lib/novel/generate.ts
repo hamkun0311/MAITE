@@ -20,8 +20,9 @@ import {geminiApiKey, writeGeminiProse} from "./gemini.ts";
 import {NovelUpstreamError} from "./upstream-error.ts";
 import {openAIResponsesEndpoint} from "../openai-endpoint.ts";
 import {findRepeatedPassage} from "./repetition.ts";
+import {applyProofreading, proofreadingInstructions} from "./proofread.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v51-korean-proofreading";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v52-gemini-copyedit";
 
 const sceneWriting = "Before drafting, privately plan 3–4 connected scenes from the current continuity and supplied plot. Map the five writing beats to these scenes as appropriate, giving each scene a distinct purpose. Dramatize each with concrete action, dialogue or reaction as appropriate. Carry each action's result forward: a completed exchange, arrival or departure happens once unless a new occurrence is explicitly established on page. When the planned payoff is still due, carry a confrontation through the answer or evasion, the other person's response and its concrete consequence. Write one continuous chapter without outline or scene labels.";
 
@@ -71,8 +72,9 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
   const { character, key, signal, phase } = options;
   const MODEL = textModel();
   const geminiWriter = geminiNovelWriteModel();
-  const geminiKey = geminiWriter ? geminiApiKey() : undefined;
-  if (geminiWriter && !geminiKey) throw new Error("Missing Gemini API key");
+  const proofreader = process.env.GEMINI_NOVEL_PROOFREAD_MODEL?.trim();
+  const geminiKey = geminiApiKey();
+  if ((geminiWriter || proofreader) && !geminiKey) throw new Error("Missing Gemini API key");
   const mode=novelGenerationMode(geminiWriter),started=Date.now();let calls=0,inputChars=0;
   const old = options.state ?? { ...emptyStoryState(), previousEnding: options.previous?.slice(-700) ?? "", previousProse: options.previous ?? "" };
   const additionalConcept = z.string().trim().max(1000).parse(options.additionalConcept ?? "");
@@ -127,11 +129,12 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     const feature = name === "prose" ? (proseCalls ? "rewrite" : "write") : name;
     if (name === "prose") proseCalls++;
     const callNumber=calls;
-    if (isProse && geminiWriter && geminiKey) {
+    const geminiModel = name === "proofread" ? proofreader : isProse ? geminiWriter : undefined;
+    if (geminiModel && geminiKey) {
       const metadata = {call: callNumber, feature: `novel.${feature}`, reasoningEffort: "low"};
-      trace.event("model_call_started", {...metadata, model: geminiWriter, maxOutputTokens: tokens});
+      trace.event("model_call_started", {...metadata, model: geminiModel, maxOutputTokens: tokens});
       const result = await writeGeminiProse({
-        model: geminiWriter, key: geminiKey, instructions, input, maxOutputTokens: tokens,
+        model: geminiModel, key: geminiKey, instructions, input, maxOutputTokens: tokens,
         feature: metadata.feature, signal,
         onUsage: record => {
           if (record.status !== "running") trace.event("model_call_finished", {...metadata, ...record});
@@ -258,6 +261,17 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     return {text:expanded,ranges};
   }
   let draft = "";
+  let proofreadDraft: string | undefined;
+  async function proofread(prose: string) {
+    if (!proofreader || prose === proofreadDraft) return prose;
+    phase("reviewing");
+    const input = JSON.stringify({ previousEnding: old.previousEnding, manuscript: prose });
+    const output = await call(proofreadingInstructions, input, undefined, "proofread", 3200);
+    const result = applyProofreading(prose, output);
+    proofreadDraft = result.text;
+    trace.event("proofread_result", { edits: result.count, ...manuscriptFingerprint(result.text) });
+    return result.text;
+  }
   let reviewRetryUsed = false;
   if(mode==="integrated"){
     let repair="";
@@ -265,6 +279,7 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
       phase(attempt?"rewriting":"writing");
       const raw=await call(`${base}\n${novelIntegratedReviewInstructions}\n${promiseReview}\n${arcInstruction}\n${schedule.direction}\nWrite ONE completed installment and its verified memory patch as JSON. Global chapter=${old.chapter+1}; arcChapter=${schedule.chapter}. ${sceneWriting} ${propMemory} ${locationAudit} Edit for logic and natural Korean, then fill review from the FINAL prose. Preserve character motives, established chat events and knowledge boundaries; adapt future milestones to current facts. All evidence fields quote exact substrings of this same prose, at most 400 characters; no source IDs, invented quotations or outline outcomes. memoryPatch.sharedChanges contains only important on-page changes with known/public/reader visibility. Reuse actor/event keys. Record no hypothetical or planned event as completed. A final installment must actually fulfill the required ending and relationships, with no sequel hook. Review and memory are private metadata; no editorial comments in prose. Output only the schema.`,
         JSON.stringify({context:{...chapterContext,character:undefined},plan,...(repair?{repair}:{})}),integratedEpisodeSchema(finale,promises.length),"episode_bundle",novelIntegratedMaxOutputTokens());
+      let proofreading = false;
       try{
         const parsed=JSON.parse(raw),preview=integratedEpisodeSchema(finale,promises.length).safeParse(parsed);
         if(preview.success)trace.event("integrated_draft",{attempt:attempt+1,...manuscriptFingerprint(preview.data.prose),...reviewLogVerdict(preview.data.review)},{prose:preview.data.prose});
@@ -279,6 +294,10 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
         const result=validateIntegratedEpisode(parsed,old.chapter+1,schedule.chapter,previousProse,promises.length);
         const promiseResult = auditPromises(result.promiseAudit,result.text,attempt+1);
         if (!promiseResult.accepted) throw new Error("Integrated promise audit failed");
+        proofreading = true;
+        const edited = await proofread(result.text);
+        proofreading = false;
+        if (edited !== result.text) { draft = edited; break; }
         phase("remembering");
         const state=mergeMemory({...old,seriesArc,...conceptState,longTermGoal:plan.longTermGoal},result.patch,result.text,plan.longTermGoal);
         if(finale)state.nextChapterGoal="";
@@ -286,7 +305,7 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
         trace.event("completed",{attempt:attempt+1,source:attempt?"rewrite":"initial",accepted:true,mode,chapter:state.chapter,calls,retries:attempt,durationMs:Date.now()-started,inputChars,...manuscriptFingerprint(result.text)},{prose:result.text});
         return {text:result.text,state,expectedChapter:old.chapter,closedPromises:[...result.patch.closedThreads.map(item=>item.text).filter(text=>!promises.some(p=>p.text===text)),...promiseResult.closed],sharedChanges:result.patch.sharedChanges??[]};
       }catch(error){
-        if(signal.aborted)throw error;
+        if(signal.aborted || proofreading)throw error;
         const code=error instanceof z.ZodError?"schema_or_memory":error instanceof SyntaxError?"invalid_json":error instanceof Error&&error.message.startsWith("Integrated")?error.message:"unsupported_memory";
         trace.event(reviewRetryUsed?"integrated_rejected":"rewrite_requested",{attempt:attempt+1,accepted:false,reason:code});
         if(reviewRetryUsed)throw new Error("Integrated episode validation failed");
@@ -305,7 +324,7 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
   let corrections = "";
   let patch: z.infer<typeof memoryPatchSchema> | undefined;
   let closedSharedPromises: string[] = [];
-  let expansionAttempted = false;
+  let expansionAttempted = proofreadDraft !== undefined;
   let originalDraft = "";
   let expandedSources: {first:string;last:string;afterPassage:number}[] | undefined;
   for (let attempt = 0; ; attempt++) {
@@ -368,7 +387,20 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     trace.event("review_decision",{ chapter: old.chapter + 1, attempt: attempt + 1,
       pass: review.pass, plannedBeats: plan.beats.length, completedBeats: review.completedBeats,
       groundedIssues:grounded,blockingTypes: grounded.map(issue => issue.type), copied, progress, endingSatisfied, conceptSatisfied, sceneSatisfied, accepted, retryReasons });
-    if (accepted) { patch = memoryPatchSchema.parse(reviewed.memoryPatch); closedSharedPromises=promiseResult.closed; break; }
+    if (accepted) {
+      const edited = await proofread(draft);
+      if (edited !== draft) {
+        // The approved patch cites the old manuscript. Rebuild it from the corrected text.
+        draft = edited;
+        corrections = "";
+        expandedSources = undefined;
+        expansionAttempted = true;
+        continue;
+      }
+      patch = memoryPatchSchema.parse(reviewed.memoryPatch);
+      closedSharedPromises=promiseResult.closed;
+      break;
+    }
     if (expandedSources) {
       trace.event("chapter_expansion_discarded",{chars:Array.from(originalDraft).length,retryReasons});
       draft = originalDraft;

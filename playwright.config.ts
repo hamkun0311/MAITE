@@ -32,6 +32,7 @@ export default defineConfig({
       GEMINI_DIRECT_API_KEY: "",
       GEMINI_BASE_URL: "",
       GEMINI_NOVEL_WRITE_MODEL: "",
+      GEMINI_NOVEL_PROOFREAD_MODEL: "",
       CLOUDFLARE_ACCOUNT_ID: "",
       CLOUDFLARE_API_TOKEN: "",
       NEXT_PUBLIC_SUPABASE_URL: "",

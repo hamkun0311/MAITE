@@ -503,14 +503,15 @@ test("a missed departure promise rejects an otherwise passing draft and logs the
  assert.doesNotMatch(JSON.stringify(logs.filter(row=>row.event.startsWith("promise_"))),/정문/);
 });
 
-test("Gemini writes prose only and reports tokens while OpenAI plans and reviews", async t => {
- const keys = ["GEMINI_NOVEL_WRITE_MODEL", "GEMINI_API_KEY", "GEMINI_BASE_URL", "GEMINI_PROVIDER", "GEMINI_DIRECT_API_KEY", "OPENAI_NOVEL_GENERATION_MODE"] as const;
+test("Gemini proofreads after plot approval and the final memory uses corrected prose", async t => {
+ const keys = ["GEMINI_NOVEL_PROOFREAD_MODEL", "GEMINI_NOVEL_WRITE_MODEL", "GEMINI_API_KEY", "GEMINI_BASE_URL", "GEMINI_PROVIDER", "GEMINI_DIRECT_API_KEY", "OPENAI_NOVEL_GENERATION_MODE"] as const;
  const saved = keys.map(key => process.env[key]);
  t.after(() => keys.forEach((key, i) => {
   if (saved[i] === undefined) delete process.env[key];
   else process.env[key] = saved[i];
  }));
  process.env.GEMINI_NOVEL_WRITE_MODEL = "gemini-3.5-flash-lite";
+ process.env.GEMINI_NOVEL_PROOFREAD_MODEL = "gemini-3.5-flash-lite";
  process.env.OPENAI_NOVEL_GENERATION_MODE = "integrated";
  process.env.GEMINI_API_KEY = "gateway-fixture";
  process.env.GEMINI_BASE_URL = "https://gateway.example/v1";
@@ -523,6 +524,11 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
   const body = JSON.parse(String(init?.body));
   const headers = new Headers(init?.headers);
   if (url.includes("generativelanguage.googleapis.com")) {
+   if (body.systemInstruction.parts[0].text.startsWith("Copyedit")) {
+    providers.push("proofread");
+    assert.match(JSON.parse(body.contents[0].parts[0].text).manuscript, /웃었따/);
+    return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text:JSON.stringify({edits:[{before:"웃었따",after:"웃었다"}]})}]}}]});
+   }
    providers.push("gemini");
    assert.match(url, /gemini-3\.5-flash-lite:generateContent$/);
    assert.equal(headers.get("x-goog-api-key"), "gemini-fixture");
@@ -532,7 +538,7 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
    assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, "LOW");
    return Response.json({
     responseId: "gemini-result", modelVersion: "gemini-3.5-flash-lite",
-    candidates: [{finishReason: truncated ? "MAX_TOKENS" : "STOP", content: {parts: [{text: "private thought", thought: true}, {text: fullDraft(prose)}]}}],
+    candidates: [{finishReason: truncated ? "MAX_TOKENS" : "STOP", content: {parts: [{text: "private thought", thought: true}, {text: fullDraft(prose.replace("웃었다","웃었따"))}]}}],
     usageMetadata: {promptTokenCount: 50, candidatesTokenCount: 40, thoughtsTokenCount: 10, totalTokenCount: 100},
    });
   }
@@ -549,7 +555,8 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
  assert.deepEqual(providers, []);
  process.env.GEMINI_DIRECT_API_KEY = "gemini-fixture";
  const result = await generateChapter(options);
- assert.deepEqual(providers, ["chapter_plan", "gemini", "chapter_review"]);
+ assert.deepEqual(providers, ["chapter_plan", "gemini", "chapter_review", "proofread", "chapter_review"]);
+ assert.equal(result.state.previousProse, result.text);
  assert.equal(result.text, fullDraft(prose));
  const write = records.find(record => record.feature === "novel.write" && record.status === "completed");
  assert.deepEqual([write?.inputTokens, write?.outputTokens, write?.reasoningTokens, write?.totalTokens], [50, 50, 10, 100]);
