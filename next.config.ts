@@ -5,7 +5,6 @@ const nextConfig: NextConfig = {
   devIndicators: false,
   outputFileTracingIncludes: {
     "/api/chat": ["./novel_prompt.md"],
-    "/api/characters": ["./public/references/anime-style.png", "./public/references/female-nurse-style.jpg"],
   },
   webpack(config) {
     config.resolve.fallback = {

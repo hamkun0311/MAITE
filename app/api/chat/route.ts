@@ -8,7 +8,10 @@ import { z } from "zod";
 import { readEvents } from "../../../lib/chat/stream.ts";
 import { characterContextSchema, characterInstructions } from "../../../lib/chat/character.ts";
 import { storyStateSchema } from "../../../lib/novel/state.ts";
-import { generateChapter, NovelOutputLimitError } from "../../../lib/novel/generate.ts";
+import { NovelUpstreamError } from "../../../lib/novel/upstream-error.ts";
+import { openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
+import { geminiApiKey } from "../../../lib/novel/gemini.ts";
+import { generateChapter, NovelChapterLengthError, NovelOutputLimitError } from "../../../lib/novel/generate.ts";
 import { explicitSpeechRequest, replySpeechPolicy, speechInstructions, speechStyleSchema } from "../../../lib/chat/speech.ts";
 import { streamedDialogue } from "../../../lib/chat/dialogue.ts";
 import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
@@ -59,8 +62,8 @@ async function handle(request: Request) {
     const origin = request.headers.get("origin");
     if (origin && !allowedOrigin(request))
       return fail("허용되지 않은 요청입니다.", 403);
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) return fail("서버에 OPENAI_API_KEY를 설정해주세요.", 503);
+    const key = openAITextKey();
+    if (!key) return fail("서버에 GPT API 키를 설정해주세요.", 503);
     if (!request.headers.get("content-type")?.startsWith("application/json"))
       return fail("JSON 형식으로 요청해주세요.", 400);
     if (Number(request.headers.get("content-length")) > 100000)
@@ -82,8 +85,8 @@ async function handle(request: Request) {
       }
     } finally { reader.releaseLock(); }
     const { messages, character, storyState, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    if (character?.mode === "story" && geminiNovelWriteModel() && !process.env.GEMINI_API_KEY?.trim())
-      return fail("서버에 GEMINI_API_KEY를 설정해주세요.", 503);
+    if (character?.mode === "story" && geminiNovelWriteModel() && !geminiApiKey())
+      return fail("선택한 제공자의 Gemini API 키를 서버에 설정해주세요.", 503);
     if (character?.mode !== "story") signal = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
     const userName = character ? userDisplayName(character, additionalConcept || storyState?.seriesConcept) : "당신";
     const timeline = rawTimeline ? { ...rawTimeline, participants: rawTimeline.participants.map(p => p.id === "user" ? { ...p, name: userName } : p.id==="character"&&character?{...p,name:character.name}:p) } : undefined;
@@ -112,10 +115,10 @@ async function handle(request: Request) {
             send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter });
             send({ type: "done" });
           } catch (error) {
-            const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
-            console.warn("novel-failed", { stage, reason: signal.aborted ? "cancelled_or_timeout" : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });
+            const knownReasons = ["Novel chapter too short", "Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
+            console.warn("novel-failed", { stage, ...(error instanceof NovelUpstreamError ? error.diagnostics : {}), reason: signal.aborted ? "cancelled_or_timeout" : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });
             if (!request.signal.aborted && !abort.signal.aborted)
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", ...(error instanceof NovelOutputLimitError ? { code: "output_token_limit" } : {}), message: error instanceof NovelOutputLimitError ? "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." : "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." })}\n\n`));
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", ...(error instanceof NovelOutputLimitError ? { code: "output_token_limit" } : {}), message: error instanceof NovelOutputLimitError ? "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." : error instanceof NovelChapterLengthError ? "생성된 본문이 2,000자에 미치지 못했습니다. 이전 회차는 유지됩니다." : "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." })}\n\n`));
           } finally {
             abort.abort();
             try { controller.close(); } catch { /* Client disconnected. */ }
@@ -142,7 +145,8 @@ async function handle(request: Request) {
     const formatSchema=character?.mode==="chat"?z.toJSONSchema(outputSchema):undefined;
     if(character?.mode==="chat")console.info("chat-context",{instructionChars:instructions.length,schemaChars:JSON.stringify(formatSchema).length,historyChars:messages.reduce((sum,m)=>sum+m.content.length,0),facts:memory?.facts.length??0,sharedEvents:timeline?.canon?.length??0,profileCached:!!personalityState(character,memory?.personality).profile});
     finishReply = trackUsage("chat.reply", textModel(), onUsage);
-    const upstream = await fetch("https://api.openai.com/v1/responses", {
+    const upstream = await fetch(openAIResponsesEndpoint(), {
+      redirect: "error",
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       signal,

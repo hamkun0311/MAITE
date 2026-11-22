@@ -8,6 +8,7 @@ import { useAccount } from "./AccountProvider";
 import CachedImage from "./CachedImage";
 import { imageAssetKey } from "@/lib/platform/image-cache";
 import { selectImageScene } from "@/lib/characters/scene-selection";
+import { storyConceptsForChapter } from "@/lib/novel/series";
 import { userDisplayName } from "@/lib/chat/identity";
 import Link from "next/link";
 import { useActionConfirm } from "./ActionConfirm";
@@ -31,7 +32,7 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
   useEffect(() => { if (!active) setPickerOpen(false); }, [active]);
   const confirm = useActionConfirm();
   const { account } = useAccount();
-  async function generateVisual(kind: VisualKind, context: string, scene?: IllustrationScene) {
+  async function generateVisual(kind: VisualKind, context: string, scene?: IllustrationScene, chapter?: number) {
     let selection = selectImageScene(context, { mode, profileName: profile.name,
       userNames: [userDisplayName({ concept: profile.concept, userName: account?.profile?.display_name }, session?.storyState?.seriesConcept), account?.profile?.display_name || "당신"],
       knownNames: [...(session?.chatMemory?.participants.filter(person => person.id !== "user").map(person => person.name) ?? []), ...(session?.storyState?.characters.map(person => person.name) ?? [])],
@@ -42,6 +43,8 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
     if(kind==="illustration"){
       if(!imageFramingSchema.safeParse(selection.framing).success)return;
       setFraming(selection.framing!);
+      const castConcepts = storyConceptsForChapter(session?.storyState, chapter ?? scene?.chapter ?? session?.storyState?.chapter ?? 0);
+      if (castConcepts.length) selection = {...selection,castConcepts};
     }
     const image = await onGenerateVisual(kind, context, scene, selection);
     if (image) setPreview(image);

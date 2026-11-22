@@ -1,4 +1,5 @@
 import { reasoningOptions, textModel } from "../../../lib/ai-model.ts";
+import { openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
 import { z } from "zod";
 import {
   conversationSchema,
@@ -18,7 +19,8 @@ async function callAI(
   maxTokens: number,
   signal: AbortSignal,
 ) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch(openAIResponsesEndpoint(), {
+    redirect: "error",
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
@@ -71,12 +73,12 @@ export async function POST(request: Request) {
       { error: "허용되지 않은 요청입니다." },
       { status: 403 },
     );
-  const key = process.env.OPENAI_API_KEY;
+  const key = openAITextKey();
   if (!key)
     return Response.json(
       {
         error:
-          "OpenAI API 키가 없습니다. .env.local에 OPENAI_API_KEY를 설정해주세요.",
+          "OpenAI API 키가 없습니다. 서버의 GPT 키 설정을 확인해주세요.",
       },
       { status: 503 },
     );

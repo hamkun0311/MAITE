@@ -5,7 +5,7 @@ import { Activity, Download, X } from "lucide-react";
 import { clearUsage, loadUsage, subscribeUsage, sumUsage, usageServerSnapshot, usageSnapshot } from "@/lib/usage-store";
 
 const names: Record<string, string> = { "chat.speech": "말투 선택", "chat.reply": "대화 생성", "chat.clothing": "의상 판별",
-  "novel.chapter_plan": "회차 설계", "novel.prose": "원고 집필 / 재집필", "novel.write": "원고 집필", "novel.rewrite": "원고 재집필", "novel.chapter_review": "전개 검증", "novel.memory_patch": "기억 추출",
+  "novel.chapter_plan": "회차 설계", "novel.prose": "원고 집필 / 재집필", "novel.write": "원고 집필", "novel.rewrite": "원고 재집필", "novel.scene_insert": "소설 장면 추가", "novel.chapter_review": "전개 검증", "novel.memory_patch": "기억 추출",
   "image.description": "이미지 설명 정리", "image.generate": "이미지 생성" };
 const statuses = { running: "진행 중", completed: "완료", failed: "실패", cancelled: "중단", unknown: "확인 불가" };
 const number = (value: number | null) => value === null ? "확인 불가" : value.toLocaleString("ko-KR");

@@ -17,3 +17,24 @@ export function unjustifiedRegisterChanges(previous:DialogueRegister[],changes:z
  });
 }
 export const novelDialogueRules=`KOREAN DIALOGUE QUALITY: For each line identify its actual addressee, not bystanders. Use explicit settings, established relationship, stored register and prior speech. When public speech turns to a peer aside, use the peer pair's register even without a stored entry. Resume it after a quote or intentional sarcasm. Lasting changes need on-page motivation/agreement; anger or a new chapter alone is insufficient. Keep natural linked replies and avoid fixed substitutions.`;
+
+// Only compare adjacent standalone turns with substantial shared wording.
+export function removeAdjacentRepeatedDialogue(prose: string) {
+ const parts = prose.split(/(\r?\n(?:[^\S\r\n]*\r?\n)+)/);
+ const kept = [parts[0]];
+ let previous = standaloneDialogue(parts[0]);
+ for (let index = 2; index < parts.length; index += 2) {
+  const current = standaloneDialogue(parts[index]);
+  if (current && current === previous) continue;
+  kept.push(parts[index - 1], parts[index]);
+  previous = current;
+ }
+ return kept.join("");
+}
+
+function standaloneDialogue(paragraph: string) {
+ const quote = paragraph.trim().match(/^(?:“([^“”\r\n]+)”|"([^"\r\n]+)")$/u);
+ const text = (quote?.[1] ?? quote?.[2] ?? "").replace(/^(?:너는?|당신은?)\s+/u, "")
+  .normalize("NFC").replace(/[\s\p{P}]/gu, "");
+ return text.length >= 24 ? text : "";
+}

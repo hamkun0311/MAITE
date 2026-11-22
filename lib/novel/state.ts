@@ -1,16 +1,27 @@
 import { z } from "zod";
-import { storedSeriesArcSchema } from "./series.ts";
+import { storedSeriesArcSchema, storyConceptHistorySchema } from "./series.ts";
 import {sharedChangeSchema} from "../chat/canon.ts";
 import {dialogueRegisterChange,storedDialogueRegister,unjustifiedRegisterChanges,sceneAuditSchema} from "./dialogue.ts";
 
 const short = z.string().trim().min(1).max(240);
 const facts = z.array(short).max(24);
+const propStateSchema = z.object({
+  item: z.string().trim().min(1).max(60),
+  holder: z.string().trim().min(1).max(60).nullable(),
+  operator: z.string().trim().min(1).max(60).nullable(),
+}).strict();
+const propChangeSchema = (citation: z.ZodType<string>) => propStateSchema.extend({
+  evidence: citation, changeEvidence: citation.nullable(),
+});
+type PropState = z.infer<typeof propStateSchema>;
+const propKey = (item: string) => item.normalize("NFC").replace(/\s/g, "").toLowerCase();
 export const storyStateSchema = z.object({
   version: z.literal(1),
   chapter: z.number().int().min(0).max(100000),
   seriesArc: storedSeriesArcSchema.optional(),
   seriesStartChapter: z.number().int().min(0).max(100000).optional(),
   seriesConcept: z.string().trim().max(1000).optional(),
+  conceptHistory: storyConceptHistorySchema.optional(),
   summary: z.string().max(1400),
   currentSituation: z.string().max(400),
   longTermGoal: z.string().max(240),
@@ -18,6 +29,7 @@ export const storyStateSchema = z.object({
   resolvedEvents: facts,
   openThreads: facts,
   worldFacts: facts,
+  propStates: z.array(propStateSchema).max(8).optional(),
   characters: z.array(z.object({
     name: short, goal: short,
     knowledge: z.array(short).max(6),
@@ -75,6 +87,7 @@ export const createMemoryPatchSchema = (citation: z.ZodType<string> = quoteSchem
   openedThreads: z.array(evidence(citation)).max(6),
   closedThreads: z.array(evidence(citation)).max(6),
   worldFacts: z.array(evidence(citation)).max(6),
+  propChanges: z.array(propChangeSchema(citation)).max(2).optional(),
   characters: z.array(z.object({
     name: short, goal: evidence(citation).nullable(), knowledge: z.array(evidence(citation)).max(4),
     relationships: z.array(evidence(citation)).max(4),
@@ -89,6 +102,17 @@ export function hasEvidence(prose: string, quote: string) {
   const normalize = (text: string) => text.replace(/\s+/g, "").normalize("NFC");
   return normalize(prose).includes(normalize(quote));
 }
+export function unsupportedPropChanges(previous: PropState[], changes: z.infer<ReturnType<typeof propChangeSchema>>[], prose: string) {
+  return changes.filter(change => {
+    const old = previous.find(prop => propKey(prop.item) === propKey(change.item));
+    const changed = old && (
+      old.holder && change.holder && old.holder !== change.holder ||
+      old.operator && change.operator && old.operator !== change.operator
+    );
+    return !hasEvidence(prose, change.evidence) || (changed && (!change.changeEvidence || !hasEvidence(prose, change.changeEvidence)));
+  });
+}
+
 function merge(old: string[], added: string[], limit: number) {
   return [...new Set([...old, ...added])].slice(-limit);
 }
@@ -120,6 +144,14 @@ export function mergeMemory(old: StoryState, patch: z.infer<typeof memoryPatchSc
     const index=registers.findIndex(old=>old.speaker===change.speaker&&old.addressee===change.addressee);
     if(index>=0)registers[index]=stored;else registers.push(stored);
   }
+  const propStates = [...(old.propStates ?? [])];
+  for (const {item, holder, operator} of patch.propChanges ?? []) {
+    const index = propStates.findIndex(prop => propKey(prop.item) === propKey(item));
+    const previous = propStates[index];
+    if (index >= 0) propStates.splice(index, 1);
+    propStates.push({item: previous?.item ?? item, holder: holder ?? previous?.holder ?? null, operator: operator ?? previous?.operator ?? null});
+  }
+  if (unsupportedPropChanges(old.propStates ?? [], patch.propChanges ?? [], prose).length) throw new Error("Unsupported memory");
   const next: StoryState = {
     ...old, chapter: old.chapter + 1, summary: patch.summary,
     currentSituation: patch.currentSituation.text,
@@ -130,12 +162,13 @@ export function mergeMemory(old: StoryState, patch: z.infer<typeof memoryPatchSc
     worldFacts: merge(old.worldFacts, checked(patch.worldFacts), 16),
     characters: characters.slice(-6), previousEnding: prose.slice(-700),
     previousProse: prose, nextChapterGoal: patch.nextChapterGoal,
+    ...(propStates.length ? {propStates:propStates.slice(-8)} : {}),
     ...(registers.length?{dialogueRegisters:registers.slice(-12)}:{}),
   };
   // Keep the rolling summary and immediate ending. Trim oldest detail only when
   // the aggregate budget is reached, so a long session cannot get stuck forever.
   const queues = [next.recentEvents, ...next.characters.map(character => character.relationships),
-    ...next.characters.map(character => character.knowledge), next.resolvedEvents, next.worldFacts, next.openThreads,next.dialogueRegisters??[]];
+    ...next.characters.map(character => character.knowledge), next.resolvedEvents, next.worldFacts, next.openThreads,next.dialogueRegisters??[],next.propStates??[]];
   while (JSON.stringify(next).length > 16000) {
     const queue = queues.find(items => items.length > 0);
     if (!queue) break;

@@ -1,3 +1,4 @@
+import {storyConceptsForChapter} from "../lib/novel/series.ts";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
@@ -16,6 +17,32 @@ import {novelDialogueRules} from "../lib/novel/dialogue.ts";
 import {novelWriterQualityInstructions,novelReviewerQualityInstructions,novelIntegratedReviewInstructions} from "../lib/novel/quality.ts";
 import {createNovelReviewLogger,novelReviewLogLevel,manuscriptFingerprint,logNovelDocumentSaved} from "../lib/novel/review-log.ts";
 import {novelConceptInstructions} from "../lib/novel/concept.ts";
+import {openAIImageEndpoint, openAIImageKey, openAIResponsesEndpoint, openAITextKey} from "../lib/openai-endpoint.ts";
+
+test("OpenAI text and image select endpoints and credentials independently", t => {
+ const settings = {
+  OPENAI_TEXT_PROVIDER:"direct", OPENAI_IMAGE_PROVIDER:"vnai",
+  OPENAI_BASE_URL:"https://text-gateway.example/v1", OPENAI_IMAGE_BASE_URL:"",
+  OPENAI_API_KEY:"official", OPENAI_TEXT_API_KEY:"gateway-text",
+  OPENAI_IMAGE_API_KEY:"gateway-image", OPENAI_IMAGE_DIRECT_API_KEY:"official-image",
+ };
+ const keys=Object.keys(settings);
+ const previous=keys.map(key=>process.env[key]);
+ t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
+ Object.assign(process.env,settings);
+ assert.equal(openAIResponsesEndpoint(),"https://api.openai.com/v1/responses");
+ assert.equal(openAITextKey(),"official");
+ assert.equal(openAIImageEndpoint("edits"),"https://text-gateway.example/v1/images/edits");
+ assert.equal(openAIImageKey(),"gateway-image");
+ process.env.OPENAI_TEXT_PROVIDER="vnai";
+ delete process.env.OPENAI_BASE_URL;
+ process.env.OPENAI_IMAGE_PROVIDER="direct";
+ process.env.OPENAI_IMAGE_BASE_URL="https://image-gateway.example/v1";
+ assert.equal(openAIResponsesEndpoint(),"https://apikey.vnaipro.app/v1/responses");
+ assert.equal(openAITextKey(),"gateway-text");
+ assert.equal(openAIImageEndpoint("generations"),"https://api.openai.com/v1/images/generations");
+ assert.equal(openAIImageKey(),"official-image");
+});
 
 const character = { mode: "story" as const, name: "서하", age: 25, personality: "다정함", concept: "친구와 서점 복구", genre: "막장드라마" as const, imageDescription: "서점의 탐정" };
 const prose = "서하는 서랍에서 계약서를 찾았다. 그가 약속한 수리 날짜가 문서에 적혀 있었다. " + "그녀는 친구에게 전화를 걸어 내일 함께 서점을 정리하자고 말했다. 망설이던 친구가 수화기 너머에서 웃었다. " + "둘은 닫힌 서점 문을 열고 먼지 쌓인 책을 창가로 옮겼다. 새로 비워진 진열대 사이로 햇빛이 들어왔다. 오래 미뤄 두었던 일이 드디어 시작되었다. " + "친구가 가져온 달력에 수리 날짜를 표시했다. 내일 아침에는 창문을 닦기로 했다.";
@@ -26,8 +53,10 @@ const plan = { seriesArc, chapterGoal: "서점 복구를 시작한다", longTerm
 const review = { pass: true, sceneAudit:{rolesStable:true,speechIntentClear:true,movementsConsistent:true,actionsCoherent:true}, conceptAlignment: { satisfied: true, evidence: fact.evidence, fix: "설정 준수" }, blockingIssues: [], completedBeats: [1, 2, 3], newEvents: [fact], endingChange: { text: "정리가 시작됨", evidence: "오래 미뤄 두었던 일이 드디어 시작되었다." } };
 const patch = { summary: "서하가 계약서를 찾아 친구와 서점 정리를 시작했다.", currentSituation: fact,
   newEvents: [fact], resolvedEvents: [fact], openedThreads: [], closedThreads: [], worldFacts: [fact],
-  characters: [{ name: "서하", goal: null, knowledge: [fact], relationships: [] }], nextChapterGoal: "창문을 닦는다",sharedChanges:[],dialogueRegisters:[] };
+  characters: [{ name: "서하", goal: null, knowledge: [fact], relationships: [] }], nextChapterGoal: "창문을 닦는다",sharedChanges:[],dialogueRegisters:[],propChanges:[] };
 const unpack = (value: any): any[] => Array.isArray(value)?value:value?.rows?.map((row:any[])=>Object.fromEntries(value.columns.map((name:string,index:number)=>[name,row[index]])))??[];
+// Keep unrelated review fixtures above the generation length gate without changing their evidence.
+const fullDraft = (text: string) => text.length >= 2000 ? text : text + "\n\n" + "가나다라마바사아자차카타파하".repeat(180);
 const response = (value: unknown, init?: RequestInit) => {
   if (value && typeof value === "object" && "pass" in value) value = { memoryPatch: patch, ...value };
   const body = init ? JSON.parse(String(init.body)) : undefined;
@@ -39,7 +68,7 @@ const response = (value: unknown, init?: RequestInit) => {
       ? unpack(input.sourceUnits).find((unit: { id: string; text: string }) => typeof child === "string" && unit.text.includes(child))?.id ?? "unknown_source"
       : cite(child)]));
   };
-  return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: typeof value === "string" ? value : JSON.stringify(init ? cite(value) : value) }] }] });
+  return Response.json({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: typeof value === "string" ? (body && !body.text ? fullDraft(value) : value) : JSON.stringify(init ? cite(value) : value) }] }] });
 };
 
 test("review logging levels gate full content, chunk text and never break generation diagnostics",t=>{
@@ -72,13 +101,50 @@ test("review traces link initial prose, failed verdict, rewrite, accepted output
  const values=[prose,rejected,repaired,{...accepted,memoryPatch:acceptedPatch}];let calls=0;
  t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{calls++;return response(values.shift(),init);});
  const result=await generateChapter({traceId,character,state:{...emptyStoryState(),chapter:2,seriesArc},direction:"다음",key:"DO_NOT_LOG_API_KEY",signal:new AbortController().signal,phase:()=>{}});
- assert.equal(calls,4);assert.equal(result.text,repaired);assert.ok(logs.every(row=>row.traceId===traceId&&row.chapter===3));
+ assert.equal(calls,4);assert.equal(result.text,fullDraft(repaired));assert.ok(logs.every(row=>row.traceId===traceId&&row.chapter===3));
  assert.deepEqual(logs.filter(row=>row.event==="review_decision").map(row=>row.accepted),[false,true]);
  assert.equal(logs.filter(row=>row.event==="rewrite_requested").length,1);
  assert.equal(logs.filter(row=>row.event==="model_call_finished").length,4);
  assert.ok(logs.some(row=>row.event==="review"&&row.blockingIssues?.[0]?.fix.includes("명료")));
  const done=logs.find(row=>row.event==="completed");assert.equal(done.source,"rewrite");assert.equal(done.attempt,2);assert.equal(done.proseHash,manuscriptFingerprint(result.text).proseHash);
  assert.doesNotMatch(JSON.stringify(logs),/DO_NOT_LOG_API_KEY|Authorization/);
+});
+
+test("novel HTTP failures trace Gemini and OpenAI codes without the upstream error message", async t => {
+ const keys=["NOVEL_REVIEW_LOG_LEVEL","GEMINI_NOVEL_WRITE_MODEL","GEMINI_API_KEY","OPENAI_NOVEL_GENERATION_MODE"] as const;
+ const previous=keys.map(key=>process.env[key]);
+ t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
+ process.env.NOVEL_REVIEW_LOG_LEVEL="summary";
+ process.env.OPENAI_NOVEL_GENERATION_MODE="reviewed";
+ process.env.GEMINI_API_KEY="fixture";
+ const logs: Record<string, unknown>[]=[];
+ t.mock.method(console,"info",(prefix:unknown,line:unknown)=>{if(prefix==="novel-review-trace")logs.push(JSON.parse(String(line)));});
+ const cases=[
+  {provider:"gemini",model:"gemini-3.5-flash-lite",status:429,body:{error:{code:429,status:"RESOURCE_EXHAUSTED",message:"PRIVATE_ERROR_BODY"}},code:429,errorStatus:"RESOURCE_EXHAUSTED"},
+  {provider:"openai",model:"",status:429,body:{error:{code:"insufficient_quota",message:"PRIVATE_ERROR_BODY"}},code:"insufficient_quota",errorStatus:null},
+  {provider:"gemini",model:"gemini-3.5-flash-lite",status:503,body:null,code:null,errorStatus:null},
+ ];
+ let current=cases[0];
+ t.mock.method(globalThis,"fetch",async(url:string)=>{
+  assert.equal(url.includes("generativelanguage.googleapis.com"),current.provider==="gemini");
+  return current.body ? Response.json(current.body,{status:current.status}) : new Response("PRIVATE_ERROR_BODY",{status:current.status});
+ });
+ const traceId="11111111-1111-4111-8111-111111111111";
+ const options={traceId,character,state:{...emptyStoryState(),chapter:1,seriesArc},direction:"다음",key:"fixture",signal:new AbortController().signal,phase:()=>{}};
+ for(const item of cases){
+  current=item;
+  process.env.GEMINI_NOVEL_WRITE_MODEL=item.model;
+  await assert.rejects(generateChapter(options),/Novel upstream failed/);
+  const failure=logs.at(-1);
+  assert.equal(failure?.traceId,traceId);
+  assert.equal(failure?.stage,"writing");
+  assert.equal(failure?.event,"failed");
+  assert.equal(failure?.provider,item.provider);
+  assert.equal(failure?.httpStatus,item.status);
+  assert.equal(failure?.providerErrorCode,item.code);
+  assert.equal(failure?.providerErrorStatus,item.errorStatus);
+ }
+ assert.doesNotMatch(JSON.stringify(logs),/PRIVATE_ERROR_BODY/);
 });
 
 test("summary failures record a safe reason and never publish rejected prose as completed",async t=>{
@@ -121,7 +187,7 @@ test("rough seeds reach planning, writing and review once each with unchanged ca
    return response(values.shift(),init);
   });
   const result=await generateChapter({character:context,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
-  assert.equal(calls,3);assert.equal(result.state.chapter,1);assert.equal(result.text,prose);
+  assert.equal(calls,3);assert.equal(result.state.chapter,1);assert.equal(result.text,fullDraft(prose));
  }
 });
 
@@ -193,7 +259,7 @@ test("per-chapter scene review uses the previous chapter and repairs grounded ro
   });
   const result=await generateChapter({character:{...character,name:"하루",concept:"햄군은 입원 환자이고 하루는 소꿉친구 간호사다."},state:prior,direction:"두 번째 이야기",key:"test",signal:new AbortController().signal,phase:()=>{}});
   assert.equal(calls,4);assert.equal(result.state.chapter,2);assert.equal(result.expectedChapter,1);
-  assert.equal(result.text,repaired);assert.equal(result.state.previousProse,repaired);assert.deepEqual(prior,before);
+  assert.equal(result.text,fullDraft(repaired));assert.equal(result.state.previousProse,fullDraft(repaired));assert.deepEqual(prior,before);
   assert.doesNotMatch(result.state.summary,/자신이 입원/);
  }
 });
@@ -260,7 +326,7 @@ test("all genres require explicit scene audit and repair only evidence-backed in
    return response(values.shift(),init);
   });
   const result=await generateChapter({character:{...character,concept:item.context},state:old,direction:`${item.genre} 다음 회차`,key:"test",signal:new AbortController().signal,phase:()=>{}});
-  assert.equal(calls,4);assert.equal(result.text,good);assert.equal(result.state.chapter,3);assert.deepEqual(old,before);
+  assert.equal(calls,4);assert.equal(result.text,fullDraft(good));assert.equal(result.state.chapter,3);assert.deepEqual(old,before);
  }
 });
 
@@ -299,7 +365,7 @@ test("mixed feelings, a knowingly risky choice and a tentative interpretation pr
  const accepted={...review,newEvents:[fact],endingChange:fact,conceptAlignment:{satisfied:true,evidence:event,fix:"의도된 위험과 감정 유지"},memoryPatch:{...patch,summary:previous+event,currentSituation:fact,newEvents:[fact],resolvedEvents:[],worldFacts:[],characters:[]}};
  let calls=0;t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{calls++;return response(calls===1?draft:accepted,init);});
  const result=await generateChapter({character,state:old,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
- assert.equal(calls,2);assert.equal(result.text,draft);assert.deepEqual(old,before);
+ assert.equal(calls,2);assert.equal(result.text,fullDraft(draft));assert.deepEqual(old,before);
  assert.ok(result.state.worldFacts.every(text=>!text.includes("사랑")));
 });
 
@@ -318,7 +384,7 @@ test("plausible scene ellipsis, unresolved danger and marked time shifts do not 
    return response(calls===1?draft:accepted,init);
   });
   const result=await generateChapter({character,state:old,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
-  assert.equal(calls,2);assert.equal(result.text,draft);assert.deepEqual(old,before);
+  assert.equal(calls,2);assert.equal(result.text,fullDraft(draft));assert.deepEqual(old,before);
  }
 });
 
@@ -335,7 +401,7 @@ test("an established couple and a genuine contrast remain valid without another 
   return response(calls===1?draft:accepted,init);
  });
  const result=await generateChapter({character,state:old,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
- assert.equal(calls,2);assert.equal(result.text,draft);assert.ok(result.state.worldFacts.includes(established));assert.deepEqual(old,before);
+ assert.equal(calls,2);assert.equal(result.text,fullDraft(draft));assert.ok(result.state.worldFacts.includes(established));assert.deepEqual(old,before);
 });
 
 test("a failed scene check without a grounded fix cannot commit or trigger speculative rewriting",async t=>{
@@ -355,7 +421,7 @@ test("clear conditional danger and grounded imagery do not create real casualtie
  const accepted={...review,newEvents:[fact],endingChange:fact,conceptAlignment:{satisfied:true,evidence:event,fix:"생존 사실 유지"},memoryPatch:{...patch,summary:previous+event,currentSituation:fact,newEvents:[fact],resolvedEvents:[],worldFacts:[],characters:[]}};
  let calls=0;t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{calls++;const body=JSON.parse(String(init?.body));assert.match(body.instructions,/NOVEL QUALITY PRINCIPLES/);return response(calls===1?draft:accepted,init);});
  const result=await generateChapter({character,state:old,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
- assert.equal(calls,2);assert.equal(result.text,draft);assert.deepEqual(old,before);assert.ok(result.state.worldFacts.includes(previous));
+ assert.equal(calls,2);assert.equal(result.text,fullDraft(draft));assert.deepEqual(old,before);assert.ok(result.state.worldFacts.includes(previous));
  assert.ok(result.state.recentEvents.every(text=>!text.includes("사망")&&!text.includes("납치")));
 });
 
@@ -435,7 +501,7 @@ test("a missed departure promise rejects an otherwise passing draft and logs the
 });
 
 test("Gemini writes prose only and reports tokens while OpenAI plans and reviews", async t => {
- const keys = ["GEMINI_NOVEL_WRITE_MODEL", "GEMINI_API_KEY", "OPENAI_NOVEL_GENERATION_MODE"] as const;
+ const keys = ["GEMINI_NOVEL_WRITE_MODEL", "GEMINI_API_KEY", "GEMINI_BASE_URL", "GEMINI_PROVIDER", "GEMINI_DIRECT_API_KEY", "OPENAI_NOVEL_GENERATION_MODE"] as const;
  const saved = keys.map(key => process.env[key]);
  t.after(() => keys.forEach((key, i) => {
   if (saved[i] === undefined) delete process.env[key];
@@ -443,7 +509,10 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
  }));
  process.env.GEMINI_NOVEL_WRITE_MODEL = "gemini-3.5-flash-lite";
  process.env.OPENAI_NOVEL_GENERATION_MODE = "integrated";
- delete process.env.GEMINI_API_KEY;
+ process.env.GEMINI_API_KEY = "gateway-fixture";
+ process.env.GEMINI_BASE_URL = "https://gateway.example/v1";
+ process.env.GEMINI_PROVIDER = "direct";
+ delete process.env.GEMINI_DIRECT_API_KEY;
  const providers: string[] = [];
  const records: import("../lib/usage.ts").UsageRecord[] = [];
  let truncated = false;
@@ -460,7 +529,7 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
    assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, "LOW");
    return Response.json({
     responseId: "gemini-result", modelVersion: "gemini-3.5-flash-lite",
-    candidates: [{finishReason: truncated ? "MAX_TOKENS" : "STOP", content: {parts: [{text: "private thought", thought: true}, {text: prose}]}}],
+    candidates: [{finishReason: truncated ? "MAX_TOKENS" : "STOP", content: {parts: [{text: "private thought", thought: true}, {text: fullDraft(prose)}]}}],
     usageMetadata: {promptTokenCount: 50, candidatesTokenCount: 40, thoughtsTokenCount: 10, totalTokenCount: 100},
    });
   }
@@ -475,10 +544,10 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
   phase: () => {}, onUsage: (record: import("../lib/usage.ts").UsageRecord) => records.push(record)};
  await assert.rejects(generateChapter(options), /Missing Gemini API key/);
  assert.deepEqual(providers, []);
- process.env.GEMINI_API_KEY = "gemini-fixture";
+ process.env.GEMINI_DIRECT_API_KEY = "gemini-fixture";
  const result = await generateChapter(options);
  assert.deepEqual(providers, ["chapter_plan", "gemini", "chapter_review"]);
- assert.equal(result.text, prose);
+ assert.equal(result.text, fullDraft(prose));
  const write = records.find(record => record.feature === "novel.write" && record.status === "completed");
  assert.deepEqual([write?.inputTokens, write?.outputTokens, write?.reasoningTokens, write?.totalTokens], [50, 50, 10, 100]);
  providers.length = 0;
@@ -489,40 +558,186 @@ test("Gemini writes prose only and reports tokens while OpenAI plans and reviews
  assert.equal(records.at(-1)?.totalTokens, 100);
 });
 
-test("Gemini writes the whole chapter using scene targets and sends short drafts straight to review", async t => {
+test("Gemini gateway writes through Chat Completions and preserves usage and error diagnostics", async t => {
+ const keys=["GEMINI_NOVEL_WRITE_MODEL","GEMINI_API_KEY","GEMINI_BASE_URL","GEMINI_PROVIDER","OPENAI_BASE_URL"] as const;
+ const previous=keys.map(key=>process.env[key]);
+ t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
+ Object.assign(process.env,{GEMINI_NOVEL_WRITE_MODEL:"gemini-3.5-flash-lite",GEMINI_API_KEY:"gateway-fixture",GEMINI_BASE_URL:"https://gateway.example/v1/",GEMINI_PROVIDER:"vnai",OPENAI_BASE_URL:"https://text-gateway.example/v1"});
+ const calls:string[]=[];
+ const records: import("../lib/usage.ts").UsageRecord[]=[];
+ let outcome="stop";
+ t.mock.method(globalThis,"fetch",async(url:string,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));
+  const headers=new Headers(init?.headers);
+  if(url==="https://text-gateway.example/v1/responses"){
+   calls.push("review");
+   assert.equal(headers.get("Authorization"),"Bearer openai-fixture");
+   assert.equal(body.text.format.name,"chapter_review");
+   return response(review,init);
+  }
+  calls.push("gateway");
+  assert.equal(url,"https://gateway.example/v1/chat/completions");
+  assert.equal(headers.get("Authorization"),"Bearer gateway-fixture");
+  assert.equal(headers.get("x-goog-api-key"),null);
+  assert.equal(init?.redirect,"error");
+  assert.equal(body.model,"gemini-3.5-flash-lite");
+  assert.equal(body.max_tokens,6000);
+  assert.equal(body.reasoning_effort,"low");
+  assert.equal(body.messages[0].role,"system");
+  assert.equal(body.messages[1].role,"user");
+  if(outcome==="http-error")return Response.json({error:{code:"rate_limit_exceeded"}},{status:429});
+  return Response.json({
+   id:"gateway-response",choices:[{finish_reason:outcome,message:{content:longProse,reasoning_content:"private thought"}}],
+   usage:{prompt_tokens:82,completion_tokens:54,total_tokens:136,prompt_tokens_details:{cached_tokens:20},completion_tokens_details:{reasoning_tokens:12}},
+  });
+ });
+ const state={...emptyStoryState(),chapter:1,seriesArc};
+ const options={character,state,direction:"다음",key:"openai-fixture",signal:new AbortController().signal,phase:()=>{},onUsage:(record:import("../lib/usage.ts").UsageRecord)=>records.push(record)};
+ assert.equal((await generateChapter(options)).text,longProse);
+ assert.deepEqual(calls,["gateway","review"]);
+ const write=records.find(record=>record.feature==="novel.write"&&record.status==="completed");
+ assert.deepEqual([write?.responseId,write?.inputTokens,write?.outputTokens,write?.totalTokens,write?.cachedTokens,write?.reasoningTokens],["gateway-response",82,54,136,20,12]);
+ calls.length=0;
+ outcome="length";
+ await assert.rejects(generateChapter(options),/Novel output token limit/);
+ assert.deepEqual(calls,["gateway"]);
+ assert.equal(records.at(-1)?.status,"failed");
+ outcome="http-error";
+ await assert.rejects(generateChapter(options),{message:"Novel upstream failed",diagnostics:{provider:"gemini",httpStatus:429,providerErrorCode:"rate_limit_exceeded",providerErrorStatus:null}});
+});
+
+const sceneOpening = prose + "\n\n" + "창문 너머로 건너편 가게의 불이 하나씩 꺼졌다.";
+const sceneOne = "서하는 공구함을 내려다봤다. 친구는 먼저 손전등을 건넸다. " + "나다라마바".repeat(160);
+const sceneTwo = "둘은 함께 수리할 곳을 하나씩 확인했다. " + "차카타파하".repeat(300);
+
+test("Gemini inserts new scenes without rewriting the draft and rejects a repeated scene", async t => {
  const keys=["GEMINI_API_KEY","GEMINI_NOVEL_WRITE_MODEL"] as const;
  const previous=keys.map(key=>process.env[key]);
  t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
  process.env.GEMINI_API_KEY="fixture";
  process.env.GEMINI_NOVEL_WRITE_MODEL="gemini-3.5-flash-lite";
- const longerProse=longProse+"나".repeat(500);
- let calls=0, short=true;
+ let calls:string[]=[], repeatScene=false;
  t.mock.method(globalThis,"fetch",async(url:string,init?:RequestInit)=>{
   const body=JSON.parse(String(init?.body));
-  calls++;
-  if(calls===2){
-   assert.equal(url,"https://api.openai.com/v1/responses");
+  if(!url.includes("generativelanguage")){
    assert.equal(body.text.format.name,"chapter_review");
+   calls.push("review");
+   const units=unpack(JSON.parse(body.input).sourceUnits);
+   assert.ok(units.some(unit=>unit.text.includes("친구는 먼저 손전등을 건넸다")));
+   assert.ok(units.some(unit=>unit.text.includes("건너편 가게의 불이 하나씩 꺼졌다")));
    return response(review,init);
   }
-  assert.match(url,/generativelanguage/);
   const instructions=body.systemInstruction.parts[0].text;
-  assert.match(instructions,/Opening: about 600/);
-  assert.match(instructions,/Central action: about 1300/);
-  assert.match(instructions,/Consequence: about 800/);
-  assert.match(instructions,/one continuous chapter without section labels/);
   const input=JSON.parse(body.contents[0].parts[0].text);
-  assert.equal(input.previousDraft,undefined);
-  const text=short?prose:longerProse;
+  if(input.before===undefined){
+   calls.push("write");
+   assert.match(instructions,/3,000~3,300자/);
+   return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text:sceneOpening}]}}]});
+  }
+  calls.push("insert");
+  const draftBefore = calls.length===2 ? prose : prose+"\n\n"+sceneOne;
+  assert.equal(input.before,draftBefore);
+  assert.equal(input.after,sceneOpening.slice(prose.length));
+  assert.equal(input.minimumChapterChars,2000);
+  assert.ok(input.chars<2000);
+  assert.deepEqual(input.targetSceneChars,[2800-input.chars,2950-input.chars]);
+  assert.match(instructions,/Output only new scene prose/);
+  const text=repeatScene ? prose : calls.length===2 ? sceneOne : sceneTwo;
   return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text}]}}]});
  });
- const options={character,state:{...emptyStoryState(),chapter:1,seriesArc},direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
- const result=await generateChapter(options);
- assert.equal(calls,2);
- assert.equal(result.text,prose);
- calls=0;short=false;
- assert.equal((await generateChapter(options)).text,longerProse);
- assert.equal(calls,2);
+ const state={...emptyStoryState(),chapter:1,seriesArc};
+ const options={character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
+ assert.equal((await generateChapter(options)).text,prose+"\n\n"+sceneOne+"\n\n"+sceneTwo+sceneOpening.slice(prose.length));
+ assert.deepEqual(calls,["write","insert","insert","review"]);
+ calls=[];repeatScene=true;
+ await assert.rejects(generateChapter(options),/Novel chapter too short/);
+ assert.deepEqual(calls,["write","insert"]);
+ assert.equal(state.chapter,1);
+});
+
+test("critical props survive chapter memory and ungrounded holder changes trigger correction", async t => {
+ const item={item:"창고 열쇠",holder:"서하",operator:"민수"};
+ const storyCharacter={...character,concept:"서하가 열쇠를 보관하고 민수만 자물쇠를 열기로 했다."};
+ const state={...emptyStoryState(),chapter:1,seriesArc,propStates:[item]};
+ const wrong="민수는 자기 주머니에서 창고 열쇠를 꺼냈다.";
+ const fixed="서하는 창고 열쇠를 쥔 채 민수가 올 때까지 기다렸다.";
+ let calls=0;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));
+  const input=JSON.parse(body.input);
+  assert.deepEqual(input.context.memory.propStates,[item]);
+  assert.match(body.instructions+JSON.stringify(input),/민수만 자물쇠를 열기로 했다/);
+  calls++;
+  if(calls===1)return response(longProse+" "+wrong);
+  if(calls===2)return response({...review,memoryPatch:{...patch,
+   propChanges:[{...item,holder:"민수",evidence:wrong,changeEvidence:null}]}},init);
+  if(calls===3){
+   assert.match(input.corrections,/established holder and operator/);
+   return response(longProse+" "+fixed);
+  }
+  return response(review,init);
+ });
+ const result=await generateChapter({character:storyCharacter,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(calls,4);
+ assert.ok(result.text.endsWith(fixed));
+ assert.deepEqual(result.state.propStates,[item]);
+ const handoff="서하는 민수에게 창고 열쇠를 건네 보관을 맡겼다.";
+ const changed=mergeMemory(state,{...patch,propChanges:[{...item,holder:"민수",evidence:handoff,changeEvidence:handoff}]},prose+" "+handoff,"목표");
+ assert.deepEqual(changed.propStates,[{...item,holder:"민수"}]);
+});
+
+test("adjacent repeated dialogue is removed before chapter review without another writer call",async t=>{
+ const first="“너 정말…… 대담한 소리를 아무렇지도 않게 한다. 누가 갑자기 들어오기라도 하면 어쩌려고 그래.”";
+ const repeated=first.replace("너 ","");
+ const reply="“그럼 밖에서 얘기하자. 문이 열리는 소리 때문에 여기서는 마음이 영 편치 않아.”";
+ const expected=longProse+"\n\n"+first+"\n\n"+reply+"\n\n“응.”\n\n“응.”";
+ const draft=expected.replace(reply,repeated+"\n\n"+reply);
+ const calls:string[]=[];
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));
+  if(!body.text){
+   calls.push("write");
+   return response(draft);
+  }
+  assert.equal(body.text.format.name,"chapter_review");
+  calls.push("review");
+  const units=unpack(JSON.parse(body.input).sourceUnits);
+  assert.ok(units.some(unit=>unit.text.includes(first.slice(0,14))));
+  assert.ok(!units.some(unit=>unit.text.startsWith(repeated.slice(0,14))));
+  return response(review,init);
+ });
+ const state={...emptyStoryState(),chapter:1,seriesArc};
+ const result=await generateChapter({character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(result.text,expected);
+ assert.deepEqual(calls,["write","review"]);
+});
+
+test("short integrated drafts use a scene-only request then verify the joined manuscript", async t=>{
+ const old=process.env.OPENAI_NOVEL_GENERATION_MODE;
+ t.after(()=>{if(old===undefined)delete process.env.OPENAI_NOVEL_GENERATION_MODE;else process.env.OPENAI_NOVEL_GENERATION_MODE=old;});
+ process.env.OPENAI_NOVEL_GENERATION_MODE="integrated";
+ const calls:string[]=[];
+ const scene = sceneOne+"\n\n"+sceneTwo;
+ t.mock.method(globalThis,"fetch",async(_url:unknown,init?:RequestInit)=>{
+  const body=JSON.parse(String(init?.body));
+  const name=body.text?.format.name;
+  if(name==="episode_bundle"){
+   calls.push("bundle");
+   return response({...bundle(2,2),prose:sceneOpening});
+  }
+  if(name==="chapter_review"){
+   calls.push("review");
+   assert.ok(unpack(JSON.parse(body.input).sourceUnits).some(unit=>unit.text.includes("수리할 곳을 하나씩 확인했다")));
+   return response(review,init);
+  }
+  calls.push("insert");
+  assert.equal(JSON.parse(body.input).before,prose);
+  return response(scene);
+ });
+ const state={...emptyStoryState(),chapter:1,seriesArc};
+ const result=await generateChapter({character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}});
+ assert.equal(result.text,prose+"\n\n"+scene+sceneOpening.slice(prose.length));
+ assert.deepEqual(calls,["bundle","insert","review"]);
 });
 
 test("integrated generation uses two calls for a new arc, one for existing and finale, and stays opt-in",async t=>{
@@ -539,12 +754,13 @@ test("integrated generation uses two calls for a new arc, one for existing and f
    return response(plan,init);
   }
   assert.equal(body.instructions.split("# 집필 스타일").length-1,1);
-  assert.equal(body.text.format.name,"episode_bundle");assert.match(body.instructions,/about 2700 Korean characters/);
+  assert.equal(body.text.format.name,"episode_bundle");assert.equal(body.instructions.split("최소 2,000자").length-1,1);
+  assert.match(body.instructions,/privately plan 3–4 connected scenes/);
   assert.match(body.instructions,/NOVEL QUALITY PRINCIPLES/);assert.match(body.instructions,/SCENE AUDIT/);
-  return response(bundle(currentChapter,arcChapter));
+  return response({...bundle(currentChapter,arcChapter),prose:longProse.slice(0,2000)});
  });
  const options={character,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
- const first=await generateChapter(options);assert.equal(calls,2);assert.equal(first.state.chapter,1);
+ const first=await generateChapter(options);assert.equal(calls,2);assert.equal(first.state.chapter,1);assert.equal(first.text.length,2000);
  calls=0;currentChapter=3;arcChapter=3;
  const state={...emptyStoryState(),chapter:2,seriesArc};const saved=structuredClone(state);
  const middle=await generateChapter({...options,state});assert.equal(calls,1);assert.equal(middle.state.chapter,3);assert.deepEqual(state,saved);
@@ -723,7 +939,7 @@ test("a reused outline still reviews and repairs a grounded continuity error at 
 
 test("additional concepts replan five future chapters without resetting actual history, even after completion", async t => {
   for (const chapter of [3, 5]) {
-    const old = { ...emptyStoryState(), chapter, seriesArc, summary: "서점 정리를 시작했다", longTermGoal: "예전 목표" };
+    const old = { ...emptyStoryState(), chapter, seriesArc, seriesConcept:"엘리는 분홍색 머리의 사제다.", summary: "서점 정리를 시작했다", longTermGoal: "예전 목표" };
     const before = structuredClone(old);
     const newArc = { ...seriesArc, endingPromise: "라이벌과 함께 새로운 서점을 연다" };
     const values: unknown[] = [{ ...plan, seriesArc: newArc, longTermGoal: "라이벌과 서점 운영" }, prose, review];
@@ -741,7 +957,11 @@ test("additional concepts replan five future chapters without resetting actual h
         assert.equal(input.additionalConcept, "라이벌과 화해하고 동업한다");
         assert.ok(body.text.format.schema.required.includes("seriesArc"));
       }
-      if (!body.text) assert.equal(input.context.installmentGoal.chapter, 1);
+      if (!body.text) {
+        assert.equal(input.context.installmentGoal.chapter, 1);
+        assert.deepEqual(input.context.earlierConcepts,[old.seriesConcept]);
+        assert.match(body.instructions,/explicit appearance across chapters/);
+      }
       return response(values.shift(), init);
     });
     const options = { character, state: old, additionalConcept: "라이벌과 화해하고 동업한다", direction: "이어서 써줘", key: "test", signal: new AbortController().signal, phase: () => {} };
@@ -750,6 +970,8 @@ test("additional concepts replan five future chapters without resetting actual h
     assert.equal(result.state.chapter, chapter + 1);
     assert.equal(result.state.seriesStartChapter, chapter);
     assert.equal(result.state.seriesConcept, options.additionalConcept);
+    assert.deepEqual(storyConceptsForChapter(result.state,chapter),[old.seriesConcept]);
+    assert.deepEqual(storyConceptsForChapter(result.state,chapter+1),[old.seriesConcept,options.additionalConcept]);
     assert.equal(result.state.longTermGoal, "라이벌과 서점 운영");
     assert.deepEqual(result.state.seriesArc, newArc);
     assert.equal(storyProgress(result.state), 1);
@@ -826,7 +1048,7 @@ test("a five-part arc is stored once and follows the remaining chapter schedule"
         assert.equal(context.schedule.remainingAfterThis, 5 - chapter);
         assert.equal(body.text.format.schema.required.includes("seriesArc"), chapter === 1);
       }
-      if(chapter>1&&!body.text){assert.match(body.instructions,/Privately plan 3–5 causal scene beats/);assert.equal(context.installmentGoal.chapter,chapter);assert.deepEqual(context.seriesArc.installments.rows,seriesArc.installments.map(({chapter,goal,payoff})=>[chapter,goal,payoff]));}
+      if(chapter>1&&!body.text){assert.match(body.instructions,/privately plan 3–4 connected scenes/);assert.equal(context.installmentGoal.chapter,chapter);assert.deepEqual(context.seriesArc.installments.rows,seriesArc.installments.map(({chapter,goal,payoff})=>[chapter,goal,payoff]));}
       return response(values.shift(), init);
     });
     const result = await generateChapter({ character, state, direction: "다음 장면", key: "test", signal: new AbortController().signal, phase: () => {} });

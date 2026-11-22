@@ -3,12 +3,14 @@ import { z } from "zod";
 import { mentionsClothing } from "./presentation.ts";
 import type { ChatMessage } from "./session.ts";
 import { usageFetch, type UsageListener } from "../usage.ts";
+import { openAIResponsesEndpoint } from "../openai-endpoint.ts";
 
 const resultSchema = z.object({ mentioned: z.boolean() }).strict();
 
 export async function detectClothing(options: { messages: ChatMessage[]; key: string; signal: AbortSignal; onUsage?: UsageListener }): Promise<boolean> {
   if (mentionsClothing(options.messages)) return true;
-  const { response, data } = await usageFetch("chat.clothing", textModel(), "https://api.openai.com/v1/responses", {
+  const { response, data } = await usageFetch("chat.clothing", textModel(), openAIResponsesEndpoint(), {
+    redirect: "error",
     method: "POST", signal: options.signal,
     headers: { Authorization: `Bearer ${options.key}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: textModel(), store: false, ...chatReasoningOptions(), max_output_tokens: 350,

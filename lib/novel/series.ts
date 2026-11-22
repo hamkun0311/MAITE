@@ -14,6 +14,28 @@ export const seriesArcSchema = arcSchema(STORY_CHAPTER_LIMIT);
 export const storedSeriesArcSchema = z.union([seriesArcSchema, arcSchema(10)]);
 export type SeriesArc = z.infer<typeof seriesArcSchema>;
 
+export const storyConceptHistorySchema = z.array(z.object({
+  fromChapter: z.number().int().min(1).max(100000),
+  text: z.string().trim().min(1).max(1000),
+}).strict()).max(4);
+
+type ConceptHistory = z.infer<typeof storyConceptHistorySchema>;
+export function storyConceptEntries(state?: {
+  seriesConcept?: string;
+  seriesStartChapter?: number;
+  conceptHistory?: ConceptHistory;
+}): ConceptHistory {
+  if (!state) return [];
+  const fromChapter = (state.seriesStartChapter ?? 0) + 1;
+  const entries = state.conceptHistory ?? [];
+  if (!state.seriesConcept || entries.some(entry => entry.fromChapter === fromChapter)) return entries;
+  return [...entries, {fromChapter, text:state.seriesConcept}].sort((a,b)=>a.fromChapter-b.fromChapter).slice(-4);
+}
+
+export function storyConceptsForChapter(state: Parameters<typeof storyConceptEntries>[0], chapter: number) {
+  return storyConceptEntries(state).filter(entry => entry.fromChapter <= chapter).map(entry => entry.text);
+}
+
 export function storyProgress(state?: { chapter: number; seriesStartChapter?: number }) {
   return Math.max(0, (state?.chapter ?? 0) - (state?.seriesStartChapter ?? 0));
 }

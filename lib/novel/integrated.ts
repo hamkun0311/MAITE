@@ -7,7 +7,7 @@ import {promiseAuditFields} from "./promises.ts";
 
 export function integratedEpisodeSchema(finale:boolean,promiseCount=0){
  return z.object({chapter:z.number().int().positive(),arcChapter:z.number().int().min(1).max(5),prose:z.string().min(1).max(8000),
-  review:(finale?createFinalReviewSchema():createReviewSchema()).required({sceneAudit:true}).extend({...promiseAuditFields(promiseCount),memoryPatch:createMemoryPatchSchema().required({sharedChanges:true,dialogueRegisters:true})}),
+  review:(finale?createFinalReviewSchema():createReviewSchema()).required({sceneAudit:true}).extend({...promiseAuditFields(promiseCount),memoryPatch:createMemoryPatchSchema().required({sharedChanges:true,dialogueRegisters:true,propChanges:true})}),
  }).strict();
 }
 export function validateIntegratedEpisode(value:unknown,chapter:number,arcChapter:number,previousProse:string,promiseCount=0){
@@ -27,7 +27,7 @@ export function validateIntegratedEpisode(value:unknown,chapter:number,arcChapte
   if(!final.centralConflictResolved||!final.protagonistOutcomeShown||!final.relationshipOutcomeShown||final.hasSequelHook||!hasEvidence(result.prose,final.evidence))throw new Error("Integrated ending unresolved");
  }
  const patch=memoryPatchSchema.parse(review.memoryPatch);
- const changes=[patch.currentSituation,...patch.newEvents,...patch.resolvedEvents,...patch.openedThreads,...patch.closedThreads,...patch.worldFacts,...(patch.sharedChanges??[]),...(patch.dialogueRegisters??[]),...patch.characters.flatMap(person=>[...(person.goal?[person.goal]:[]),...person.knowledge,...person.relationships])];
- if(!changes.every(item=>hasEvidence(result.prose,item.evidence))||!(patch.dialogueRegisters??[]).every(change=>!change.changeEvidence||hasEvidence(result.prose,change.changeEvidence)))throw new Error("Unsupported integrated memory");
+ const changes=[patch.currentSituation,...patch.newEvents,...patch.resolvedEvents,...patch.openedThreads,...patch.closedThreads,...patch.worldFacts,...(patch.sharedChanges??[]),...(patch.dialogueRegisters??[]),...(patch.propChanges??[]),...patch.characters.flatMap(person=>[...(person.goal?[person.goal]:[]),...person.knowledge,...person.relationships])];
+ if(!changes.every(item=>hasEvidence(result.prose,item.evidence))||![...(patch.dialogueRegisters??[]),...(patch.propChanges??[])].every(change=>!change.changeEvidence||hasEvidence(result.prose,change.changeEvidence)))throw new Error("Unsupported integrated memory");
  return {text:result.prose,patch,charCount:count,promiseAudit:review.promiseAudit};
 }

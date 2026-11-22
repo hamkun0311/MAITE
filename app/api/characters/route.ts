@@ -1,8 +1,7 @@
 import { imageDescriptionReasoningOptions, imageQuality, textModel } from "../../../lib/ai-model.ts";
+import { openAIImageEndpoint, openAIImageKey, openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import sharp from "sharp";
 import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
@@ -87,6 +86,17 @@ async function checked(response: Response, finish?: ReturnType<typeof trackUsage
     502,
   );
 }
+// The full design goes to the renderer. Limit the client-facing diagnostic header.
+function promptPreview(prompt: string) {
+  let preview = "";
+  for (const char of prompt) {
+    const encoded = encodeURIComponent(char);
+    if (preview.length + encoded.length > 8000) break;
+    preview += encoded;
+  }
+  return preview;
+}
+
 export const OPTIONS = preflight;
 export const POST = withGeneration(handle, true);
 async function handle(request: Request) {
@@ -101,9 +111,15 @@ async function handle(request: Request) {
     const origin = request.headers.get("origin");
     if (origin && !allowedOrigin(request))
       throw new RequestError("허용되지 않은 요청입니다.", 403);
-    const key = process.env.OPENAI_API_KEY;
-    if (!key)
-      throw new RequestError("서버의 OPENAI_API_KEY를 설정해주세요.", 503);
+    const key = openAITextKey();
+    const imageKey = openAIImageKey();
+    const moderationKey = process.env.OPENAI_API_KEY?.trim();
+    if (!key) throw new RequestError("서버에 GPT API 키를 설정해주세요.", 503);
+    if (!imageKey) throw new RequestError("서버에 OPENAI_IMAGE_API_KEY를 설정해주세요.", 503);
+    if (!moderationKey) throw new RequestError("이미지 안전 검사용 OPENAI_API_KEY를 설정해주세요.", 503);
+    const responsesEndpoint = openAIResponsesEndpoint();
+    const generateEndpoint = openAIImageEndpoint("generations");
+    const editEndpoint = openAIImageEndpoint("edits");
     const now = Date.now();
     if (now > usage.until) {
       usage.count = 0;
@@ -159,7 +175,8 @@ async function handle(request: Request) {
     const moderation = await checked(
       await fetch("https://api.openai.com/v1/moderations", {
         method: "POST",
-        headers,
+        redirect: "error",
+        headers: { ...headers, Authorization: `Bearer ${moderationKey}` },
         signal,
         body: JSON.stringify({
           model: "omni-moderation-latest",
@@ -186,8 +203,9 @@ async function handle(request: Request) {
         : null;
     const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
     const briefResponse = await measured("image.description", textModel(),
-      "https://api.openai.com/v1/responses", {
+      responsesEndpoint, {
         method: "POST",
+        redirect: "error",
         headers,
         signal,
         body: JSON.stringify({
@@ -197,8 +215,7 @@ async function handle(request: Request) {
           max_output_tokens: 5000,
           instructions:
             (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
-            " Reference style analysis: " +
-            JSON.stringify(CHARACTER_STYLES) +
+            " Shared rendering style: " + CHARACTER_STYLES.neutral +
             (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
             " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
             (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),
@@ -250,37 +267,33 @@ async function handle(request: Request) {
     const target = confirmedIllustrationTarget(scene);
     // A manually selected counterpart must never inherit the original character's identity image.
     if (target && target !== profile?.name && "characterPresent" in brief) brief.characterPresent = false;
-    const prompt = buildCharacterPrompt(brief, scene,framing);
+    const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
+    const prompt = buildCharacterPrompt(brief, scene, framing, {
+      profile: !scene || useIdentity ? profile : undefined,
+      latestRequest: !scene ? messages.at(-1)?.content : undefined,
+      characterConcept: scene?.kind === "illustration" && !useIdentity ? profile?.concept : undefined,
+      hasIdentity: useIdentity,
+    });
     const parameters = {
       model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       prompt, size: CHARACTER_SIZE,
       quality: imageQuality(),
       output_format: "jpeg", output_compression: 85, n: 1,
     };
-    const useStyleImage = brief.styleProfile === "female" || brief.styleProfile === "mixed";
-    const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
-    const useEdit = useStyleImage || useIdentity;
     let imageBody: FormData | string;
-    if (useEdit) {
+    if (useIdentity && prior instanceof File) {
       const imageForm = new FormData();
       for (const [name, value] of Object.entries(parameters)) imageForm.set(name, String(value));
-      if (useIdentity && prior instanceof File) imageForm.append("image[]", prior, "previous-character.jpg");
-      if (useStyleImage) {
-        const references = await Promise.all([
-          readFile(path.join(process.cwd(), "public/references/anime-style.png")),
-          readFile(path.join(process.cwd(), "public/references/female-nurse-style.jpg")),
-        ]);
-        imageForm.append("image[]", new Blob([references[0]], { type: "image/png" }), "style-reference.png");
-        imageForm.append("image[]", new Blob([references[1]], { type: "image/jpeg" }), "style-nurse-reference.jpg");
-      }
+      imageForm.append("image[]", prior, "previous-character.jpg");
       imageBody = imageForm;
     } else imageBody = JSON.stringify(parameters);
     const generated = await measured("image.generate", parameters.model,
-      `https://api.openai.com/v1/images/${useEdit ? "edits" : "generations"}`, {
+      useIdentity ? editEndpoint : generateEndpoint, {
         method: "POST",
+        redirect: "error",
         headers: {
-          Authorization: `Bearer ${key}`,
-          ...(!useEdit ? { "Content-Type": "application/json" } : {}),
+          Authorization: `Bearer ${imageKey}`,
+          ...(!useIdentity ? { "Content-Type": "application/json" } : {}),
         },
         body: imageBody,
         signal,
@@ -293,14 +306,18 @@ async function handle(request: Request) {
         502,
       );
     const raw = Buffer.from(encoded, "base64");
-    if (!isJpeg(raw))
+    const png = raw.length >= 8 && raw.readUInt32BE(0) === 0x89504e47 && raw.readUInt32BE(4) === 0x0d0a1a0a;
+    const webp = raw.length >= 12 && raw.toString("ascii", 0, 4) === "RIFF" && raw.toString("ascii", 8, 12) === "WEBP";
+    if (!isJpeg(raw) && !png && !webp)
       throw new RequestError("이미지 응답 형식이 올바르지 않습니다.", 502);
     const { data: image, info } = await sharp(raw, { limitInputPixels: 16_777_216 })
       .resize(CHARACTER_WIDTH, CHARACTER_HEIGHT, {
         fit: "inside",
       })
+      .flatten({ background: "#ffffff" })
       .jpeg({ quality: 85 })
-      .toBuffer({ resolveWithObject: true });
+      .toBuffer({ resolveWithObject: true })
+      .catch(() => { throw new RequestError("이미지 응답 형식이 올바르지 않습니다.", 502); });
     if (image.length > MAX_CHARACTER_IMAGE)
       throw new RequestError("이미지 크기 제한을 초과했습니다.", 502);
     return new Response(image, {
@@ -309,7 +326,7 @@ async function handle(request: Request) {
         "Cache-Control": "no-store",
         "X-Character-Title": encodeURIComponent(brief.title),
         "X-Character-Summary": encodeURIComponent(brief.summary),
-        "X-Character-Prompt": encodeURIComponent(prompt),
+        "X-Character-Prompt": promptPreview(prompt),
         "X-Character-Style": brief.styleProfile,
         ...(scene ? { "X-Character-Composition": encodeURIComponent(JSON.stringify(compositionSchema.strip().parse(brief))) } : {}),
         "X-Character-Width": String(info.width),

@@ -1,5 +1,4 @@
 "use client";
-import type { ImageSceneSelection } from "@/lib/characters/visual";
 import { jsonApi } from "@/lib/platform/commerce";
 import { mergeCheckins, type Checkin } from "@/lib/notifications/checkins";
 import { agreedVisualDestination, updateVisualScene, rebuildVisualScene, visualSceneSchema, type VisualScene } from "@/lib/chat/visual-scene";
@@ -31,7 +30,7 @@ type Message = { role: "user" | "assistant"; content: string; checkinId?: string
 const timelineRequests = new WeakMap<object, AbortController>();
 export default function LiveChat({ character, characterDocumentId, active = true, headingContent, imageOptions, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
   characterDocumentId?: string; character?: CharacterContext; active?: boolean; headingContent?: ReactNode; imageOptions?:ReactNode; session?: ChatSession;
-  onGenerateVisual?: (kind: VisualKind, context: string, scene?: IllustrationScene, selection?: ImageSceneSelection) => Promise<void>;
+  onGenerateVisual?: (kind: VisualKind, context: string, scene?: IllustrationScene, chapter?: number) => Promise<void>;
   imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void;
 }) {
   const localSession = useRef(createChatSession());
@@ -347,7 +346,7 @@ export default function LiveChat({ character, characterDocumentId, active = true
       {imageError && <p className="character-visual-error" role="alert">{imageError}</p>}
       {onGenerateVisual && character && (character.mode === "chat" || committed.current.some(message => message.role === "assistant" && message.content.trim())) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {
         if (busy || imageJob) return;
-        void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", imageContext, character.mode === "story" && saved.documentId ? { novelId: saved.documentId, chapter: firstEpisode + pageIndex + 1 } : undefined);
+        void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", imageContext, character.mode === "story" && saved.documentId ? { novelId: saved.documentId, chapter: firstEpisode + pageIndex + 1 } : undefined, isStory ? firstEpisode + pageIndex + 1 : undefined);
       }}><span className="visual-button-label">{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span> · {character.mode === "story" ? 50 : 30} ♥</span>}</span></button>}
       {character?.mode === "story" && <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="추가하고 싶은 사건이나 설정 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>}
       {character?.mode === "story" ? <button className="story-next-button" type="button" disabled={busy || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {

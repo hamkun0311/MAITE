@@ -749,19 +749,26 @@ test("SSE handles Korean UTF-8 split across bytes, CRLF, comments and trailing e
 });
 
 test("chat route streams before completion, bounds input, hides errors and cancels upstream", async (t) => {
-  const old = process.env.OPENAI_API_KEY;
-  t.after(() => { if (old === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = old; });
+  const names = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_TEXT_API_KEY"] as const;
+  const previous = names.map(name => process.env[name]);
+  t.after(() => names.forEach((name, index) => {
+    if (previous[index] === undefined) delete process.env[name];
+    else process.env[name] = previous[index];
+  }));
   const request = (body = { messages: [{ role: "user", content: "안녕" }] }) => new Request("http://localhost/api/chat", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   });
-  delete process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "official-key";
+  process.env.OPENAI_BASE_URL = "https://text-gateway.example/v1";
+  delete process.env.OPENAI_TEXT_API_KEY;
   assert.equal((await POST(request())).status, 503);
-  process.env.OPENAI_API_KEY = "test-key";
+  process.env.OPENAI_TEXT_API_KEY = "test-key";
   let source!: ReadableStreamDefaultController<Uint8Array>, upstreamSignal!: AbortSignal;
   let mode = "normal", calls = 0;
   t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
     calls++;
-    assert.equal(url, "https://api.openai.com/v1/responses");
+    assert.equal(url, "https://text-gateway.example/v1/responses");
+    assert.equal(init.redirect, "error");
     const body = JSON.parse(String(init.body));
     assert.equal(body.model, "gpt-5.4-mini");
     assert.equal(body.stream, true);

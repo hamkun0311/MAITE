@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { CharacterContext } from "./character.ts";
 import type { ChatMessage } from "./session.ts";
 import { usageFetch, type UsageListener } from "../usage.ts";
+import { openAIResponsesEndpoint } from "../openai-endpoint.ts";
 
 export const speechStyleSchema = z.enum(["polite", "casual"]);
 export type SpeechStyle = z.infer<typeof speechStyleSchema>;
@@ -52,7 +53,8 @@ export async function resolveSpeechStyle(options: {
 }): Promise<SpeechStyle> {
   const explicit = explicitSpeechRequest(options.messages.at(-1)?.content ?? "");
   if (explicit) return explicit;
-  const { response, data } = await usageFetch("chat.speech", textModel(), "https://api.openai.com/v1/responses", {
+  const { response, data } = await usageFetch("chat.speech", textModel(), openAIResponsesEndpoint(), {
+    redirect: "error",
     method: "POST", signal: options.signal,
     headers: { Authorization: `Bearer ${options.key}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model: textModel(), store: false, ...chatReasoningOptions(), max_output_tokens: 500,
