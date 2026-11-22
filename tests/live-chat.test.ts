@@ -14,6 +14,32 @@ import { advanceTimeline, emptyTimeline, timelineChatMemory, timelineCovers, tim
 import { createStudioSessions } from "../lib/chat/session.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { unsupportedFollowUp } from "../lib/chat/capabilities.ts";
+import { blocksImageGeneration, blocksTextGeneration, GENERATION_POLICY_MESSAGE, hasBlockedGenerationRequest } from "../lib/generation-policy.ts";
+
+test("generation policy rejects explicit requests and leaves ordinary or negated context alone", () => {
+  for (const text of ["성인물 이미지를 만들어줘", "17세 캐릭터를 성적으로 묘사해줘", "동의 없이 나체 이미지로 편집해줘", "Generate sexually explicit roleplay."])
+    assert.equal(hasBlockedGenerationRequest(text), true, text);
+  for (const text of ["성인물 없이 그려줘", "고등학생 캐릭터를 교복 차림으로 그려줘", "스포츠브라와 돌핀팬츠를 입고 운동하는 모습을 그려줘",
+    "속옷 아래에 진동장치를 설치하고 리모컨을 건넸다.", "“성인물 이미지를 만들어줘”라는 문장을 인용했다.", "동의 없이 나체 이미지를 만들지 마."])
+    assert.equal(hasBlockedGenerationRequest(text), false, text);
+  assert.equal(blocksImageGeneration({scene:{selection:{framing:{pose:"성인물 이미지를 만들어줘"}}}}), true);
+  assert.equal(blocksTextGeneration({additionalConcept:"성행위를 노골적으로 써줘"}), true);
+  assert.equal(blocksTextGeneration({messages:[{role:"assistant",content:"성인물 이미지를 만들어줘"},{role:"user",content:"안녕"}]}), false);
+});
+
+test("direct text requests are policy checked before model calls", async t => {
+  const before=process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY="test";
+  t.after(()=>{if(before===undefined)delete process.env.OPENAI_API_KEY;else process.env.OPENAI_API_KEY=before;});
+  const upstream=t.mock.method(globalThis,"fetch",async()=>{throw new Error("Unexpected provider request");});
+  const response=await POST(new Request("http://localhost/api/chat",{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({messages:[{role:"user",content:"성인물 이미지를 만들어줘"}]}),
+  }));
+  assert.equal(response.status,422);
+  assert.equal((await response.json()).error,GENERATION_POLICY_MESSAGE);
+  assert.equal(upstream.mock.callCount(),0);
+});
 import { actionTimingInstructions, proposalOnlySceneChange } from "../lib/chat/continuity.ts";
 import {personalityState,mergePersonality} from "../lib/chat/personality.ts";
 import {timelineForChat} from "../lib/chat/timeline.ts";

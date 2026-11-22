@@ -610,20 +610,20 @@ const sceneOpening = prose + "\n\n" + "창문 너머로 건너편 가게의 불�
 const sceneOne = "서하는 공구함을 내려다봤다. 친구는 먼저 손전등을 건넸다. " + "나다라마바".repeat(160);
 const sceneTwo = "둘은 함께 수리할 곳을 하나씩 확인했다. " + "차카타파하".repeat(300);
 
-test("Gemini inserts new scenes without rewriting the draft and rejects a repeated scene", async t => {
+test("Gemini retries a duplicate insertion and reviews a short draft when expansion stops", async t => {
  const keys=["GEMINI_API_KEY","GEMINI_NOVEL_WRITE_MODEL"] as const;
  const previous=keys.map(key=>process.env[key]);
  t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
  process.env.GEMINI_API_KEY="fixture";
  process.env.GEMINI_NOVEL_WRITE_MODEL="gemini-3.5-flash-lite";
- let calls:string[]=[], repeatScene=false;
+ let calls:string[]=[], duplicateScenes=0, duplicateAfter=0, acceptedScenes=0, lastWasDuplicate=false, providerError=false;
  t.mock.method(globalThis,"fetch",async(url:string,init?:RequestInit)=>{
   const body=JSON.parse(String(init?.body));
   if(!url.includes("generativelanguage")){
    assert.equal(body.text.format.name,"chapter_review");
    calls.push("review");
    const units=unpack(JSON.parse(body.input).sourceUnits);
-   assert.ok(units.some(unit=>unit.text.includes("친구는 먼저 손전등을 건넸다")));
+   assert.equal(units.some(unit=>unit.text.includes("친구는 먼저 손전등을 건넸다")),acceptedScenes>0);
    assert.ok(units.some(unit=>unit.text.includes("건너편 가게의 불이 하나씩 꺼졌다")));
    return response(review,init);
   }
@@ -635,24 +635,39 @@ test("Gemini inserts new scenes without rewriting the draft and rejects a repeat
    return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text:sceneOpening}]}}]});
   }
   calls.push("insert");
-  const draftBefore = calls.length===2 ? prose : prose+"\n\n"+sceneOne;
-  assert.equal(input.before,draftBefore);
-  assert.equal(input.after,sceneOpening.slice(prose.length));
+  const inserted = acceptedScenes ? "\n\n"+sceneOne : "";
+  assert.equal(input.before,prose+(lastWasDuplicate ? "" : inserted));
+  assert.equal(input.after,(lastWasDuplicate ? inserted : "")+sceneOpening.slice(prose.length));
   assert.equal(input.minimumChapterChars,2000);
   assert.ok(input.chars<2000);
   assert.deepEqual(input.targetSceneChars,[2800-input.chars,2950-input.chars]);
   assert.match(instructions,/Output only new scene prose/);
-  const text=repeatScene ? prose : calls.length===2 ? sceneOne : sceneTwo;
+  assert.equal(input.retryReason,lastWasDuplicate?"duplicate_scene":undefined);
+  if(providerError)return Response.json({error:{status:"UNAVAILABLE"}},{status:503});
+  lastWasDuplicate=duplicateScenes>0 && acceptedScenes>=duplicateAfter;
+  if(lastWasDuplicate)duplicateScenes--;
+  const text=lastWasDuplicate ? prose : acceptedScenes++===0 ? sceneOne : sceneTwo;
   return Response.json({candidates:[{finishReason:"STOP",content:{parts:[{text}]}}]});
  });
  const state={...emptyStoryState(),chapter:1,seriesArc};
  const options={character,state,direction:"다음",key:"test",signal:new AbortController().signal,phase:()=>{}};
  assert.equal((await generateChapter(options)).text,prose+"\n\n"+sceneOne+"\n\n"+sceneTwo+sceneOpening.slice(prose.length));
  assert.deepEqual(calls,["write","insert","insert","review"]);
- calls=[];repeatScene=true;
- await assert.rejects(generateChapter(options),/Novel chapter too short/);
- assert.deepEqual(calls,["write","insert"]);
+ calls=[];acceptedScenes=0;duplicateScenes=1;
+ assert.equal((await generateChapter(options)).text,prose+"\n\n"+sceneOne+"\n\n"+sceneTwo+sceneOpening.slice(prose.length));
+ assert.deepEqual(calls,["write","insert","insert","insert","review"]);
+ calls=[];acceptedScenes=0;duplicateScenes=2;duplicateAfter=1;
+ const fallback=await generateChapter(options);
+ assert.equal(fallback.text,prose+"\n\n"+sceneOne+sceneOpening.slice(prose.length));
+ assert.ok(fallback.text.length<2000);
+ assert.equal(fallback.state.chapter,2);
+ assert.equal(fallback.state.previousProse,fallback.text);
+ assert.deepEqual(calls,["write","insert","insert","insert","review"]);
  assert.equal(state.chapter,1);
+ calls=[];acceptedScenes=0;lastWasDuplicate=false;providerError=true;
+ const failedInsert=await generateChapter(options);
+ assert.equal(failedInsert.text,sceneOpening);
+ assert.deepEqual(calls,["write","insert","review"]);
 });
 
 test("critical props survive chapter memory and ungrounded holder changes trigger correction", async t => {

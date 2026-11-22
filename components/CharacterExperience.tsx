@@ -20,11 +20,11 @@ import CharacterBackgroundPicker from "./CharacterBackgroundPicker";
 import { CharacterImageViewer } from "./CharacterImage";
 import type { CharacterGalleryImage, CharacterImageJob, VisualKind, IllustrationScene } from "@/lib/characters/gallery";
 
-export default function CharacterExperience({ mode, characterDocumentId, imageUrl, avatarUrl, backgroundHidden = false, imageDescription, profile, active, onEdit, onBack, session, gallery, backgroundId, onBackground, onGenerateVisual, imageJob, imageError, onCancelImage }: {
+export default function CharacterExperience({ mode, characterDocumentId, imageUrl, avatarUrl, backgroundHidden = false, imageDescription, profile, active, onEdit, onBack, session, gallery, backgroundId, onBackground, onGenerateVisual, imageJob, imageError, onCancelImage, onDismissImageError }: {
   characterDocumentId?: string; mode: "chat" | "story"; imageUrl: string; avatarUrl?: string; backgroundHidden?: boolean; imageDescription: string; profile: CharacterProfile; active: boolean; onEdit: () => void; onBack: () => void; session?: ChatSession;
   gallery: CharacterGalleryImage[]; backgroundId?: string; onBackground: (id: string) => void;
   onGenerateVisual: (kind: VisualKind, context: string, scene?: IllustrationScene, selection?: ImageSceneSelection) => Promise<CharacterGalleryImage | null>;
-  imageJob?: CharacterImageJob; imageError: string; onCancelImage: () => void;
+  imageJob?: CharacterImageJob; imageError: string; onCancelImage: () => void; onDismissImageError: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [preview, setPreview] = useState<CharacterGalleryImage | null>(null);
@@ -63,7 +63,7 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
   return <section className={`character-experience character-${mode}-experience${backgroundHidden ? " character-no-background" : ""}`} aria-label={mode === "chat" ? "대화하기" : "이야기 만들기"}>
     {!backgroundHidden && <CachedImage className="character-backdrop" src={imageUrl} cacheKey={imageAssetKey(gallery.find(image => image.id === backgroundId) || {})} alt="" />}
     <div className="character-experience-content">
-      <LiveChat characterDocumentId={characterDocumentId} character={character} active={active} session={session} headingContent={readerHeading} imageOptions={mode==="story"&&!accountEnabled()?<details className="image-framing-options"><summary>이미지 구도</summary><ImageFramingFields value={framing} onChange={setFraming} disabled={!!imageJob}/></details>:undefined} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} />
+      <LiveChat characterDocumentId={characterDocumentId} character={character} active={active} session={session} headingContent={readerHeading} imageOptions={mode==="story"&&!accountEnabled()?<details className="image-framing-options"><summary>이미지 구도</summary><ImageFramingFields value={framing} onChange={setFraming} disabled={!!imageJob}/></details>:undefined} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} onDismissImageError={onDismissImageError} />
     </div>
     <CharacterBackgroundPicker open={pickerOpen} images={gallery} selected={backgroundId} onSelect={onBackground} onClose={() => setPickerOpen(false)} />
     {preview && <CharacterImageViewer src={preview.url} title={preview.title} cacheKey={imageAssetKey(preview)} open={active} onClose={() => setPreview(null)} />}

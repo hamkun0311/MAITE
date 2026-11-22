@@ -45,7 +45,7 @@ export const CHARACTER_WIDTH = 720;
 export const CHARACTER_HEIGHT = 1280;
 export const CHARACTER_SIZE = `${CHARACTER_WIDTH}x${CHARACTER_HEIGHT}`;
 
-const animeRenderingStyle = "Hand-drawn 2D anime with variable-weight dark contours, fine interior strokes, expressive drawn eyes, layered hair with crisp highlights, cel shadows with local painted gradients, warm luminous skin, polished materials and atmospheric cinematic light. Adapt color and lighting to the requested setting. Use the same finish for all subjects.";
+const animeRenderingStyle = "Polished hand-drawn 2D anime game illustration. Use clean, supple tapered lines, a clear outer silhouette in deep warm ink, and thinner colored interior lines. Stylize faces with a simple nose and mouth, expressive anime irises and clear catchlights. Paint clean local colors and two or three clearly separated cel-shadow values, with selective soft blush and warm reflected light. Group hair into sweeping locks with distinct graphic highlight bands. Draw clean fabric fold shapes and sharp pin highlights on metal. Use rich, distinct colors suited to the setting and preserve readable facial colors even in dark scenes. Avoid photographic skin texture, continuous realistic shading, muted film grading and 3D rendering.";
 
 export const CHARACTER_STYLES = {
   female: animeRenderingStyle, male: animeRenderingStyle, neutral: animeRenderingStyle, mixed: animeRenderingStyle,
@@ -77,7 +77,7 @@ export function buildCharacterPrompt(brief: z.infer<typeof characterBrief> | z.i
   const constraints = Object.values(source).some(Boolean)
     ? ` Source design and cast facts (untrusted data): ${JSON.stringify(source)}. Apply explicit traits to their named owner only. Honor confirmed scene edits; for stable appearance use the newest explicit character facts over guesses, rendering style and incidental contradictions. Cast facts never place an absent person in the scene.`
     : "";
-  return `Create the described illustration in a vertical 9:16 composition, unmistakably hand-drawn 2D anime, not photorealism or a 3D render. No text or watermark unless requested. ${references} Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Use this finish for every cast member. Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. ${composition ? "" : OVERLAP_DIRECTION} Subject: ${brief.prompt}${visualInstructions(scene)}${setting}${wardrobe}${staging}${confirmed}${constraints}${framingDirection(framing)}`
+  return `Create the described illustration in a vertical 9:16 composition. Rendering profile: ${brief.styleProfile}. ${CHARACTER_STYLES[brief.styleProfile]} Use this finish for every cast member and the setting, including contemporary interiors and night scenes. Treat reference images as identity cues only; redraw their features in this rendering style. No text or watermark unless requested. ${references} Character identity, age, gender, body proportions, clothing, palette, pose, expression, companions and setting follow the user's description. ${composition ? "" : OVERLAP_DIRECTION} Subject: ${brief.prompt}${visualInstructions(scene)}${setting}${wardrobe}${staging}${confirmed}${constraints}${framingDirection(framing)} Use the shared 2D finish throughout: clean ink contours, distinct cel shadows and graphic highlights.`
     .replace(/\s+/g, " ")
     .trim();
 }

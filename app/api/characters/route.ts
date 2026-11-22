@@ -1,5 +1,6 @@
 import { imageDescriptionReasoningOptions, imageQuality, textModel } from "../../../lib/ai-model.ts";
 import { openAIImageEndpoint, openAIImageKey, openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
+import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "../../../lib/generation-policy.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import sharp from "sharp";
@@ -141,6 +142,7 @@ async function handle(request: Request) {
       const {framing:_ignored,...selection}=sceneInput.selection;sceneInput.selection=selection;
     }
     const scene = form.has("scene") ? visualRequestSchema.parse(sceneInput) : undefined;
+    if (blocksImageGeneration({messages, profile, scene})) throw new RequestError(GENERATION_POLICY_MESSAGE, 422);
     const framing=scene?.kind==="illustration"?(form.has("framing")?imageFramingSchema.parse(JSON.parse(String(form.get("framing")))):scene.selection?.framing):undefined;
     if (messages.at(-1)?.role !== "user")
       throw new RequestError("캐릭터 설명을 입력해주세요.", 400);
@@ -216,6 +218,7 @@ async function handle(request: Request) {
           instructions:
             (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
             " Shared rendering style: " + CHARACTER_STYLES.neutral +
+            " The brief describes the subject, expression, camera and scene lighting. Leave rendering and shading to the shared style; omit photography, realism and film-grading cues from the brief, even when an identity image uses them." +
             (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
             " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
             (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),

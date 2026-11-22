@@ -20,7 +20,7 @@ import {geminiApiKey, writeGeminiProse} from "./gemini.ts";
 import {NovelUpstreamError} from "./upstream-error.ts";
 import {openAIResponsesEndpoint} from "../openai-endpoint.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v45-prop-continuity";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v47-review-short-fallback";
 
 const sceneWriting = "Before drafting, privately plan 3–4 connected scenes from the current continuity and supplied plot. Map the five writing beats to these scenes as appropriate, giving each scene a distinct purpose. Dramatize each with concrete action, dialogue or reaction as appropriate. Let each scene lead to the next; write one continuous chapter without outline or scene labels.";
 
@@ -29,20 +29,16 @@ const propMemory = "Audit who holds and who may operate each plot-critical prop 
 
 const MIN_CHAPTER_CHARS = 2000;
 
-export class NovelChapterLengthError extends Error {
-  readonly chars: number;
-  constructor(chars: number) { super("Novel chapter too short"); this.chars = chars; }
-}
-
-function sceneInsertionPoint(prose: string) {
+function sceneInsertionPoint(prose: string, previousOffset?: number) {
   const paragraphs = [...prose.matchAll(/\r?\n(?:[^\S\r\n]*\r?\n)+/g)];
   const boundaries = paragraphs.length ? paragraphs : [...prose.matchAll(/[.!?…。！？][”’"]*\s+/gu)];
   const target = prose.length * 0.6;
-  return boundaries.reduce((best, match) => {
+  const offsets = boundaries.map(match => {
     const offset = match.index;
-    const at = /^[.!?…。！？]/u.test(match[0]) ? offset + match[0].trimEnd().length : offset;
-    return !best || Math.abs(at - target) < Math.abs(best - target) ? at : best;
-  }, 0);
+    return /^[.!?…。！？]/u.test(match[0]) ? offset + match[0].trimEnd().length : offset;
+  }).filter(offset => offset !== previousOffset);
+  if (!offsets.length) return previousOffset ?? 0;
+  return offsets.reduce((best, offset) => Math.abs(offset - target) < Math.abs(best - target) ? offset : best);
 }
 
 export class NovelOutputLimitError extends Error {
@@ -69,7 +65,7 @@ export async function generateChapter(options: Options) {
   trace.event("started");
   try{return await generateChapterWithTrace({...options,phase:value=>{stage=value;options.phase(value);}},trace);}
   catch(error){
-    const known=["Novel chapter too short","Chapter review failed","Incomplete novel stage","Empty novel stage","Novel upstream failed","Integrated episode validation failed","Unsupported memory","Invalid manuscript source","Story already complete","Missing Gemini API key"];
+    const known=["Chapter review failed","Incomplete novel stage","Empty novel stage","Novel upstream failed","Integrated episode validation failed","Unsupported memory","Invalid manuscript source","Story already complete","Missing Gemini API key"];
     trace.event("failed",{stage,...(error instanceof NovelUpstreamError ? error.diagnostics : {}),...(error instanceof NovelOutputLimitError?{outputStage:error.stage}:{}),...(error instanceof z.ZodError?{validationIssues:error.issues.slice(0,20).map(({code,path})=>({code,path}))}:{}),reason:options.signal.aborted?"cancelled_or_timeout":error instanceof NovelOutputLimitError?"output_token_limit":error instanceof z.ZodError?"invalid_stage_output":error instanceof SyntaxError?"invalid_json":error instanceof Error&&known.includes(error.message)?error.message:"generation_failed"});
     throw error;
   }
@@ -206,26 +202,52 @@ async function generateChapterWithTrace(options:Options,trace:ReturnType<typeof 
     return cleaned;
   }
   async function insertMissingScenes(original: string) {
-    const offset = sceneInsertionPoint(original);
-    const after = original.slice(offset);
-    let before = original.slice(0, offset);
     let draft = original;
+    let offset = sceneInsertionPoint(draft);
     let chars = Array.from(draft).length;
+    let retryReason: "duplicate_scene" | "duplicate_boundary_dialogue" | "empty_scene" | undefined;
     while (chars < MIN_CHAPTER_CHARS) {
       phase("rewriting");
       trace.event("chapter_length_short",{chars,missingChars:MIN_CHAPTER_CHARS-chars});
-      const scene = cleanRepeatedDialogue(plainDialogue(await call(
-        `Write ONLY one new Korean fiction scene for the insertion point between before and after. Both excerpts are existing prose and remain verbatim. Bridge their situations without repeating their dialogue, recapping events, changing established outcomes or resolving the conflict early. Give the new scene a distinct action, exchange and emotional shift that lead into after. Preserve viewpoint, character voices, and causal continuity. Output only new scene prose, without headings, notes, or copies of the excerpts. ${propContinuity} ${promiseWriting}`,
-        JSON.stringify({ before, after, chars, minimumChapterChars:MIN_CHAPTER_CHARS, targetChapterChars:2800,
-          targetSceneChars:[2800-chars,2950-chars], plan, installmentGoal:chapterContext.installmentGoal,
-          character, seriesConcept, earlierConcepts, direction:schedule.direction,
-          sharedTimeline:timeline && novelTimelineContext(timeline), propStates:memory.propStates }),
-        undefined, "scene_insert", 3500
-      )).trim());
-      if (!scene || draft.includes(scene) || scene.includes(draft) || repeatsPrevious(scene,draft)) throw new NovelChapterLengthError(chars);
-      before += (before && !before.endsWith("\n\n") ? "\n\n" : "") + scene;
-      draft = before + (/^\r?\n[^\S\r\n]*\r?\n/.test(after) ? "" : "\n\n") + after;
-      if (removeAdjacentRepeatedDialogue(draft) !== draft) throw new NovelChapterLengthError(chars);
+      const before = draft.slice(0, offset);
+      const after = draft.slice(offset);
+      let rawScene: string;
+      try {
+        rawScene = await call(
+          `Write ONLY one new Korean fiction scene for the insertion point between before and after. Both excerpts are existing prose and remain verbatim. Bridge their situations without repeating their dialogue, recapping events, changing established outcomes or resolving the conflict early. Give the new scene a distinct action, exchange and emotional shift that lead into after. Preserve viewpoint, character voices, and causal continuity. Output only new scene prose, without headings, notes, or copies of the excerpts. ${retryReason ? "The previous insertion was unusable. Create a different action and exchange that have not happened anywhere in the supplied draft. Begin and end with fresh prose." : ""} ${propContinuity} ${promiseWriting}`,
+          JSON.stringify({ before, after, chars, minimumChapterChars:MIN_CHAPTER_CHARS, targetChapterChars:2800,
+            targetSceneChars:[2800-chars,2950-chars], plan, installmentGoal:chapterContext.installmentGoal,
+            ...(retryReason ? {retryReason} : {}),
+            character, seriesConcept, earlierConcepts, direction:schedule.direction,
+            sharedTimeline:timeline && novelTimelineContext(timeline), propStates:memory.propStates }),
+          undefined, "scene_insert", 3500
+        );
+      } catch (error) {
+        signal.throwIfAborted();
+        trace.event("chapter_length_fallback",{chars,reason:error instanceof NovelOutputLimitError ? "output_token_limit" : "scene_call_failed",
+          ...(error instanceof NovelUpstreamError ? error.diagnostics : {})});
+        break;
+      }
+      const scene = cleanRepeatedDialogue(plainDialogue(rawScene).trim());
+      const expandedBefore = before + (before && !before.endsWith("\n\n") ? "\n\n" : "") + scene;
+      const expanded = expandedBefore + (/^\r?\n[^\S\r\n]*\r?\n/.test(after) ? "" : "\n\n") + after;
+      const rejection = !scene ? "empty_scene"
+        : draft.includes(scene) || scene.includes(draft) || repeatsPrevious(scene,draft) ? "duplicate_scene"
+        : removeAdjacentRepeatedDialogue(expanded) !== expanded ? "duplicate_boundary_dialogue"
+        : undefined;
+      if (rejection) {
+        trace.event("chapter_scene_rejected",{reason:rejection,chars,sceneChars:Array.from(scene).length,willRetry:!retryReason});
+        if (retryReason) {
+          trace.event("chapter_length_fallback",{chars,reason:rejection});
+          break;
+        }
+        retryReason = rejection;
+        offset = sceneInsertionPoint(draft, offset);
+        continue;
+      }
+      retryReason = undefined;
+      draft = expanded;
+      offset = expandedBefore.length;
       chars = Array.from(draft).length;
       trace.event("chapter_scene_inserted",{chars,addedChars:Array.from(scene).length});
     }

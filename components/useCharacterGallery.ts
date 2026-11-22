@@ -10,9 +10,12 @@ import { loadAccountImage, seedAccountImage } from "@/lib/platform/image-loader"
 import { useAccount } from "./AccountProvider";
 import { usageImageFetch } from "@/lib/usage-store";
 import { visualKeywords } from "@/lib/chat/presentation";
+import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
+import { useGenerationPolicyNotice } from "./ActionConfirm";
 
 type Reference = { blob: Blob; profile: CharacterProfile; style: string; description: string };
 export default function useCharacterGallery(reference?: Reference) {
+  const showPolicyNotice = useGenerationPolicyNotice();
   const { user } = useAccount(); const scope = user?.id || "demo";
   const [images, setImages] = useState<CharacterGalleryImage[]>([]);
   const imageRef = useRef<CharacterGalleryImage[]>([]);
@@ -123,6 +126,7 @@ export default function useCharacterGallery(reference?: Reference) {
   }
   async function generate(mode: "chat" | "story", kind: VisualKind, context: string, scene?: IllustrationScene, selection?: ImageSceneSelection): Promise<CharacterGalleryImage | null> {
     if (controller.current || !reference || !context.trim()) return null;
+    if (blocksImageGeneration({profile:reference.profile, scene:{selection}})) { showPolicyNotice(); return null; }
     if (imageRef.current.length >= MAX_GALLERY_IMAGES) { setError("이 캐릭터의 이미지 보관 한도(24장)에 도달했습니다. 새 캐릭터로 시작해주세요."); return null; }
     const id = ++sequence.current;
     const abort = new AbortController();
@@ -164,12 +168,15 @@ export default function useCharacterGallery(reference?: Reference) {
       window.dispatchEvent(new Event("maite-gallery-committed"));
       return image;
     } catch (failure) {
-      if (id === sequence.current) setError(abort.signal.aborted ? "이미지 생성 시간이 초과되었습니다. 다시 시도해주세요." : failure instanceof Error ? failure.message : "이미지를 생성하지 못했습니다.");
+      if (id === sequence.current) {
+        if (failure instanceof Error && failure.message === GENERATION_POLICY_MESSAGE) showPolicyNotice();
+        else setError(abort.signal.aborted ? "이미지 생성 시간이 초과되었습니다. 다시 시도해주세요." : failure instanceof Error ? failure.message : "이미지를 생성하지 못했습니다.");
+      }
       return null;
     } finally {
       clearTimeout(timeout);
       if (id === sequence.current) { controller.current = null; setJob(undefined); }
     }
   }
-  return { images, archive, backgrounds, job, error, cancel, clear, clearArchive, registerOriginal, restoreImages, restoreRemoteImages, originalLoaded, selectBackground, generate };
+  return { images, archive, backgrounds, job, error, dismissError: () => setError(""), cancel, clear, clearArchive, registerOriginal, restoreImages, restoreRemoteImages, originalLoaded, selectBackground, generate };
 }

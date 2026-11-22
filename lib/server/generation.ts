@@ -7,6 +7,7 @@ import sharp from "sharp";
 import { uploadThumbnail } from "./image-assets.ts";
 import { storyStateSchema } from "../novel/state.ts";
 import {createNovelReviewLogger,manuscriptFingerprint} from "../novel/review-log.ts";
+import {blocksImageGeneration, blocksTextGeneration, GENERATION_POLICY_MESSAGE} from "../generation-policy.ts";
 
 type Job = { id: string; status: "reserved" | "completed" | "failed"; result: { events?: object[]; headers?: Record<string, string> } | null; storage_path: string | null };
 function completeOutput(kind: GenerationKind, events: object[]) {
@@ -53,6 +54,9 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
       if (image) {
         const form = await forwarded.clone().formData();
         const scene = form.has("scene") ? JSON.parse(String(form.get("scene"))) : undefined;
+        const profile = form.has("profile") ? JSON.parse(String(form.get("profile"))) : undefined;
+        const messages = JSON.parse(String(form.get("messages") ?? "null"));
+        if (blocksImageGeneration({scene, profile, messages})) return jsonError(GENERATION_POLICY_MESSAGE, 422);
         kind = scene?.kind === "illustration" ? "illustration" : scene?.kind === "outfit" ? "outfit" : "character";
         // Multipart boundaries change on retry; hash sorted values + actual file bytes.
         const hash = createHash("sha256");
@@ -63,6 +67,7 @@ export function withGeneration(handler: (request: Request) => Promise<Response>,
         fingerprint = hash.digest("hex");
       } else {
         const data = JSON.parse(body.toString("utf8")); kind = data.character?.mode === "story" ? "story" : "chat";
+        if (blocksTextGeneration(data)) return jsonError(GENERATION_POLICY_MESSAGE, 422);
         fingerprint = createHash("sha256").update(body).digest("hex");
       }
       const job = await rpc<Job>("reserve_generation_v2", { p_user: user.id, p_id: id, p_kind: kind, p_fingerprint: fingerprint });

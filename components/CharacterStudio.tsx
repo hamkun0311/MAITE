@@ -7,7 +7,9 @@ import CachedImage from "./CachedImage";
 import { NO_BACKGROUND } from "@/lib/characters/gallery";
 import AccountMenu from "./AccountMenu";
 import AppFooter from "./AppFooter";
-import { useActionConfirm } from "./ActionConfirm";
+import { useActionConfirm, useGenerationPolicyNotice } from "./ActionConfirm";
+import GenerationFeedback from "./GenerationFeedback";
+import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
 import { HEART_COST } from "@/lib/account/policy";
 import { useAccount } from "./AccountProvider";
 import { jsonApi } from "@/lib/platform/commerce";
@@ -89,11 +91,12 @@ function PersistentCharacterActivity({ mode, active }: { mode: "chat" | "story";
   const { art, sessions, editProfile, openMenu, visuals, characterDocumentId } = useStudioSession();
   if (!art) return <main className="character-missing"><h1>캐릭터를 먼저 만들어주세요.</h1><p>생성한 캐릭터로 대화와 이야기를 시작할 수 있습니다.</p><Link href="/ideal">캐릭터 생성으로 이동</Link></main>;
   const background = visuals.images.find(image => image.id === visuals.backgrounds[mode]);
-  return <main className="character-screen" hidden={!active}><CharacterExperience key={`${mode}-${art.url}`} mode={mode} characterDocumentId={characterDocumentId} imageUrl={background?.url || art.url} backgroundHidden={visuals.backgrounds[mode] === NO_BACKGROUND} imageDescription={art.description} avatarUrl={art.url} profile={art.profile} session={sessions[mode]} gallery={visuals.images} backgroundId={visuals.backgrounds[mode]} onBackground={id => visuals.selectBackground(mode, id)} onGenerateVisual={(kind, context, scene, selection) => visuals.generate(mode, kind, context, scene, selection)} imageJob={visuals.job} imageError={visuals.error} onCancelImage={visuals.cancel} active={active} onEdit={editProfile} onBack={() => openMenu("image")} /></main>;
+  return <main className="character-screen" hidden={!active}><CharacterExperience key={`${mode}-${art.url}`} mode={mode} characterDocumentId={characterDocumentId} imageUrl={background?.url || art.url} backgroundHidden={visuals.backgrounds[mode] === NO_BACKGROUND} imageDescription={art.description} avatarUrl={art.url} profile={art.profile} session={sessions[mode]} gallery={visuals.images} backgroundId={visuals.backgrounds[mode]} onBackground={id => visuals.selectBackground(mode, id)} onGenerateVisual={(kind, context, scene, selection) => visuals.generate(mode, kind, context, scene, selection)} imageJob={visuals.job} imageError={visuals.error} onCancelImage={visuals.cancel} onDismissImageError={visuals.dismissError} active={active} onEdit={editProfile} onBack={() => openMenu("image")} /></main>;
 }
 export default function CharacterStudio({ children }: { children: ReactNode }) {
   const { user, account } = useAccount();
   const confirm = useActionConfirm();
+  const showPolicyNotice = useGenerationPolicyNotice();
   const router = useRouter();
   const pathname = usePathname();
   const currentPath=useRef(pathname);currentPath.current=pathname;
@@ -113,12 +116,44 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   const menu = pathname === "/ideal/chat" ? "chat" : pathname === "/ideal/story" ? "story" : pathname === "/ideal/gallery" ? "gallery" : "image";
   useEffect(() => {
     if (menu !== "chat" && menu !== "story") return;
+    const element = app.current;
+    if (!element) return;
     const viewport = window.visualViewport;
-    const resize = () => app.current?.style.setProperty("--character-viewport-height", `${viewport?.height ?? window.innerHeight}px`);
+    let height = window.innerHeight, width = window.innerWidth, frame = 0;
+    const resize = () => {
+      const visualHeight = viewport?.height ?? window.innerHeight;
+      const visualBottom = visualHeight + (viewport?.offsetTop ?? 0);
+      const focused = document.activeElement;
+      const editing = focused instanceof HTMLElement && element.contains(focused) &&
+        focused.matches(".chat-composer textarea, .story-concept-input input");
+      if (width !== window.innerWidth) { width = window.innerWidth; height = window.innerHeight; }
+      const canShowKeyboard = isNative() || navigator.maxTouchPoints > 0 || window.innerHeight - visualHeight > 100;
+      const keyboard = canShowKeyboard && (viewport?.scale ?? 1) === 1 &&
+        (editing || element.dataset.keyboardOpen === "true") && height - visualHeight > 100;
+      if (!keyboard) height = window.innerHeight;
+      element.dataset.keyboardOpen = String(keyboard);
+      element.style.setProperty("--character-viewport-height", `${height}px`);
+      element.style.setProperty("--reader-keyboard-inset", `${keyboard ? Math.max(0, height - visualBottom) : 0}px`);
+    };
+    const scheduleResize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(resize);
+    };
     resize();
-    viewport?.addEventListener("resize", resize);
-    window.addEventListener("resize", resize);
-    return () => { viewport?.removeEventListener("resize", resize); window.removeEventListener("resize", resize); };
+    viewport?.addEventListener("resize", scheduleResize);
+    viewport?.addEventListener("scroll", scheduleResize);
+    window.addEventListener("resize", scheduleResize);
+    element.addEventListener("focusin", scheduleResize);
+    return () => {
+      cancelAnimationFrame(frame);
+      viewport?.removeEventListener("resize", scheduleResize);
+      viewport?.removeEventListener("scroll", scheduleResize);
+      window.removeEventListener("resize", scheduleResize);
+      element.removeEventListener("focusin", scheduleResize);
+      delete element.dataset.keyboardOpen;
+      element.style.removeProperty("--character-viewport-height");
+      element.style.removeProperty("--reader-keyboard-inset");
+    };
   }, [menu]);
   const result = useRef<HTMLElement>(null);
   const profileFields = useRef<HTMLFieldSetElement>(null);
@@ -366,6 +401,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     if (controller.current) return;
     const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age), appearance: draft.appearance.trim() || undefined });
     if (!parsedProfile.success) { setError("캐릭터 이름·나이·성별·성격·컨셉을 입력해주세요."); return; }
+    if (blocksImageGeneration({profile:parsedProfile.data})) { showPolicyNotice(); return; }
     if (accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < HEART_COST.character) { setError("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
     if (accountEnabled() && !await confirm({ title: "새로운 캐릭터를 만날까요?", description: "입력한 설정으로 캐릭터 이미지를 만들어요.", lines: [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" })) return;
     if (controller.current) return;
@@ -449,7 +485,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     } catch (e) {
       if (id !== generation.current) return;
       pending.current = null;
-      setError(
+      if (e instanceof Error && e.message === GENERATION_POLICY_MESSAGE) showPolicyNotice();
+      else setError(
         abort.signal.aborted
           ? "생성 시간이 초과되었습니다. 다시 시도해주세요."
           : e instanceof Error
@@ -510,11 +547,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
             <div ref={bottom} />
           </div>
           <div className="composer-area">
-            {error && (
-              <p className="chat-error" role="alert">
-                {error}
-              </p>
-            )}
+            <GenerationFeedback message={error} onDismiss={() => setError("")} className="chat-error" />
             <form
               className="character-generation-actions"
               id="character-generation"

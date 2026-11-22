@@ -78,6 +78,13 @@ test("live chat cancellation restores input and API errors allow retry", async (
     else await route.fulfill({ status: 429, json: { error: "잠시 후 다시 대화해주세요." } });
   });
   const chat = page.getByRole("region", { name: "AI 실시간 대화" });
+  await chat.getByLabel("AI에게 보낼 메시지").fill("성인물 이미지를 만들어줘");
+  await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
+  const policyNotice = page.getByRole("dialog", { name: "정책을 위반한 요청입니다." });
+  await expect(policyNotice).toBeVisible();
+  await policyNotice.getByRole("button", { name: "확인", exact: true }).click();
+  await expect(chat.getByLabel("AI에게 보낼 메시지")).toHaveValue("성인물 이미지를 만들어줘");
+  expect(calls).toBe(0);
   await chat.getByLabel("AI에게 보낼 메시지").fill("대화 시작");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await chat.getByRole("button", { name: "AI 응답 중지" }).click();
@@ -85,5 +92,7 @@ test("live chat cancellation restores input and API errors allow retry", async (
   await expect(chat.getByLabel("AI에게 보낼 메시지")).toHaveValue("대화 시작");
   await chat.getByRole("button", { name: "AI 메시지 보내기" }).click();
   await expect(chat.getByText("잠시 후 다시 대화해주세요.")).toBeVisible();
+  await chat.getByRole("button", { name: "잠시 후 다시 대화해주세요. 알림 닫기" }).click();
+  await expect(chat.getByText("잠시 후 다시 대화해주세요.")).toHaveCount(0);
   await expect(chat.getByLabel("AI에게 보낼 메시지")).toBeEnabled();
 });

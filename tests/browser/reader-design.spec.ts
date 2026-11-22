@@ -31,4 +31,23 @@ test("dialogue uses transparent containers and separate left/right chat bubbles 
   expect(await page.locator(".user p").evaluate(element => getComputedStyle(element).color)).toBe("rgb(255, 255, 255)");
   await expect(page.locator(".reader-character-avatar")).toBeVisible();
   await page.screenshot({ path: ".verification/native-chat-transparent.png", caret: "initial" });
+  const log = page.getByRole("log");
+  const input = page.getByLabel("AI에게 보낼 메시지");
+  const originalReader = (await log.boundingBox())!;
+  const originalInput = (await input.boundingBox())!;
+  await input.focus();
+  await page.evaluate(() => {
+    const viewport = window.visualViewport!;
+    Object.defineProperty(viewport, "height", { configurable: true, value: innerHeight - 260 });
+    viewport.dispatchEvent(new Event("resize"));
+  });
+  await expect(page.locator(".is-character-reading")).toHaveAttribute("data-keyboard-open", "true");
+  expect((await log.boundingBox())!.height).toBe(originalReader.height);
+  expect((await input.boundingBox())!.y).toBeCloseTo(originalInput.y - 260, 0);
+  await page.evaluate(() => {
+    const viewport = window.visualViewport!;
+    Reflect.deleteProperty(viewport, "height");
+    viewport.dispatchEvent(new Event("resize"));
+  });
+  await expect(page.locator(".is-character-reading")).toHaveAttribute("data-keyboard-open", "false");
 });

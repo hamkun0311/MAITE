@@ -17,7 +17,9 @@ import { STORY_CHAPTER_LIMIT, storyComplete } from "@/lib/novel/series";
 import { chatMemorySchema, type ChatMemory } from "@/lib/chat/memory";
 import { startUsageTask, addUsageRecord, readUsageHeaders, finishUsageTask } from "@/lib/usage-store";
 
-import { useActionConfirm } from "./ActionConfirm";
+import { useActionConfirm, useGenerationPolicyNotice } from "./ActionConfirm";
+import GenerationFeedback from "./GenerationFeedback";
+import { blocksTextGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
 import { accountEnabled } from "@/lib/account/client";
 import { useAccount } from "./AccountProvider";
 import { userDisplayName } from "@/lib/chat/identity";
@@ -28,13 +30,14 @@ const storyPhases: Record<string, string> = { planning: "다음 전개 구상 �
 
 type Message = { role: "user" | "assistant"; content: string; checkinId?: string };
 const timelineRequests = new WeakMap<object, AbortController>();
-export default function LiveChat({ character, characterDocumentId, active = true, headingContent, imageOptions, session, onGenerateVisual, imageJob, imageError, onCancelImage }: {
+export default function LiveChat({ character, characterDocumentId, active = true, headingContent, imageOptions, session, onGenerateVisual, imageJob, imageError, onCancelImage, onDismissImageError }: {
   characterDocumentId?: string; character?: CharacterContext; active?: boolean; headingContent?: ReactNode; imageOptions?:ReactNode; session?: ChatSession;
   onGenerateVisual?: (kind: VisualKind, context: string, scene?: IllustrationScene, chapter?: number) => Promise<void>;
-  imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void;
+  imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void; onDismissImageError?: () => void;
 }) {
   const localSession = useRef(createChatSession());
   const confirm = useActionConfirm(); const { account, user } = useAccount();
+  const showPolicyNotice = useGenerationPolicyNotice();
   const saved = session ?? localSession.current;
   const sceneStorageKey = characterDocumentId ? `maite-visual-scene:${user?.id || "demo"}:${characterDocumentId}` : undefined;
   const [sceneMemory, setSceneMemory] = useState<VisualScene>(() => {
@@ -161,6 +164,7 @@ export default function LiveChat({ character, characterDocumentId, active = true
     const isStory = character?.mode === "story";
     const additionalConcept = isStory ? input.trim() : "";
     if (controller.current || !text || (isStory && storyComplete(saved.storyState) && !additionalConcept)) return;
+    if (blocksTextGeneration({ messages:[{role:"user", content:text}], character, additionalConcept, storyState:saved.storyState })) { showPolicyNotice(); return; }
     if (isStory && accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < HEART_COST.story) { setNotice("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
     if (isStory && accountEnabled() && !await confirm({ title: "다음 이야기를 만들까요?", description: additionalConcept ? "추가한 컨셉을 반영해 이야기를 이어가요." : "최신 회차의 사건과 관계를 이어가요.", lines: [{ label: "이야기 생성", value: `${HEART_COST.story}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.story}하트` }], confirmLabel: "이야기 만들기" })) return;
     if (controller.current) return;
@@ -282,7 +286,8 @@ export default function LiveChat({ character, characterDocumentId, active = true
       window.dispatchEvent(new Event("maite-account-refresh"));
     } catch (error) {
       if (id !== sequence.current) return;
-      setNotice(stopped.current ? "응답을 중지했습니다." : abort.signal.aborted ? "응답 시간이 초과되었습니다. 다시 시도해주세요." : error instanceof Error ? error.message : "대화 중 오류가 발생했습니다.");
+      if (error instanceof Error && error.message === GENERATION_POLICY_MESSAGE) showPolicyNotice();
+      else setNotice(stopped.current ? "응답을 중지했습니다." : abort.signal.aborted ? "응답 시간이 초과되었습니다. 다시 시도해주세요." : error instanceof Error ? error.message : "대화 중 오류가 발생했습니다.");
       if (!answer) { setMessages(messages); setInput(isStory ? additionalConcept : text); }
       // Partial replies remain visible, but incomplete turns are not sent as history.
     } finally {
@@ -340,20 +345,22 @@ export default function LiveChat({ character, characterDocumentId, active = true
           return <article className={`chat-message ${m.role} ${isStory ? "story-page" : ""}`} key={isStory ? pageIndex : i}><span>{label}</span><p>{text || (isStory ? storyPhase : busy && m.role === "assistant" ? <span className="chat-typing-dots" role="status" aria-label="응답을 작성하고 있어요"><i aria-hidden="true"/><i aria-hidden="true"/><i aria-hidden="true"/></span> : "")}</p></article>;
         })}
       </div>
-      {notice && <p className="chat-error" role="status">{notice}</p>}
+      <GenerationFeedback message={notice ?? ""} onDismiss={() => setNotice("")} className="chat-error" role="status" />
       {onGenerateVisual&&imageOptions}
       {imageJob && <div className="character-visual-status" role="status"><span>{imageJob.kind === "illustration" ? "삽화를 그리고 있어요" : "그림을 그리고 있어요"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
-      {imageError && <p className="character-visual-error" role="alert">{imageError}</p>}
+      {onDismissImageError && <GenerationFeedback message={imageError ?? ""} onDismiss={onDismissImageError} className="character-visual-error" />}
       {onGenerateVisual && character && (character.mode === "chat" || committed.current.some(message => message.role === "assistant" && message.content.trim())) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {
         if (busy || imageJob) return;
         void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", imageContext, character.mode === "story" && saved.documentId ? { novelId: saved.documentId, chapter: firstEpisode + pageIndex + 1 } : undefined, isStory ? firstEpisode + pageIndex + 1 : undefined);
       }}><span className="visual-button-label">{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span> · {character.mode === "story" ? 50 : 30} ♥</span>}</span></button>}
-      {character?.mode === "story" && <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="추가하고 싶은 사건이나 설정 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>}
-      {character?.mode === "story" ? <button className="story-next-button" type="button" disabled={busy || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
+      {character?.mode === "story" ? <div className="story-composer">
+      <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="추가하고 싶은 사건이나 설정 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>
+      <button className="story-next-button" type="button" disabled={busy || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
         void submit(committed.current.length
           ? "앞선 이야기의 사건과 인물 관계를 이어서 다음 장면을 써줘. 이전 내용을 반복하지 말고 자연스럽게 이어줘."
           : "설정에 맞춰 첫 장면부터 이야기를 시작해줘.");
-      }}>{busy ? "이야기를 쓰고 있어요" : storyFinished && !input.trim() ? "이야기 완결" : "다음 이야기"} {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+      }}>{busy ? "이야기를 쓰고 있어요" : storyFinished && !input.trim() ? "이야기 완결" : "다음 이야기"} {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
+      </div> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <textarea aria-label="AI에게 보낼 메시지" placeholder="캐릭터에게 이야기해보세요…" maxLength={2000} value={input} disabled={busy} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }
         }} />

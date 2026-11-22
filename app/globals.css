@@ -421,6 +421,20 @@
   line-height: 1.7;
   margin: 0 0 12px !important;
 }
+.generation-feedback-dismiss {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.generation-feedback-dismiss svg { flex-shrink: 0; }
 .chat-output {
   align-self: start;
   border: 1px solid #dfe6d8;
@@ -2540,8 +2554,17 @@ h1 > span {
   .character-story-experience .live-chat-heading .character-reader-settings { padding: 0 2px; }
 }
 
-/* Keep the reading area large, including when the mobile keyboard reduces the viewport. */
+/* The keyboard covers the reader while the composer stays above the keys. */
 .is-character-reading { display: flex; flex-direction: column; height: var(--character-viewport-height, 100dvh); min-height: 0; overflow: hidden; padding-bottom: env(safe-area-inset-bottom); }
+.story-composer { flex-shrink: 0; }
+.is-character-reading[data-keyboard-open="true"] :is(.chat-composer, .story-composer) {
+  position: relative;
+  z-index: 2;
+  transform: translateY(calc(-1 * var(--reader-keyboard-inset, 0px)));
+  background: #faf7ff;
+  box-shadow: 0 2px 14px #31245526;
+  border-radius: 10px;
+}
 .is-character-reading .chat-header { height: 56px; flex: 0 0 56px; }
 .is-character-reading > .chat-footer { display: none; }
 .is-character-reading > .character-screen { display: flex; flex: 1; min-height: 0; padding: 8px 0; }

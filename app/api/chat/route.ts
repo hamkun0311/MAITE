@@ -11,7 +11,8 @@ import { storyStateSchema } from "../../../lib/novel/state.ts";
 import { NovelUpstreamError } from "../../../lib/novel/upstream-error.ts";
 import { openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
 import { geminiApiKey } from "../../../lib/novel/gemini.ts";
-import { generateChapter, NovelChapterLengthError, NovelOutputLimitError } from "../../../lib/novel/generate.ts";
+import { blocksTextGeneration, GENERATION_POLICY_MESSAGE } from "../../../lib/generation-policy.ts";
+import { generateChapter, NovelOutputLimitError } from "../../../lib/novel/generate.ts";
 import { explicitSpeechRequest, replySpeechPolicy, speechInstructions, speechStyleSchema } from "../../../lib/chat/speech.ts";
 import { streamedDialogue } from "../../../lib/chat/dialogue.ts";
 import { characterDialogueSchema, chatMemorySchema, conversationInstructions, emptyChatMemory, type ChatMemory } from "../../../lib/chat/memory.ts";
@@ -85,6 +86,7 @@ async function handle(request: Request) {
       }
     } finally { reader.releaseLock(); }
     const { messages, character, storyState, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    if (blocksTextGeneration({messages, character, storyState, additionalConcept})) return fail(GENERATION_POLICY_MESSAGE, 422);
     if (character?.mode === "story" && geminiNovelWriteModel() && !geminiApiKey())
       return fail("선택한 제공자의 Gemini API 키를 서버에 설정해주세요.", 503);
     if (character?.mode !== "story") signal = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
@@ -115,10 +117,10 @@ async function handle(request: Request) {
             send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter });
             send({ type: "done" });
           } catch (error) {
-            const knownReasons = ["Novel chapter too short", "Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
+            const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
             console.warn("novel-failed", { stage, ...(error instanceof NovelUpstreamError ? error.diagnostics : {}), reason: signal.aborted ? "cancelled_or_timeout" : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });
             if (!request.signal.aborted && !abort.signal.aborted)
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", ...(error instanceof NovelOutputLimitError ? { code: "output_token_limit" } : {}), message: error instanceof NovelOutputLimitError ? "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." : error instanceof NovelChapterLengthError ? "생성된 본문이 2,000자에 미치지 못했습니다. 이전 회차는 유지됩니다." : "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." })}\n\n`));
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", ...(error instanceof NovelOutputLimitError ? { code: "output_token_limit" } : {}), message: error instanceof NovelOutputLimitError ? "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." : "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." })}\n\n`));
           } finally {
             abort.abort();
             try { controller.close(); } catch { /* Client disconnected. */ }

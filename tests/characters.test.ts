@@ -134,7 +134,8 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         );
         assert.equal(images.length, includePrior && !sceneKind ? 1 : 0);
         assert.ok(body.instructions.includes("Shared rendering style:"));
-        assert.ok(body.instructions.includes("variable-weight dark contours"));
+        assert.ok(body.instructions.includes("supple tapered lines"));
+        assert.ok(body.instructions.includes("omit photography, realism and film-grading cues"));
         return Response.json({
           status: "completed",
           output: [
@@ -168,7 +169,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         assert.equal(body.model, "gpt-image-2.5-sunburst");
         assert.equal(body.size, "720x1280");
         assert.ok(body.prompt.includes(`Rendering profile: ${profile}`));
-        if (profile === "male") assert.ok(body.prompt.includes("variable-weight dark contours"));
+        if (profile === "male") assert.ok(body.prompt.includes("supple tapered lines"));
         assert.ok(!body.prompt.includes("LAST input image is STYLE ONLY"));
         return Response.json({ data: [{ b64_json: source.toString("base64") }] });
       }
@@ -195,7 +196,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a bookshop/);
       }
       assert.ok(prompt.includes(`Rendering profile: ${profile}`));
-      assert.ok(prompt.includes("variable-weight dark contours"));
+      assert.ok(prompt.includes("supple tapered lines"));
       assert.ok(!/fuller-busted|sexy mature charisma|glamorous/.test(prompt));
       const images = body.getAll("image[]") as File[];
       assert.equal(images.length, 1);
@@ -208,6 +209,11 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
       });
     },
   );
+  const blocked = form();
+  blocked.set("messages", JSON.stringify([{role:"user",content:"성인물 이미지를 만들어줘"}]));
+  const filtered = await POST(req(blocked));
+  assert.equal(filtered.status, 422);
+  assert.equal((await filtered.json()).error, "정책을 위반한 요청입니다.");
   const oversized = new Request("http://localhost/api/characters", {
     method: "POST",
     headers: {
@@ -238,7 +244,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   assert.equal(metadata.format, "jpeg");
   assert.equal(first.headers.get("X-Character-Width"), "720");
   assert.equal(first.headers.get("X-Character-Height"), "1280");
-  assert.ok(decodeURIComponent(first.headers.get("X-Character-Prompt")!).includes("variable-weight dark contours"));
+  assert.ok(decodeURIComponent(first.headers.get("X-Character-Prompt")!).includes("supple tapered lines"));
   const revision = form();
   source = await sharp(result).webp().toBuffer();
   sceneKind = "outfit";
@@ -355,7 +361,7 @@ test("all genders share text rendering and a counterpart gets concept facts with
   assert.ok(url.endsWith("/images/generations"));
   assert.equal(init.body instanceof FormData,false);
   const {prompt}=JSON.parse(String(init.body));
-  assert.match(prompt,/variable-weight dark contours/);
+  assert.match(prompt,/supple tapered lines/);
   assert.match(prompt,/Source design and cast facts/);
   if(mode==="illustration"){
    assert.match(prompt,/엘리는 분홍색 머리의 사제다/);
@@ -436,11 +442,12 @@ test("style-only prompts preserve requested subject without gender defaults", ()
     styleProfile: "male" as const,
   };
   const prompt = buildCharacterPrompt(characterBrief.parse(base));
-  assert.ok(prompt.endsWith(base.prompt));
+  assert.ok(prompt.includes(`Subject: ${base.prompt}`));
+  assert.ok(prompt.endsWith("clean ink contours, distinct cel shadows and graphic highlights."));
   assert.ok(prompt.includes("2D anime"));
-  assert.ok(prompt.includes("variable-weight dark contours"));
+  assert.ok(prompt.includes("supple tapered lines"));
   const female = buildCharacterPrompt({ ...base, styleProfile: "female" });
-  assert.ok(female.includes("warm luminous skin"));
+  assert.ok(female.includes("clearly separated cel-shadow values"));
   assert.equal(female.replace("Rendering profile: female","Rendering profile: male"),prompt);
   const neutral = buildCharacterPrompt({ ...base, styleProfile: "neutral" });
   assert.ok(!neutral.includes("STYLE ONLY"));
