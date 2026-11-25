@@ -32,8 +32,8 @@ test("specific fantasy places and clothing are extracted rather than generic fal
  const missing=selectImageScene("Latest completed chapter (current action):\n지수는 조용히 눈을 떴다.",{mode:"story",profileName:"지수",userNames:["햄군"]});
  assert.equal(missing.location,undefined);assert.equal(missing.outfit,undefined);
 });
-test("the final image prompt uses the prepared location and clothing without appending the raw confirmation inputs",()=>{
- const brief=illustrationBrief.parse({title:"삽화",summary:"연회 장면",prompt:"A woman in a red silk evening dress.",styleProfile:"female",characterPresent:true,pose:"standing near a table",framing:"medium shot",sceneLocation:"The palace banquet hall",locationSource:"narrative"});
+test("the final image prompt retains the concrete details approved in the confirmation dialog",()=>{
+ const brief=illustrationBrief.parse({title:"삽화",summary:"연회 장면",prompt:"A woman in a hall.",styleProfile:"female",characterPresent:true,pose:"standing near a table",framing:"medium shot",sceneLocation:"A hall",locationSource:"narrative"});
  const prompt=buildCharacterPrompt(brief,{kind:"illustration",context:"지수는 연회장에 있었다.",selection:{profileName:"지수",userNames:["햄군"],characters:["지수"],target:"지수",location:"왕궁 연회장",outfit:"붉은 비단 예복",confirmed:true}});
- assert.match(prompt,/red silk evening dress/);assert.match(prompt,/The palace banquet hall/);assert.doesNotMatch(prompt,/왕궁 연회장|붉은 비단 예복/);
+ assert.match(prompt,/USER-CONFIRMED IMAGE SCENE/);assert.ok(prompt.includes('"location":"왕궁 연회장"'));assert.ok(prompt.includes('"outfit":"붉은 비단 예복"'));
 });

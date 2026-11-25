@@ -160,27 +160,3 @@ test("character generation keeps its retry token in the tab and replaces it when
   expect(headers[2].attempt).not.toBe(headers[1].attempt);
   expect(headers[2].retry).toBeUndefined();
 });
-
-test("character generation waits for confirmation of an adapted scene", async ({ page }) => {
-  await page.goto("/ideal");
-  await fillCharacterProfile(page);
-  const requests: { attempt?: string; accepted?: string; token?: string }[] = [];
-  const summary = "창가에서 평범한 셔츠 차림으로 대화하는 장면";
-  await page.route("**/api/characters", route => {
-    const headers = route.request().headers();
-    requests.push({ attempt: headers["x-image-attempt"], accepted: headers["x-image-adaptation-accepted"], token: headers["x-image-retry"] });
-    return headers["x-image-adaptation-accepted"] === "1"
-      ? route.fulfill({ status: 502, json: { error: "승인된 장면으로 이미지 생성을 시도했습니다." } })
-      : route.fulfill({ status: 409, headers: { "X-Image-Retry": "prepared-scene" }, json: { code: "image_adaptation_confirmation", summary } });
-  });
-  const generate = page.getByRole("button", { name: "캐릭터 생성", exact: true });
-  const dialog = page.getByRole("dialog", { name: "바뀐 장면으로 이미지를 만들까요?" });
-  await generate.click();
-  await expect(dialog).toContainText(summary);
-  await dialog.getByRole("button", { name: "취소" }).click();
-  expect(requests).toHaveLength(1);
-  await generate.click();
-  await dialog.getByRole("button", { name: "이미지 생성", exact: true }).click();
-  await expect(page.getByText("승인된 장면으로 이미지 생성을 시도했습니다.", { exact: true })).toBeVisible();
-  expect(requests[2]).toEqual({ attempt: requests[0].attempt, accepted: "1", token: "prepared-scene" });
-});
