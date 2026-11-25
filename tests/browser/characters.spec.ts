@@ -132,3 +132,31 @@ test("cancellation and API error never expose a stale character download", async
     0,
   );
 });
+
+test("character generation keeps its retry token in the tab and replaces it when the form changes", async ({page}) => {
+  await page.goto("/ideal");
+  await fillCharacterProfile(page);
+  const headers: {attempt?:string; retry?:string}[] = [];
+  await page.route("**/api/characters", route => {
+    const request = route.request().headers();
+    headers.push({attempt:request["x-image-attempt"],retry:request["x-image-retry"]});
+    return route.fulfill({status:502,headers:{"X-Image-Retry":`retry-${headers.length}`},json:{error:"잠시 후 다시 시도해주세요."}});
+  });
+  const generate=page.getByRole("button",{name:"캐릭터 생성",exact:true});
+  await generate.click();
+  await expect(page.getByText("잠시 후 다시 시도해주세요.",{exact:true})).toBeVisible();
+  await expect(generate).toBeEnabled();
+  const persisted = await page.evaluate(() => Object.keys(sessionStorage).filter(key => key.startsWith("maite-image-attempt:")).map(key => JSON.parse(sessionStorage.getItem(key)!).token));
+  expect(persisted).toContain("retry-1");
+  await page.reload();
+  await fillCharacterProfile(page);
+  await generate.click();
+  await expect.poll(() => headers.length).toBe(2);
+  await expect(generate).toBeEnabled();
+  expect(headers[1]).toEqual({attempt:headers[0].attempt,retry:"retry-1"});
+  await page.getByLabel("컨셉",{exact:true}).fill("별을 연구하는 천문학자");
+  await generate.click();
+  await expect.poll(() => headers.length).toBe(3);
+  expect(headers[2].attempt).not.toBe(headers[1].attempt);
+  expect(headers[2].retry).toBeUndefined();
+});

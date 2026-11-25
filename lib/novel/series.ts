@@ -53,7 +53,7 @@ export function seriesSchedule(chapter: number) {
       : chapter === 2
       ? "Escalate through consequential choices and emotional developments. Pay off earlier threads; every new subplot must be resolvable by chapter 5."
       : chapter === 3
-      ? "Converge existing threads toward the planned ending. Reveal decisive information, reduce unresolved conflicts, and stop adding independent subplots."
+      ? "Connect existing threads to prepare the planned ending through choices, consequences or discoveries allowed by the concept. Avoid independent subplots."
       : chapter === 4
       ? "Deliver the central confrontation or irreversible climactic choice and establish its consequences. Pay off emotional and causal groundwork; clues only if the concept calls for investigation. Prepare the central relationship's final outcome. No new villains or unrelated mysteries."
       : "THIS IS THE FINAL CHAPTER. Resolve the central conflict and long-term goal on the page. Show the protagonist's lasting outcome, the central relationship's resolution and consequences. Pay off important open threads. End with a complete closing scene and emotional payoff. No cliffhanger, new mystery, sequel hook, 'to be continued', promise of a next chapter or newly introduced central threat.",

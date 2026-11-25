@@ -37,7 +37,7 @@ export function syncLocalCheckins(userId:string,nickname?:string){
  const promise=serial(async()=>{
   if(owner!==userId||revision!==epoch)return;
   const LocalNotifications=isNative()?(await import("@capacitor/local-notifications")).LocalNotifications:undefined;
-  const now=Date.now(),state=consumeLocalPlan(read(userId),now);write(userId,state);
+  const now=Date.now(),stored=read(userId),state=consumeLocalPlan(stored,now);write(userId,state);
   const receipts=[...state.outbox];let recorded=false;
   await Promise.all(Array.from({length:Math.min(4,receipts.length)},async()=>{
    while(receipts.length&&owner===userId&&revision===epoch){
@@ -56,7 +56,7 @@ export function syncLocalCheckins(userId:string,nickname?:string){
   const plans=granted?nextLocalPlans(userId,{...settings,nickname:nickname?.trim()||settings.nickname},state,now):[];
   const next=plans[0];
   updateCheckinStatus(userId,!settings.pushEnabled?"앱 알림이 꺼져 있어요.":!granted?"기기 설정에서 알림 권한을 허용해주세요.":!settings.activities.length?"캐릭터와 대화를 마치면 안부를 예약해요.":next?`다음 안부: ${new Date(next.dueAt).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})} (한국시간) · ${plans.length}명 예약` :"지난 안부에 답장하면 다음 안부를 예약해요.");
-  const previous=pendingPlans(state);
+  const previous=pendingPlans(stored);
   if(JSON.stringify(plans)===JSON.stringify(previous)){
    if(!LocalNotifications)return next?.dueAt;
    const pending=await LocalNotifications.getPending();

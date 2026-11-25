@@ -3,6 +3,8 @@ import { openAIImageEndpoint, openAIImageKey, openAIResponsesEndpoint, openAITex
 import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "../../../lib/generation-policy.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
+import { imageAttempt, imageFingerprint } from "../../../lib/server/image-checkpoints.ts";
+import { imageRetryToken, type ImageRetryProgress } from "../../../lib/server/image-retry-token.ts";
 import sharp from "sharp";
 import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
@@ -20,7 +22,6 @@ import {
   CHARACTER_WIDTH,
   CHARACTER_HEIGHT,
   CHARACTER_SIZE,
-  CHARACTER_STYLES,
   characterStyleProfile,
   buildCharacterPrompt,
   isJpeg,
@@ -31,9 +32,11 @@ export const maxDuration = 300;
 const usage: { count: number; until: number } = { count: 0, until: 0 };
 class RequestError extends Error {
   readonly status: number;
-  constructor(message: string, status: number) {
+  readonly policyRejected: boolean;
+  constructor(message: string, status: number, policyRejected = false) {
     super(message);
     this.status = status;
+    this.policyRejected = policyRejected;
   }
 }
 
@@ -76,6 +79,7 @@ async function checked(response: Response, finish?: ReturnType<typeof trackUsage
     throw new RequestError(
       "이 요청으로는 이미지를 만들 수 없습니다. 의상이나 장면 설명을 바꿔주세요.",
       422,
+      true,
     );
   if (response.status === 429)
     throw new RequestError(
@@ -100,9 +104,15 @@ function promptPreview(prompt: string) {
 
 export const OPTIONS = preflight;
 export const POST = withGeneration(handle, true);
-async function handle(request: Request) {
+async function handle(request: Request, _story?: unknown, owner?: string) {
+  let retry: ReturnType<typeof imageRetryToken>;
+  let progress: ImageRetryProgress = {};
   const records = new Map<string, UsageRecord>();
   const usageHeaders = (): Record<string, string> => request.headers.get("X-Track-Usage") === "1" ? { "X-Token-Usage": JSON.stringify([...records.values()]) } : {};
+  const retryHeaders = (): Record<string, string> => {
+    const token = retry?.issue(progress);
+    return token ? { "X-Image-Retry": token } : {};
+  };
   async function measured(feature: string, model: string, url: string, init: RequestInit) {
     const finish = trackUsage(feature, model, record => { records.set(record.id, record); });
     try { return await checked(await fetch(url, init), finish); }
@@ -126,11 +136,6 @@ async function handle(request: Request) {
       usage.count = 0;
       usage.until = now + 60000;
     }
-    if (usage.count >= 3)
-      throw new RequestError(
-        "잠시 후 다시 생성해주세요. 분당 3회까지 요청할 수 있습니다.",
-        429,
-      );
     const form = await readForm(request);
     const messages = characterMessages.parse(
       JSON.parse(String(form.get("messages") || "null")),
@@ -142,12 +147,11 @@ async function handle(request: Request) {
       const {framing:_ignored,...selection}=sceneInput.selection;sceneInput.selection=selection;
     }
     const scene = form.has("scene") ? visualRequestSchema.parse(sceneInput) : undefined;
-    if (blocksImageGeneration({messages, profile, scene})) throw new RequestError(GENERATION_POLICY_MESSAGE, 422);
     const framing=scene?.kind==="illustration"?(form.has("framing")?imageFramingSchema.parse(JSON.parse(String(form.get("framing")))):scene.selection?.framing):undefined;
     if (messages.at(-1)?.role !== "user")
       throw new RequestError("캐릭터 설명을 입력해주세요.", 400);
     const priorProfile = form.get("previousStyle");
-    const previousStyle = priorProfile === null ? null : characterStyleProfile.parse(priorProfile);
+    if (priorProfile !== null) characterStyleProfile.parse(priorProfile);
     const prior = form.get("image");
     if (scene && (!profile || !(prior instanceof File)))
       throw new RequestError("삽화와 의상 변경에는 캐릭터 설정과 원본 이미지가 필요합니다.", 400);
@@ -164,6 +168,12 @@ async function handle(request: Request) {
           400,
         );
     }
+    const attempt = imageAttempt(request);
+    if (blocksImageGeneration({messages, profile, scene})) throw new RequestError(GENERATION_POLICY_MESSAGE, 422);
+    if (attempt) retry = imageRetryToken(owner, attempt.attempt, attempt.scope, await imageFingerprint(form));
+    progress = retry?.read(request.headers.get("X-Image-Retry")) ?? {};
+    if (progress.rejection) throw new RequestError(progress.rejection, 422);
+    if (usage.count >= 3) throw new RequestError("잠시 후 다시 생성해주세요. 분당 3회까지 요청할 수 있습니다.", 429);
     usage.count++;
     const signal = AbortSignal.any([
       request.signal,
@@ -173,98 +183,95 @@ async function handle(request: Request) {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
     };
-    // Reject sexual-minor requests rather than silently reinterpreting them as adult designs.
-    const moderation = await checked(
-      await fetch("https://api.openai.com/v1/moderations", {
-        method: "POST",
-        redirect: "error",
-        headers: { ...headers, Authorization: `Bearer ${moderationKey}` },
-        signal,
-        body: JSON.stringify({
-          model: "omni-moderation-latest",
-          input: [profile ? JSON.stringify(profile) : "", scene?.context || "", scene?.selection ? JSON.stringify(scene.selection) : "", framing?JSON.stringify(framing):"", ...messages
-            .filter((m) => m.role === "user")
-            .map((m) => m.content)]
-            .join("\n"),
+    if (!progress.approved) {
+      const moderation = await checked(
+        await fetch("https://api.openai.com/v1/moderations", {
+          method: "POST",
+          redirect: "error",
+          headers: { ...headers, Authorization: `Bearer ${moderationKey}` },
+          signal,
+          body: JSON.stringify({
+            model: "omni-moderation-latest",
+            input: [profile ? JSON.stringify(profile) : "", scene?.context || "", scene?.selection ? JSON.stringify(scene.selection) : "", framing?JSON.stringify(framing):"", ...messages
+              .filter((m) => m.role === "user")
+              .map((m) => m.content)]
+              .join("\n"),
+          }),
         }),
-      }),
-    );
-    if (
-      moderation.results?.some(
-        (r: { categories?: Record<string, boolean> }) =>
-          r.categories?.["sexual/minors"],
-      )
-    )
-      throw new RequestError(
-        "이 요청으로는 이미지를 만들 수 없습니다. 캐릭터의 외형과 의상을 비성적인 내용으로 설명해주세요.",
-        422,
       );
-    const previousData =
-      prior instanceof File
-        ? Buffer.from(await prior.arrayBuffer()).toString("base64")
-        : null;
+      if (moderation.results?.some((r: { categories?: Record<string, boolean> }) => r.categories?.["sexual/minors"])) {
+        throw new RequestError("이 요청으로는 이미지를 만들 수 없습니다. 캐릭터의 외형과 의상을 비성적인 내용으로 설명해주세요.", 422, true);
+      }
+      if (Array.isArray(moderation.results) && moderation.results.length) progress.approved = true;
+    }
     const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
-    const briefResponse = await measured("image.description", textModel(),
-      responsesEndpoint, {
-        method: "POST",
-        redirect: "error",
-        headers,
-        signal,
-        body: JSON.stringify({
-          model: textModel(),
-          ...imageDescriptionReasoningOptions(),
-          store: false,
-          max_output_tokens: 5000,
-          instructions:
-            (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
-            " Shared rendering style: " + CHARACTER_STYLES.neutral +
-            " The brief describes the subject, expression, camera and scene lighting. Leave rendering and shading to the shared style; omit photography, realism and film-grading cues from the brief, even when an identity image uses them." +
-            (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
-            " If profile.gender is 남성 or 여성, use that explicit gender when selecting the rendering profile and resolving identity. Use the actual described subjects/concept for appearance and rendering. Do not add gender-based stereotypes." +
-            (scene ? "" : " " + OVERLAP_DIRECTION) + (scene ? " The profile's concept is backstory only. scene.context is the current scene; preserve previousStyle unless an explicit gender change requires another rendering profile. " : " Resolve the full revised subject from the conversation, supplied character profile, and any previous result. The profile defines the character's name, age, personality, concept and genre; reflect these in age-appropriate appearance, expression and setting. Match the selected genre's atmosphere (romance, slice of life, healing, fantasy, adventure, mystery, thriller, comedy, science fiction or makjang melodrama with dramatic expressions and tense relationships) while preserving the user's specific concept and setting. Do not add gender-based appearance defaults.") + visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),
-          input: [
-            {
-              role: "user",
-              content: [
-                { type: "input_text", text: JSON.stringify({ messages, profile, previousStyle, scene, framing }) },
-                ...(previousData && !scene
-                  ? [
-                      {
-                        type: "input_image",
-                        image_url: `data:image/jpeg;base64,${previousData}`,
-                        detail: "low",
-                      },
-                    ]
-                  : []),
-              ],
+    const savedBrief = briefSchema.safeParse(progress.approved ? progress.brief : undefined);
+    const brief = savedBrief.success ? savedBrief.data : await (async () => {
+      const previousData = prior instanceof File && !scene ? Buffer.from(await prior.arrayBuffer()).toString("base64") : null;
+      const briefResponse = await measured("image.description", textModel(),
+        responsesEndpoint, {
+          method: "POST",
+          redirect: "error",
+          headers,
+          signal,
+          body: JSON.stringify({
+            model: textModel(),
+            ...imageDescriptionReasoningOptions(),
+            store: false,
+            max_output_tokens: 5000,
+            instructions:
+              (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
+              " Describe subject, expression, camera and light sources in the scene. The renderer supplies the visual style; leave drawing technique and color grading out of the brief." +
+              (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
+              " Use the explicit gender and established appearance of each actual subject when resolving identity." +
+              (scene ? " The profile's concept is backstory only. scene.context supplies the current scene." : " " + OVERLAP_DIRECTION + " Resolve the subject from the conversation, profile, and any previous result. Use the specific concept and setting to inform expression and atmosphere.") +
+              visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),
+            input: [
+              {
+                role: "user",
+                content: [
+                  { type: "input_text", text: JSON.stringify({ messages, profile, scene, framing }) },
+                  ...(previousData && !scene
+                    ? [
+                        {
+                          type: "input_image",
+                          image_url: `data:image/jpeg;base64,${previousData}`,
+                          detail: "low",
+                        },
+                      ]
+                    : []),
+                ],
+              },
+            ],
+            text: {
+              format: {
+                type: "json_schema",
+                name: "character_brief",
+                strict: true,
+                schema: z.toJSONSchema(briefSchema),
+              },
             },
-          ],
-          text: {
-            format: {
-              type: "json_schema",
-              name: "character_brief",
-              strict: true,
-              schema: z.toJSONSchema(briefSchema),
-            },
-          },
-        }),
-      },
-    );
-    if (briefResponse.status !== "completed")
-      throw new RequestError(
-        "캐릭터 설명을 정리하지 못했습니다. 요청을 간단하게 다시 작성해주세요.",
-        422,
+          }),
+        },
       );
-    const output = briefResponse.output
-      ?.flatMap(
-        (item: { content?: { type: string; text?: string }[] }) =>
-          item.content || [],
-      )
-      .find((c: { type: string }) => c.type === "output_text")?.text;
-    const brief = briefSchema.parse(JSON.parse(output || "null"));
+      if (briefResponse.status !== "completed")
+        throw new RequestError(
+          "캐릭터 설명을 정리하지 못했습니다. 요청을 간단하게 다시 작성해주세요.",
+          422,
+        );
+      const output = briefResponse.output
+        ?.flatMap(
+          (item: { content?: { type: string; text?: string }[] }) =>
+            item.content || [],
+        )
+        .find((c: { type: string }) => c.type === "output_text")?.text;
+      const parsed = briefSchema.parse(JSON.parse(output || "null"));
+      progress.brief = parsed;
+      return parsed;
+    })();
     const camera=requestedCamera(framing);
     if(camera&&"framing" in brief)brief.framing=camera;
-    // Explicit profile gender fixes new-character rendering; scene casts can differ.
+    // Keep the saved cast classification consistent with an explicit profile gender.
     if (!scene && brief.styleProfile !== "mixed" && profile?.gender === "여성") brief.styleProfile = "female";
     if (!scene && brief.styleProfile !== "mixed" && profile?.gender === "남성") brief.styleProfile = "male";
     const target = confirmedIllustrationTarget(scene);
@@ -335,9 +342,11 @@ async function handle(request: Request) {
         "X-Character-Width": String(info.width),
         "X-Character-Height": String(info.height),
         ...usageHeaders(),
+        ...retryHeaders(),
       },
     });
   } catch (error) {
+    if (error instanceof RequestError && error.policyRejected) progress = { rejection: error.message };
     const status =
       error instanceof RequestError
         ? error.status
@@ -358,7 +367,7 @@ async function handle(request: Request) {
                 ? "이미지 생성 시간이 초과되었거나 취소되었습니다. 다시 시도해주세요."
                 : "이미지를 생성하지 못했습니다. 잠시 후 다시 시도해주세요.",
       },
-      { status, headers: { "Cache-Control": "no-store", ...usageHeaders() } },
+      { status, headers: { "Cache-Control": "no-store", ...usageHeaders(), ...retryHeaders() } },
     );
   }
 }

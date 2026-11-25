@@ -10,19 +10,19 @@ function endpoint(base: string | undefined, path: string) {
   return url.href;
 }
 
-function textBase() {
-  return gatewayBase(process.env.OPENAI_TEXT_PROVIDER, process.env.OPENAI_BASE_URL);
+function textBase(provider: string | undefined) {
+  return gatewayBase(provider, process.env.OPENAI_BASE_URL);
 }
 
-export function openAITextKey() {
+export function openAITextKey(provider = process.env.OPENAI_TEXT_PROVIDER) {
   const gatewayKey = process.env.OPENAI_TEXT_API_KEY?.trim();
-  if (textBase()) return gatewayKey;
+  if (textBase(provider)) return gatewayKey;
   const officialKey = process.env.OPENAI_API_KEY?.trim();
-  return process.env.OPENAI_TEXT_PROVIDER?.trim().toLowerCase() === "direct" ? officialKey : gatewayKey || officialKey;
+  return provider?.trim().toLowerCase() === "direct" ? officialKey : gatewayKey || officialKey;
 }
 
-export function openAIResponsesEndpoint() {
-  return endpoint(textBase(), "/responses");
+export function openAIResponsesEndpoint(provider = process.env.OPENAI_TEXT_PROVIDER) {
+  return endpoint(textBase(provider), "/responses");
 }
 
 function imageBase() {

@@ -3,12 +3,12 @@ import { signedImages, thumbnailPath } from "./image-assets.ts";
 import { AccountError } from "./account.ts";
 import { z } from "zod";
 
-type CoverListing = { id:string; seller_id:string; kind:string; storage_path?:string|null; novel?:unknown; content?:{novel?:unknown} };
+type CoverListing = { id:string; seller_id:string; kind:string; storage_path?:string|null; cover_path?:string|null; novel?:unknown; content?:{novel?:unknown} };
 const novelId=(row:CoverListing)=>{const novel=row.novel??row.content?.novel;return novel&&typeof novel==="object"&&"id" in novel&&typeof novel.id==="string"&&z.uuid().safeParse(novel.id).success?novel.id:undefined;};
 
 /** Covers come from server-owned documents/jobs, never a client-supplied storage path. */
 export async function listingCoverPaths(db:SupabaseClient,rows:CoverListing[]) {
- const paths=new Map(rows.flatMap(row=>row.storage_path?[[row.id,row.storage_path] as const]:[]));
+ const paths=new Map(rows.flatMap(row=>{const path=row.cover_path||row.storage_path;return path?[[row.id,path] as const]:[];}));
  const missing=rows.filter(row=>row.kind==="chapter"&&!paths.has(row.id)&&novelId(row));
  const ids=[...new Set(missing.map(row=>novelId(row)!))];
  if(!ids.length)return paths;
@@ -32,6 +32,16 @@ export async function listingCoverPaths(db:SupabaseClient,rows:CoverListing[]) {
   if(source?.storage_path&&(source.seller_id===row.seller_id||orders.data?.some(order=>order.listing_id===source.id&&order.buyer_id===row.seller_id)))paths.set(row.id,source.storage_path);
  }
  return paths;
+}
+
+/** The gallery must contain the selection and its backing image must belong to the seller. */
+export async function selectedListingCover(db: SupabaseClient, sellerId: string, gallery: {jobId?: string; kind: string}[], jobId: string) {
+ const selected = gallery.find(image => image.jobId === jobId);
+ if (!selected) throw new AccountError("이 작품의 갤러리에서 표지를 선택해주세요.", 409);
+ const result = await db.from("generation_jobs").select("storage_path").eq("id", jobId).eq("user_id", sellerId).eq("kind", selected.kind).eq("status", "completed").maybeSingle();
+ if (result.error) throw new AccountError("표지 이미지를 확인하지 못했습니다.", 503);
+ if (!result.data?.storage_path) throw new AccountError("선택한 표지 이미지를 사용할 수 없습니다.", 409);
+ return result.data.storage_path as string;
 }
 
 export async function listingPreviews(db:SupabaseClient,userId:string,rows:CoverListing[]) {

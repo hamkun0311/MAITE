@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 import sharp from "sharp";
 import { fillCharacterProfile } from "./character-helpers";
 
-test("images fit their actual aspect ratio; gallery keeps images through reset and previews without titles or downloads", async ({ page }) => {
+test("character creation uses a 9:16 frame; gallery keeps original images through reset", async ({ page }) => {
   await page.goto("/ideal/gallery");
   await expect(page.getByText("아직 생성한 이미지가 없어요.")).toBeVisible();
   await page.getByRole("link", { name: "캐릭터 생성하기", exact: true }).click();
@@ -28,7 +28,8 @@ test("images fit their actual aspect ratio; gallery keeps images through reset a
     await expect.poll(async () => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(600);
     const size = await image.boundingBox();
     const canvas = await page.locator(".character-canvas").boundingBox();
-    expect(size!.width / size!.height).toBeCloseTo(2, 2);
+    expect(size!.width / size!.height).toBeCloseTo(9 / 16, 2);
+    await expect(image).toHaveCSS("object-fit", "contain");
     expect(canvas!.height).toBeCloseTo(size!.height, 1);
     expect(canvas!.width).toBeCloseTo(size!.width, 1);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -52,7 +53,7 @@ test("images fit their actual aspect ratio; gallery keeps images through reset a
   const second = page.getByAltText("세로 이미지 — 생성된 2D 캐릭터 일러스트", { exact: true });
   await expect(second).toBeVisible();
   const size = await second.boundingBox();
-  expect(size!.width / size!.height).toBeCloseTo(2 / 3, 2);
+  expect(size!.width / size!.height).toBeCloseTo(9 / 16, 2);
   expect((await page.locator(".character-canvas").boundingBox())!.height).toBeCloseTo(size!.height, 1);
   await generate.click();
   await expect(page.getByText("이미지 생성 실패", { exact: true })).toBeVisible();

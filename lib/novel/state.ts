@@ -2,6 +2,7 @@ import { z } from "zod";
 import { storedSeriesArcSchema, storyConceptHistorySchema } from "./series.ts";
 import {sharedChangeSchema} from "../chat/canon.ts";
 import {dialogueRegisterChange,storedDialogueRegister,unjustifiedRegisterChanges,sceneAuditSchema} from "./dialogue.ts";
+import { conceptRulesSchema, markedScheduleSchema } from "./concept.ts";
 
 const short = z.string().trim().min(1).max(240);
 const facts = z.array(short).max(24);
@@ -15,12 +16,21 @@ const propChangeSchema = (citation: z.ZodType<string>) => propStateSchema.extend
 });
 type PropState = z.infer<typeof propStateSchema>;
 const propKey = (item: string) => item.normalize("NFC").replace(/\s/g, "").toLowerCase();
+function storyMemorySize({ previousProse, ...memory }: { previousProse: string }) {
+  // Account for the former prose allowance without trimming memory for a longer chapter.
+  return JSON.stringify({ ...memory, previousProse: "" }).length + Math.min(JSON.stringify(previousProse).length - 2, 8000);
+}
+
 export const storyStateSchema = z.object({
   version: z.literal(1),
   chapter: z.number().int().min(0).max(100000),
   seriesArc: storedSeriesArcSchema.optional(),
+  outlineVersion: z.literal(1).optional(),
   seriesStartChapter: z.number().int().min(0).max(100000).optional(),
   seriesConcept: z.string().trim().max(1000).optional(),
+  conceptRules: conceptRulesSchema.optional(),
+  markedSchedule: markedScheduleSchema.optional(),
+  markedConceptHash: z.string().length(64).optional(),
   conceptHistory: storyConceptHistorySchema.optional(),
   summary: z.string().max(1400),
   currentSituation: z.string().max(400),
@@ -37,10 +47,10 @@ export const storyStateSchema = z.object({
   }).strict()).max(6),
   previousEnding: z.string().max(700),
   nextChapterGoal: z.string().max(240),
-  previousProse: z.string().max(8000),
+  previousProse: z.string(),
   dialogueRegisters:z.array(storedDialogueRegister).max(12).optional(),
 }).strict().refine(value => (value.seriesStartChapter ?? 0) <= value.chapter, "Invalid series start")
-  .refine(value => JSON.stringify(value).length <= 16000, "Story memory is too large");
+  .refine(value => storyMemorySize(value) <= 16000, "Story memory is too large");
 export type StoryState = z.infer<typeof storyStateSchema>;
 export function emptyStoryState(): StoryState {
   return { version: 1, chapter: 0, summary: "", currentSituation: "", longTermGoal: "",
@@ -51,15 +61,16 @@ export function emptyStoryState(): StoryState {
 export const planSchema = z.object({
   chapterGoal: short, longTermGoal: short,
   newInformation: short, protagonistChoice: short, costOrConsequence: short,
-  beats: z.array(z.object({ goal: short, obstacle: short, action: short, outcome: short }).strict()).min(3).max(5),
+  beats: z.array(z.object({ goal: short, obstacle: short, action: short, outcome: short }).strict()).min(1).max(5),
   endingChange: short, mustNotRepeat: z.array(short).max(12),
 }).strict();
 const quoteSchema = z.string().trim().min(1).max(400);
 const evidence = (citation: z.ZodType<string>) => z.object({ text: short, evidence: citation }).strict();
+const reviewNote = z.string().trim().max(240);
 export const createReviewSchema = (citation: z.ZodType<string> = quoteSchema) => z.object({
   pass: z.boolean(),
   sceneAudit:sceneAuditSchema.optional(),
-  conceptAlignment: z.object({ satisfied: z.boolean(), evidence: citation, fix: short }).strict(),
+  conceptAlignment: z.object({ satisfied: z.boolean(), evidence: citation, fix: reviewNote }).strict(),
   blockingIssues: z.array(z.object({
     type: z.enum(["repetition", "continuity", "causality", "no_progress", "missing_beat","dialogue","language"]),
     evidence: citation, fix: short,
@@ -76,7 +87,7 @@ export const createFinalReviewSchema = (citation: z.ZodType<string> = quoteSchem
     relationshipOutcomeShown: z.boolean(),
     hasSequelHook: z.boolean(),
     evidence: citation,
-    fix: short,
+    fix: reviewNote,
   }).strict(),
 }).strict();
 export const createMemoryPatchSchema = (citation: z.ZodType<string> = quoteSchema) => z.object({
@@ -169,7 +180,7 @@ export function mergeMemory(old: StoryState, patch: z.infer<typeof memoryPatchSc
   // the aggregate budget is reached, so a long session cannot get stuck forever.
   const queues = [next.recentEvents, ...next.characters.map(character => character.relationships),
     ...next.characters.map(character => character.knowledge), next.resolvedEvents, next.worldFacts, next.openThreads,next.dialogueRegisters??[],next.propStates??[]];
-  while (JSON.stringify(next).length > 16000) {
+  while (storyMemorySize(next) > 16000) {
     const queue = queues.find(items => items.length > 0);
     if (!queue) break;
     queue.shift();

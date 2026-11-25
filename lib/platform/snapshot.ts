@@ -10,10 +10,12 @@ import { speechStyleSchema } from "../chat/speech.ts";
 import { uniqueGalleryIds } from "../characters/gallery.ts";
 const message = z.object({ role: z.enum(["user", "assistant"]), content: z.string().max(20000), checkinId: z.uuid().optional() });
 const session = z.object({ documentId: z.uuid().optional(), lastJobId: z.uuid().optional(), committed: z.array(message).max(1000), archive: z.array(message).max(1000).optional(), input: z.string().max(2000).default(""), started: z.boolean(), storyState: storyStateSchema.optional(), storyPage: z.number().int().min(0).max(1000).optional(), speechStyle: speechStyleSchema.optional(), speechPreference: speechStyleSchema.optional(), chatMemory: chatMemorySchema.optional(), visualScene: visualSceneSchema.optional(), latestVisualChange: z.boolean().optional(), visualDetected: z.boolean().optional() });
+const storyMessage = message.extend({ content: z.string(), readerNickname: z.string().trim().min(1).max(80).nullable().optional() }).refine(value => value.role === "assistant" || value.content.length <= 20000);
+const storySession = session.extend({ committed: z.array(storyMessage).max(1000), archive: z.array(storyMessage).max(1000).optional() });
 export const snapshotSchema = z.object({
-  version: z.literal(1), id: z.uuid(),
+  version: z.literal(1), id: z.uuid(), rewindToken: z.uuid().optional(),
   art: z.object({ title: z.string().max(120), summary: z.string().max(2000), prompt: z.string().max(12000), style: characterStyleProfile, description: z.string().max(6000), profile: characterProfileSchema, width: z.number(), height: z.number(), jobId: z.uuid().optional(), listingId: z.uuid().optional() }),
-  chat: session, story: session, timeline: timelineSchema,
+  chat: session, story: storySession, timeline: timelineSchema,
   gallery: z.array(z.object({ id: z.string().max(100), title: z.string().max(120), kind: z.enum(["character", "illustration", "outfit"]), jobId: z.uuid().optional(), scene: z.object({ novelId: z.uuid(), chapter: z.number().int().min(1).max(1000) }).optional(), composition: z.object({ pose: z.string().max(240), framing: z.string().max(160) }).optional() })).max(24).default([]),
   backgrounds: z.object({ chat: z.string().max(100).optional(), story: z.string().max(100).optional() }).default({}),
 }).transform(value => ({ ...value, gallery: uniqueGalleryIds(value.gallery) }));

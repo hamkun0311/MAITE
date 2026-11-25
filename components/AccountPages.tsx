@@ -1,4 +1,5 @@
 "use client";
+import { formatStoryForReading } from "@/lib/novel/scene-headings";
 import { useEffect, useRef, useState, type ReactNode, type FormEvent } from "react";
 import {useCheckinInbox} from "./CheckinInbox";
 import Link from "next/link";
@@ -10,7 +11,7 @@ import { accountEnabled } from "@/lib/account/client";
 import { libraryNovels, novelChapters, novelComplete } from "@/lib/account/library";
 import { snapshotSchema, type StudioSnapshot } from "@/lib/platform/snapshot";
 import { STORE_PRICE } from "@/lib/account/policy";
-import { UserRound, Heart, ChevronLeft, ChevronRight, MessageCircle, BookOpen, LogOut, Pencil, Trash2, LoaderCircle, RefreshCw, X } from "lucide-react";
+import { UserRound, Heart, ChevronDown, ChevronLeft, ChevronRight, MessageCircle, BookOpen, LogOut, Pencil, Trash2, LoaderCircle, RefreshCw, X, Images } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useActionConfirm } from "./ActionConfirm";
 import NotificationSettings from "./NotificationSettings";
@@ -22,6 +23,7 @@ import {useScreenLoading} from "./ScreenLoading";
 
 const errorText = (error: unknown) => error instanceof Error ? error.message : "요청을 완료하지 못했습니다.";
 function DemoNotice() { return <p className="library-notice">로그인·저장 기능을 사용하려면 계정 모드를 설정해주세요.</p>; }
+type SaleMedia = { original?: string; originalThumbnail?: string; gallery?: Record<string, string>; thumbnails?: Record<string, string> };
 
 export function MyPageScreen() {
   const { user, account, refresh, logout, editProfile } = useAccount(); const { flushSave } = useStudioSession();
@@ -42,6 +44,9 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
   const path = usePathname(); const id = path.split("/").at(-1)!;
   const { loadDocument, deleteCharacter } = useStudioSession(); const { refresh, account, user } = useAccount(); const router = useRouter(); const confirm = useActionConfirm();
   const [saleOpen, setSaleOpen] = useState(false);
+  const [saleMedia, setSaleMedia] = useState<SaleMedia>();
+  const [sourceGallery, setSourceGallery] = useState<StudioSnapshot["gallery"]>([]);
+  const [coverJobId, setCoverJobId] = useState<string>();
   const [tab, setTab] = useState<"chat" | "novel">("chat");
   const [snapshot, setSnapshot] = useState<StudioSnapshot>(); const [image, setImage] = useState("");
   const [title, setTitle] = useState(""); const [description, setDescription] = useState("");
@@ -49,7 +54,7 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
   const [loading,setLoading]=useState(accountEnabled);
   useScreenLoading(loading);
   useEffect(() => {
-    let active = true; setSnapshot(undefined); setSaleOpen(false); setImage(""); setNotice(""); setSelected(kind === "novel" ? readChapter(user?.id ?? "demo", id) : 1);
+    let active = true; setSnapshot(undefined); setSaleOpen(false); setSaleMedia(undefined); setSourceGallery([]); setCoverJobId(undefined); setImage(""); setNotice(""); setSelected(kind === "novel" ? readChapter(user?.id ?? "demo", id) : 1);
     if (!accountEnabled()) return;
     setLoading(true);
     void (async () => {
@@ -61,24 +66,42 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
       if (kind === "novel" && available.length) { const stored=readChapter(user?.id ?? "demo",id); setSelected(available.some(chapter=>chapter.chapter===stored)?stored:1); }
       setSnapshot(saved); setTitle((kind === "character" ? saved.art.profile.name : doc.title).slice(0, 100)); setDescription(saved.art.summary);
       if (kind === "character") {
+        setSaleMedia(doc.media);
         const art = doc.media?.original ? { imageUrl: doc.media.original } : await jsonApi(saved.art.jobId ? `/api/account?job=${saved.art.jobId}` : `/api/store?id=${saved.art.listingId}`);
         if (active) setImage(art.imageUrl ?? "");
       }
     })().catch(error => { if (active) setNotice(errorText(error)); }).finally(()=>{if(active)setLoading(false);});
     return () => { active = false; };
   }, [id, kind, user?.id]);
+  useEffect(() => {
+    if (kind !== "novel" || !saleOpen || !snapshot) return;
+    let active = true;
+    const loadMedia = (docId: string) => jsonApi(`/api/account?document=${docId}&media=1`).catch(() => undefined);
+    void Promise.all([loadMedia(id), snapshot.id !== id ? loadMedia(snapshot.id) : undefined]).then(([novel, character]) => {
+      if (!active) return;
+      const source = snapshotSchema.safeParse(character?.payload);
+      if (source.success) setSourceGallery(source.data.gallery);
+      setSaleMedia({ ...novel?.media, gallery: {...character?.media?.gallery,...novel?.media?.gallery}, thumbnails: {...character?.media?.thumbnails,...novel?.media?.thumbnails} });
+    });
+    return () => { active = false; };
+  }, [id, kind, saleOpen, snapshot]);
   async function run(work: () => Promise<unknown>, success: string) { if (busy) return; setBusy(true); setNotice(""); try { await work(); setNotice(success); return true; } catch (error) { setNotice(errorText(error)); return false; } finally { setBusy(false); } }
   async function publish(event: FormEvent) {
     event.preventDefault();
     if (busy || !canPublish || !title.trim()) return;
     if (kind === "character" && !await confirm({ title: "캐릭터를 서점에 등록할까요?", description: title.trim(), lines: [{ label: "판매금액", value: `${price.price}하트` }, { label: "판매 수수료", value: `-${price.sellerFee}하트` }, { label: "판매 후 수령", value: `${price.proceeds}하트` }], confirmLabel: "판매 등록" })) return;
-    const success = await run(async () => { await jsonApi("/api/store", { action: kind === "novel" ? "publishNovel" : "publishCharacter", documentId: id, title: title.trim(), description: description.trim() }); await refresh(); }, "서점에 판매 등록했습니다.");
+    const success = await run(async () => { await jsonApi("/api/store", { action: kind === "novel" ? "publishNovel" : "publishCharacter", documentId: id, title: title.trim(), description: description.trim(), ...(coverJobId ? {coverJobId} : {}) }); await refresh(); }, "서점에 판매 등록했습니다.");
     if (success) setSaleOpen(false);
   }
   const chapters = snapshot ? novelChapters(snapshot) : [];
   const complete = !!snapshot && novelComplete(snapshot);
   const canPublish = kind === "character" ? !!snapshot?.art.jobId : chapters.length > 0;
   const price = STORE_PRICE[kind === "character" ? "character" : "chapter"];
+  const author = account?.profile?.display_name || "당신";
+  const saleCoverAndTitle = snapshot && <SaleCoverPicker snapshot={snapshot} sourceGallery={sourceGallery} media={saleMedia} original={image} selected={coverJobId} onSelect={setCoverJobId} disabled={busy}>
+    <p className="sale-byline">{kind === "character" && `${snapshot.art.profile.name} · ${snapshot.art.profile.age}세 · `}작가 {author}</p>
+    <label>{kind === "novel" ? "소설 제목" : "판매 제목"}<input required maxLength={100} value={title} onChange={event => setTitle(event.target.value)} disabled={busy}/></label>
+  </SaleCoverPicker>;
   const novels = libraryNovels(account?.documents ?? []).filter(doc => doc.source_id === snapshot?.id || (!!snapshot?.story.documentId && (doc.id === snapshot.story.documentId || doc.novel_id === snapshot.story.documentId)));
   return <main className={`account-page native-page${kind === "novel" ? " novel-detail-page" : ""}`}><div className="library-detail-toolbar"><Link className="native-back native-library-back" href={kind === "novel" ? "/ideal/library" : "/ideal/characters"}><ChevronLeft size={18} aria-hidden="true" /><span>{kind === "novel" ? "서고" : "나의 캐릭터"}</span></Link>{kind === "novel" && <button type="button" className="novel-sale-trigger" aria-label="서점에 판매 등록" disabled={busy || !canPublish} onClick={() => setSaleOpen(true)}>판매 등록</button>}</div>
     {!accountEnabled() ? <DemoNotice/> : !snapshot ? notice&&<p role="alert">{notice}</p> : <>
@@ -91,18 +114,45 @@ export function LibraryDetailScreen({ kind }: { kind: "character" | "novel" }) {
         {!chapters.length && <p>이야기를 한 회차 이상 생성하고 저장하면 판매할 수 있어요.</p>}
       </section>}
       {kind === "novel" ? saleOpen && <NovelSaleDialog busy={busy} onClose={() => setSaleOpen(false)}>
-        <h2 id="novel-sale-title">소설 판매 등록</h2><p>작품 제목과 소개를 정해 생성된 회차를 서점에 등록해요. 연재 중인 소설도 판매할 수 있어요.</p>
+        <h2 id="novel-sale-title">소설 판매 등록</h2><p>이 작품의 갤러리 삽화도 회차 구매자에게 함께 제공돼요. 연재 중인 소설도 판매할 수 있어요.</p>
         <dl className="novel-sale-prices"><div><dt>회차별 판매금액</dt><dd>{price.price}하트</dd></div><div><dt>판매 수수료</dt><dd>−{price.sellerFee}하트</dd></div><div><dt>판매 후 수령</dt><dd>{price.proceeds}하트 / 회차</dd></div></dl>
-        <form className="publish-form" onSubmit={event => void publish(event)}><label>{kind === "novel" ? "소설 제목" : "판매 제목"}<input required maxLength={100} value={title} onChange={event => setTitle(event.target.value)} disabled={busy}/></label><label>작품 소개<textarea maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} disabled={busy}/></label><button disabled={busy || !canPublish || !title.trim()}>{busy ? "등록 중…" : kind === "novel" ? "판매 등록하기" : "서점에 판매 등록"}</button></form>
+        <form className="publish-form sale-form" onSubmit={event => void publish(event)}>{saleCoverAndTitle}<label>작품 소개<textarea maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} disabled={busy}/></label><button disabled={busy || !canPublish || !title.trim()}>{busy ? "등록 중…" : "판매 등록하기"}</button></form>
         {notice && <p role="status">{notice}</p>}
-      </NovelSaleDialog> : <section className="account-panel"><h2>캐릭터 판매 등록</h2>{!canPublish && <p>직접 생성한 캐릭터만 판매할 수 있습니다.</p>}
-        <form className="publish-form" onSubmit={event => void publish(event)}><label>판매 제목<input required maxLength={100} value={title} onChange={event => setTitle(event.target.value)} disabled={busy}/></label><label>작품 소개<textarea maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} disabled={busy}/></label><button disabled={busy || !canPublish || !title.trim()}>{busy ? "등록 중…" : "서점에 판매 등록"}</button></form>
+      </NovelSaleDialog> : <section className="account-panel sale-panel"><h2>캐릭터 판매 등록</h2>{canPublish ? <p>등록할 때 캐릭터 갤러리의 대화 이미지와 소설 삽화도 구매자에게 함께 제공돼요.</p> : <p>직접 생성한 캐릭터만 판매할 수 있습니다.</p>}
+        <form className="publish-form sale-form" onSubmit={event => void publish(event)}>{saleCoverAndTitle}<label>캐릭터 설명<textarea maxLength={2000} value={description} onChange={event => setDescription(event.target.value)} disabled={busy}/></label><button disabled={busy || !canPublish || !title.trim()}>{busy ? "등록 중…" : "서점에 판매 등록"}</button></form>
       </section>}
       {kind === "character" && <button className="native-delete-character" disabled={busy} onClick={() => void (async () => {
         if (!await confirm({ title: "캐릭터를 삭제할까요?", description: "내 보관함의 캐릭터와 연결된 대화·소설이 삭제되고, 해당 작품의 판매가 중지됩니다. 기존 구매자의 작품과 결제·생성 작업 내역은 보존됩니다.", confirmLabel: "캐릭터 삭제", danger: true })) return;
         await run(() => deleteCharacter(id), "캐릭터를 삭제했습니다.");
       })()}>{busy ? <LoaderCircle size={16} className="spin"/> : <Trash2 size={16}/>}캐릭터 삭제</button>}
     </>}{snapshot && notice && !saleOpen && <p role="status">{notice}</p>}</main>;
+}
+
+function SaleCoverPicker({snapshot, sourceGallery, media, original, selected, onSelect, disabled, children}: {snapshot: StudioSnapshot; sourceGallery: StudioSnapshot["gallery"]; media?: SaleMedia; original: string; selected?: string; onSelect: (id?: string) => void; disabled: boolean; children: ReactNode}) {
+  const [expanded, setExpanded] = useState(false);
+  const seen = new Set<string>();
+  const images = [...sourceGallery, ...snapshot.gallery].flatMap(asset => {
+    if (!asset.jobId || asset.jobId === snapshot.art.jobId || seen.has(asset.jobId)) return [];
+    seen.add(asset.jobId);
+    const url = media?.thumbnails?.[asset.jobId] || media?.gallery?.[asset.jobId];
+    return url ? [{asset, url, jobId: asset.jobId}] : [];
+  });
+  const choice = images.find(image => image.jobId === selected);
+  const defaultUrl = media?.originalThumbnail || media?.original || original;
+  const preview = choice?.url || defaultUrl;
+  const thumbnails = <div className="sale-cover-options" role="group" aria-label="갤러리 표지 선택">
+    <button type="button" aria-label="기본 표지" aria-pressed={!selected} disabled={disabled} onClick={() => { onSelect(); setExpanded(false); }}>
+      {defaultUrl ? <CachedImage src={defaultUrl} cacheKey={imageAssetKey(snapshot.art, media?.originalThumbnail ? "thumbnail" : "original")} alt=""/> : <Images size={19} aria-hidden="true"/>}
+    </button>
+    {images.map(({asset, url, jobId}) => <button key={jobId} type="button" aria-label={`표지 선택 ${asset.title}`} aria-pressed={selected === jobId} disabled={disabled} onClick={() => { onSelect(jobId); setExpanded(false); }}>
+      <CachedImage src={url} cacheKey={imageAssetKey(asset, media?.thumbnails?.[jobId] ? "thumbnail" : "original")} alt="" loading="lazy"/>
+    </button>)}
+  </div>;
+  return <div className="sale-cover-picker"><div className="sale-cover-row"><button type="button" className="store-cover sale-cover-preview" aria-label="갤러리에서 표지 선택" title="갤러리에서 표지 선택" aria-expanded={expanded} disabled={disabled} onClick={() => setExpanded(!expanded)}>
+    {preview && <CachedImage src={preview} cacheKey={choice ? imageAssetKey(choice.asset, media?.thumbnails?.[choice.jobId] ? "thumbnail" : "original") : imageAssetKey(snapshot.art, media?.originalThumbnail ? "thumbnail" : "original")} alt=""/>}
+    <span className="sale-cover-icon" aria-hidden="true"><Images size={12}/>표지</span>
+  </button><div className="sale-heading-fields">{children}</div></div>
+  {expanded && (images.length || defaultUrl ? thumbnails : <p role="status">선택할 갤러리 이미지가 없어요.</p>)}</div>;
 }
 
 function NovelSaleDialog({children,busy,onClose}:{children:ReactNode;busy:boolean;onClose:()=>void}){
@@ -140,36 +190,64 @@ function SavedNovelPages({ chapters, selected, onSelect, snapshot }: { chapters:
         setStart(null); if (!start || !event.changedTouches.length || event.touches.length) return;
         const dx = event.changedTouches[0].clientX - start.x, dy = event.changedTouches[0].clientY - start.y;
         if (Math.abs(dx) >= 60 && Math.abs(dx) > Math.abs(dy) * 1.5) move(dx < 0 ? 1 : -1);
-      }}>{background?.key === backgroundKey && <CachedImage className="saved-novel-background" src={background.url} cacheKey={backgroundKey} alt=""/>}<div key={selected} className="story-page novel-text-scroll" tabIndex={0} aria-label="소설 본문"><h3>이야기 #{chapters[index].chapter}</h3><p>{chapters[index].text}</p></div></article>
+      }}>{background?.key === backgroundKey && <CachedImage className="saved-novel-background" src={background.url} cacheKey={backgroundKey} alt=""/>}<div key={selected} className="story-page novel-text-scroll" tabIndex={0} aria-label="소설 본문"><h3>이야기 #{chapters[index].chapter}</h3><p>{formatStoryForReading(chapters[index].text)}</p></div></article>
   </div>;
 }
 
-type Listing = { id: string; seller_id: string; kind: "character" | "chapter"; title: string; description: string; active: boolean; thumbnailUrl?: string; chapter?: number; novel?: { id: string; title: string; chapters: number } };
+type Listing = { id: string; seller_id: string; kind: "character" | "chapter"; title: string; description: string; active: boolean; authorNickname?: string; characterName?: string; characterAge?: number; thumbnailUrl?: string; chapter?: number; novel?: { id: string; title: string; chapters: number } };
 export function StoreScreen() {
-  const { user, refresh } = useAccount(); const { importCharacter } = useStudioSession();
+  const { user, account, refresh } = useAccount(); const { importCharacter } = useStudioSession();
   const confirm = useActionConfirm(); const [filter, setFilter] = useState<"character" | "chapter">("character");
   const [data, setData] = useState<{ listings: Listing[]; owned: string[] }>(); const [notice, setNotice] = useState(""); const [busy, setBusy] = useState(false);
-  const [reading, setReading] = useState<{ title: string; text: string }>();
+  const [expandedNovels, setExpandedNovels] = useState<string[]>([]);
   const [loading,setLoading]=useState(accountEnabled);
   const [opening,setOpening]=useState(false);
   useScreenLoading(loading||opening);
   const load = async (fresh = false) => { setLoading(true);try{if (fresh) invalidateApiReads(); setData(await jsonApi("/api/store"));}finally{setLoading(false);} };
-  async function openContent(id:string){setOpening(true);try{const result=await jsonApi(`/api/store?id=${id}`);if(result.kind==="character")await importCharacter(result);else setReading({title:result.title,text:result.content.text});}finally{setOpening(false);}}
+  async function openCharacter(id:string){setOpening(true);try{await importCharacter(await jsonApi(`/api/store?id=${id}`));}finally{setOpening(false);}}
   useEffect(() => { if (accountEnabled()) void load().catch(error => setNotice(errorText(error))); }, []);
   async function run(work: () => Promise<unknown>, success: string) { if (busy) return; setBusy(true); setNotice(""); try { await work(); await refresh(); setNotice(success); } catch (error) { setNotice(errorText(error)); } finally { setBusy(false); } }
+  function saleToggle(listing: Listing, title: string, active: boolean) {
+    return <button type="button" className="store-sale-switch" role="switch" aria-label={`${title} 판매 상태`} aria-checked={active} disabled={busy || loading} onClick={() => void run(async () => {
+      await jsonApi("/api/store", { action: "setSaleStatus", listingId: listing.id, active: !active });
+      await load();
+    }, active ? "판매를 중지했습니다." : "판매를 다시 시작했습니다.")}><span className="store-sale-track" aria-hidden="true"/>{active ? "판매 중" : "판매 중지"}</button>;
+  }
+  const authorName = (listing: Listing) => listing.authorNickname?.trim() || (listing.seller_id === user?.id ? account?.profile?.display_name?.trim() : undefined);
   function listingCard(listing: Listing) {
     const price = STORE_PRICE[listing.kind]; const own = listing.seller_id === user?.id; const purchased = data?.owned.includes(listing.id);
-    return <article className="store-listing" key={listing.id}>{listing.kind === "character" && <div className="store-cover">{listing.thumbnailUrl ? <CachedImage src={listing.thumbnailUrl} cacheKey={`listing-preview:${listing.id}:thumbnail`} loading="lazy" alt={`${listing.title} 캐릭터 이미지`}/> : <UserRound size={28} aria-hidden="true"/>}</div>}<h3>{listing.title}</h3><p>{listing.description}</p>
-      {own ? <><span>{listing.active ? "판매 중" : "판매 중지"}</span><button disabled={busy || !listing.active} onClick={() => void run(async () => { await jsonApi("/api/store", { action: "unpublish", listingId: listing.id }); await load(); }, "판매를 중지했습니다.")}>판매 중지</button></>
-        : purchased ? <button disabled={busy} onClick={() => void run(() => openContent(listing.id), "구매한 콘텐츠를 열었습니다.")}>{listing.kind === "character" ? "내 캐릭터로 사용" : "회차 읽기"}</button>
+    const character = listing.kind === "character";
+    const author = authorName(listing);
+    return <article className="store-listing bookshop-row" key={listing.id}>
+      {character && <div className="store-cover">{listing.thumbnailUrl ? <CachedImage src={listing.thumbnailUrl} cacheKey={`listing-preview:${listing.id}:thumbnail`} loading="lazy" alt={`${listing.title} 캐릭터 이미지`}/> : <UserRound size={24} aria-hidden="true"/>}</div>}
+      <div className="bookshop-copy"><h3>{character ? listing.characterName || listing.title : listing.title}</h3>
+      {character && <p className="store-byline">{[listing.characterAge ? `${listing.characterAge}세` : undefined, author ? `작가 ${author}` : "작가 정보 없음"].filter(Boolean).join(" · ")}</p>}
+      {listing.description && <p className="bookshop-description" title={listing.description}>{listing.description}</p>}</div>
+      {own ? character || !listing.novel ? saleToggle(listing, listing.title, listing.active) : null
+        : purchased ? character
+          ? <button disabled={busy} onClick={() => void run(() => openCharacter(listing.id), "구매한 콘텐츠를 열었습니다.")}>내 캐릭터로 사용</button>
+          : <Link className="bookshop-read-link" href={`/ideal/library/${listing.novel?.id ?? listing.id}?listing=${listing.id}`}>회차 읽기</Link>
         : <button disabled={busy || !listing.active} onClick={() => void (async () => { if (!await confirm({ title: "이 작품을 구매할까요?", description: listing.title, lines: [{ label: "구매금액", value: `${price.price}하트` }, { label: "구매 수수료", value: `+${price.buyerFee}하트` }, { label: "총 사용 하트", value: `${price.total}하트` }], confirmLabel: "구매하기" })) return; await run(async () => { await jsonApi("/api/store", { action: "buy", id: crypto.randomUUID(), listingId: listing.id }); await load(); }, "구매했습니다."); })()}>총 {price.total}하트로 구매</button>}
     </article>;
   }
   const groups = new Map<string, Listing[]>();
   for (const listing of data?.listings.filter(item => item.kind === "chapter") ?? []) { const id = listing.novel?.id ?? listing.id; groups.set(id, [...(groups.get(id) ?? []), listing]); }
   return <main className="account-page native-page"><div className="native-page-title"><div><h1>서점</h1><p>새로운 인연, 또 다른 이야기</p></div>{accountEnabled() ? <button type="button" className="native-title-icon" aria-label="서점 새로고침" title="서점 새로고침" disabled={busy} onClick={() => void run(() => load(true), "서점을 새로고침했습니다.")}><RefreshCw size={21} aria-hidden="true"/></button> : <BookOpen size={26}/>}</div><div className="native-tabs" role="tablist" aria-label="서점 분류"><button role="tab" aria-selected={filter === "character"} onClick={() => setFilter("character")}>캐릭터</button><button role="tab" aria-selected={filter === "chapter"} onClick={() => setFilter("chapter")}>소설</button></div>{!accountEnabled() ? <DemoNotice/> : <>
-    {filter === "character" ? <section className="account-panel">{data?.listings.filter(item => item.kind === "character").map(listingCard)}{data && !data.listings.some(item => item.kind === "character") && <div className="native-empty"><UserRound size={38}/><p>새로운 캐릭터를 기다리고 있어요.</p></div>}</section>
-    : <section className="account-panel">{[...groups].map(([id, chapters]) => <details className="store-novel" key={id}><summary><span className="store-cover">{chapters.find(chapter=>chapter.thumbnailUrl)?.thumbnailUrl ? <CachedImage src={chapters.find(chapter=>chapter.thumbnailUrl)!.thumbnailUrl!} cacheKey={`listing-preview:${chapters.find(chapter=>chapter.thumbnailUrl)!.id}:thumbnail`} loading="lazy" alt={`${chapters[0].novel?.title ?? chapters[0].title} 메인 캐릭터 이미지`}/> : <BookOpen size={28} aria-hidden="true"/>}</span><span>{chapters[0].novel?.title ?? chapters[0].title} · {chapters[0].novel?.chapters ?? chapters.length}편</span></summary>{chapters.sort((a,b) => (a.chapter ?? 0) - (b.chapter ?? 0)).map(listingCard)}</details>)}{data && !groups.size && <div className="native-empty"><BookOpen size={38}/><p>첫 번째 이야기를 기다리고 있어요.</p></div>}</section>}
-    {reading && <section className="account-panel novel-reader"><button onClick={() => setReading(undefined)}>읽기 닫기</button><h2>{reading.title}</h2><p>{reading.text}</p></section>}
+    {filter === "character" ? <section className="account-panel bookshop-list">{data?.listings.filter(item => item.kind === "character").map(listingCard)}{data && !data.listings.some(item => item.kind === "character") && <div className="native-empty"><UserRound size={38}/><p>새로운 캐릭터를 기다리고 있어요.</p></div>}</section>
+    : <section className="account-panel bookshop-list">{[...groups].map(([id, chapters]) => {
+      const ordered = [...chapters].sort((a,b) => (a.chapter ?? 0) - (b.chapter ?? 0));
+      const latest = ordered.at(-1)!;
+      const cover = ordered.findLast(chapter => chapter.thumbnailUrl);
+      const title = latest.novel?.title ?? latest.title;
+      const author = ordered.map(authorName).findLast(Boolean);
+      const expanded = expandedNovels.includes(id);
+      return <div className="store-novel-group" key={id}><div className="bookshop-row">
+        <button className="bookshop-novel-trigger" type="button" aria-expanded={expanded} onClick={() => setExpandedNovels(current => expanded ? current.filter(novel => novel !== id) : [...current, id])}>
+          <span className="store-cover">{cover?.thumbnailUrl ? <CachedImage src={cover.thumbnailUrl} cacheKey={`listing-preview:${cover.id}:thumbnail`} loading="lazy" alt={`${title} 표지`}/> : <BookOpen size={24} aria-hidden="true"/>}</span>
+          <span className="bookshop-copy"><strong>{title}</strong><small className="store-byline">{author ? `작가 ${author}` : "작가 정보 없음"} · {latest.novel?.chapters ?? ordered.length}편</small></span><ChevronDown size={16} aria-hidden="true"/>
+        </button>
+        {latest.novel && latest.seller_id === user?.id && saleToggle(latest, title, ordered.some(chapter => chapter.active))}
+      </div>{expanded && <div className="bookshop-chapters">{ordered.map(listingCard)}</div>}</div>;
+    })}{data && !groups.size && <div className="native-empty"><BookOpen size={38}/><p>첫 번째 이야기를 기다리고 있어요.</p></div>}</section>}
   </>}{notice && <p role="status">{notice}</p>}</main>;
 }

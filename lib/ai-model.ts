@@ -1,6 +1,7 @@
-// Read on each request so all text generation paths share the server setting.
-export function textModel(): string {
-  return process.env.OPENAI_MODEL?.trim() || "gpt-5.4-mini";
+// An explicit VNAI model lets provider switches keep their matching defaults.
+export function textModel(provider = process.env.OPENAI_TEXT_PROVIDER): string {
+  const vnaiModel = provider?.trim().toLowerCase() === "vnai" ? process.env.OPENAI_VNAI_MODEL?.trim() : undefined;
+  return vnaiModel || process.env.OPENAI_MODEL?.trim() || "gpt-5.4-mini";
 }
 
 export function reasoningOptions(model = textModel()) {
@@ -62,15 +63,26 @@ export function novelPlanMaxOutputTokens() {
   return Number.isInteger(configured) && configured >= 4000 && configured <= 32000 ? configured : 12000;
 }
 
-// Independent review remains the quality-preserving default.
-export function geminiNovelWriteModel() {
-  return process.env.GEMINI_NOVEL_WRITE_MODEL?.trim() || "";
+export function openAINovelWriteModel() {
+  return process.env.OPENAI_NOVEL_WRITE_MODEL?.trim() || "";
 }
 
-export function novelGenerationMode(geminiWriter = geminiNovelWriteModel()) {
-  return !geminiWriter && process.env.OPENAI_NOVEL_GENERATION_MODE?.trim() === "integrated" ? "integrated" : "reviewed";
+export function claudeNovelModel(stage: "WRITE" | "PROOFREAD" | "REVIEW") {
+  return process.env.CLAUDE_API_KEY?.trim() ? process.env[`CLAUDE_NOVEL_${stage}_MODEL`]?.trim() || "" : "";
 }
-export function novelIntegratedMaxOutputTokens(){
- const value=Number(process.env.OPENAI_NOVEL_INTEGRATED_MAX_OUTPUT_TOKENS);
- return Number.isInteger(value)&&value>=4000&&value<=32000?value:12000;
+
+export function geminiNovelWriteModel() {
+  return claudeNovelModel("WRITE") || openAINovelWriteModel() ? "" : process.env.GEMINI_NOVEL_WRITE_MODEL?.trim() || "";
+}
+
+export function openAINovelProofreadModel() {
+  return process.env.OPENAI_NOVEL_PROOFREAD_MODEL?.trim() || "";
+}
+
+export function geminiNovelProofreadModel() {
+  return claudeNovelModel("PROOFREAD") || openAINovelProofreadModel() ? "" : process.env.GEMINI_NOVEL_PROOFREAD_MODEL?.trim() || "";
+}
+
+export function geminiNovelStyleModel() {
+  return process.env.GEMINI_NOVEL_STYLE_MODEL?.trim() || "";
 }

@@ -1,14 +1,15 @@
 "use client";
+import { formatStoryForReading, stripStoryMetadata } from "@/lib/novel/scene-headings";
 import { jsonApi } from "@/lib/platform/commerce";
 import { mergeCheckins, type Checkin } from "@/lib/notifications/checkins";
 import { agreedVisualDestination, updateVisualScene, rebuildVisualScene, visualSceneSchema, type VisualScene } from "@/lib/chat/visual-scene";
 import { apiFetch } from "@/lib/platform/api";
 import { timelineSchema, type Timeline } from "@/lib/chat/timeline";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, ArrowUp, ChevronLeft, ChevronRight, LoaderCircle, MessageCircle, Square } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowRight, ArrowUp, ChevronLeft, ChevronRight, LoaderCircle, MessageCircle, Square, Trash2 } from "lucide-react";
 import { readEvents } from "@/lib/chat/stream";
 import type { CharacterContext } from "@/lib/chat/character";
-import { createChatSession, type ChatSession } from "@/lib/chat/session";
+import { createChatSession, type ChatSession, type ChatMessage as Message } from "@/lib/chat/session";
 import { illustrationContext, changedCharacterLocation, mentionsClothing, plainDialogue, outfitContext } from "@/lib/chat/presentation";
 import type { CharacterImageJob, VisualKind, IllustrationScene } from "@/lib/characters/gallery";
 import { storyStateSchema, type StoryState } from "@/lib/novel/state";
@@ -26,14 +27,14 @@ import { userDisplayName } from "@/lib/chat/identity";
 import { HEART_COST } from "@/lib/account/policy";
 import { saveChapter } from "@/lib/account/reading-progress";
 
-const storyPhases: Record<string, string> = { planning: "다음 전개 구상 중…", writing: "이야기 작성중", reviewing: "이야기 흐름 확인 중…", rewriting: "이야기 다듬는 중…", remembering: "이야기 마무리 중…" };
+const storyPhases: Record<string, string> = { planning: "다음 전개 구상 중…", writing: "이야기 작성중", copyediting: "감정 표현·문장 다듬는 중…", reviewing: "이야기 흐름 확인 중…", rewriting: "이야기 다듬는 중…", remembering: "이야기 마무리 중…" };
 
-type Message = { role: "user" | "assistant"; content: string; checkinId?: string };
 const timelineRequests = new WeakMap<object, AbortController>();
-export default function LiveChat({ character, characterDocumentId, active = true, headingContent, imageOptions, session, onGenerateVisual, imageJob, imageError, onCancelImage, onDismissImageError }: {
-  characterDocumentId?: string; character?: CharacterContext; active?: boolean; headingContent?: ReactNode; imageOptions?:ReactNode; session?: ChatSession;
+export default function LiveChat({ character, characterDocumentId, rewindToken, active = true, headingContent, imageOptions, session, onGenerateVisual, imageJob, imageError, onCancelImage, onDismissImageError, onRewindStory }: {
+  characterDocumentId?: string; rewindToken?: string; character?: CharacterContext; active?: boolean; headingContent?: (storyAction: ReactNode) => ReactNode; imageOptions?:ReactNode; session?: ChatSession;
   onGenerateVisual?: (kind: VisualKind, context: string, scene?: IllustrationScene, chapter?: number) => Promise<void>;
   imageJob?: CharacterImageJob; imageError?: string; onCancelImage?: () => void; onDismissImageError?: () => void;
+  onRewindStory?: (chapter: number) => Promise<void>;
 }) {
   const localSession = useRef(createChatSession());
   const confirm = useActionConfirm(); const { account, user } = useAccount();
@@ -56,6 +57,10 @@ export default function LiveChat({ character, characterDocumentId, active = true
   const autoStarted = useRef(saved.started);
   const [messages, setMessages] = useState<Message[]>(saved.messages);
   const [storyPage, setStoryPage] = useState(saved.storyPage ?? Math.max(0, saved.messages.filter(m => m.role === "assistant" && m.content.trim()).length - 1));
+  const [storyPreview, setStoryPreview] = useState(saved.storyPreview);
+  const [liveStoryDraft, setLiveStoryDraft] = useState("");
+  const showingLiveDraft = Boolean(liveStoryDraft);
+  const scrollAfterDraft = useRef<number | undefined>(undefined);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const [input, setInput] = useState(saved.input);
   const [busy, setBusy] = useState(false);
@@ -101,6 +106,7 @@ export default function LiveChat({ character, characterDocumentId, active = true
   },[unreadGreetingIds,messages,active,busy,characterDocumentId,character?.mode]);
   const [storyPhase, setStoryPhase] = useState("이야기 작성중");
   const [notice, setNotice] = useState(saved.notice);
+  const [rewinding, setRewinding] = useState(false);
   const committed = useRef<Message[]>(saved.committed);
   // Scene detection supplies defaults only; it never gates manual image creation.
   const latestExchange = committed.current.slice(-2);
@@ -110,14 +116,13 @@ export default function LiveChat({ character, characterDocumentId, active = true
   const sequence = useRef(0), stopped = useRef(false);
   const log = useRef<HTMLDivElement>(null);
   const followOutput = useRef(true);
-  const previousTurnLength = useRef(0);
   useEffect(() => {
     const stop = () => { stopped.current = true; controller.current?.abort(); };
     window.addEventListener("maite-stop-chat", stop); return () => window.removeEventListener("maite-stop-chat", stop);
   }, []);
   useEffect(() => {
-    saved.messages = messages; saved.input = input; saved.notice = notice; saved.storyPage = storyPage;
-  }, [saved, messages, input, notice, storyPage]);
+    saved.messages = messages; saved.input = input; saved.notice = notice; saved.storyPage = storyPage; saved.storyPreview = storyPreview;
+  }, [saved, messages, input, notice, storyPage, storyPreview]);
   useEffect(() => () => {
     sequence.current++;
     if (controller.current) {
@@ -138,14 +143,7 @@ export default function LiveChat({ character, characterDocumentId, active = true
   useEffect(() => {
     const element = log.current;
     if (!element) return;
-    if (character?.mode === "story") {
-      // Start each installment at its first line instead of chasing streamed tokens.
-      if (messages.length !== previousTurnLength.current) {
-        const last = element.lastElementChild;
-        if (last) element.scrollTop += last.getBoundingClientRect().top - element.getBoundingClientRect().top;
-      }
-    } else if (followOutput.current) element.scrollTop = element.scrollHeight;
-    previousTurnLength.current = messages.length;
+    if (character?.mode !== "story" && followOutput.current) element.scrollTop = element.scrollHeight;
   }, [messages, character?.mode]);
   function reset() {
     sequence.current++;
@@ -155,8 +153,8 @@ export default function LiveChat({ character, characterDocumentId, active = true
     Object.assign(saved, { messages: [], committed: [], archive: [], input: "", notice: "", storyState: undefined, documentId: undefined, lastJobId: undefined, speechStyle: undefined, speechPreference: undefined, chatMemory: undefined, clothingDetected: undefined, latestClothingMentioned: undefined, visualDetected: undefined, latestVisualChange: undefined });
     setSceneMemory({ turn: 0 }); saved.visualScene = undefined;
     setStoryPage(0); saved.storyPage = 0;
+    setStoryPreview(undefined); saved.storyPreview = undefined;
     followOutput.current = true;
-    previousTurnLength.current = 0;
     setMessages([]); setInput(""); setNotice(""); setBusy(false);
   }
   async function submit(initialText?: string) {
@@ -171,8 +169,12 @@ export default function LiveChat({ character, characterDocumentId, active = true
     if (saved.timeline && timelineRequests.has(saved.timeline)) { setNotice("진행 중인 대화나 이야기 생성이 끝나면 이어서 요청해주세요."); return; }
     const storyState = saved.storyState;
     const timeline = saved.timeline?.state;
+    if (isStory && !saved.documentId) {
+      saved.documentId = crypto.randomUUID();
+      window.dispatchEvent(new Event("maite-session-committed"));
+    }
     pendingStoryConcept.current = additionalConcept;
-    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => ({ role: message.role, content: message.role === "assistant" ? isStory ? plainDialogue(message.content).slice(-2000) : plainDialogue(message.content, "chat") : message.content })), { role: "user", content: text }];
+    const history: Message[] = [...committed.current.slice(isStory ? -2 : -20).map(message => ({ role: message.role, content: message.role === "assistant" ? isStory ? stripStoryMetadata(plainDialogue(message.content)).slice(-2000) : plainDialogue(message.content, "chat") : message.content })), { role: "user", content: text }];
     while (history.length > 1 && history.reduce((n, m) => n + m.content.length, 0) > 24000)
       history.splice(0, 2);
     const displayed = [...messages, { role: "user" as const, content: text }];
@@ -182,9 +184,12 @@ export default function LiveChat({ character, characterDocumentId, active = true
     followOutput.current = true;
     setMessages([...displayed, { role: "assistant", content: "" }]);
     setInput(""); setNotice(""); setBusy(true);
+    setLiveStoryDraft("");
     setStoryPhase("다음 전개 구상 중…");
     let answer = "", completed = false;
-    let nextChapter: { text: string; state: StoryState } | undefined;
+    let nextChapter: { text: string; state: StoryState; readerNickname?: string | null } | undefined;
+    let draftPreview: string | undefined;
+    let liveDraftVisible = false;
     let nextSpeech: SpeechStyle | undefined;
     let nextPreference: SpeechStyle | undefined;
     let nextMemory: ChatMemory | undefined;
@@ -196,6 +201,8 @@ export default function LiveChat({ character, characterDocumentId, active = true
     const timeout = setTimeout(() => abort.abort(), isStory ? 280000 : 160000);
     try {
       const requestBody = { messages: history, character, ...(timeline ? { timeline } : {}), ...(isStory && storyState ? { storyState } : {}),
+        ...(isStory ? { storyDocumentId: saved.documentId } : {}),
+        ...(isStory && rewindToken ? { rewindToken } : {}),
         ...(additionalConcept ? { additionalConcept } : {}),
         ...(!isStory && character && saved.chatMemory ? { chatMemory: saved.chatMemory } : {}),
         ...(!isStory && character && saved.speechStyle ? { speechStyle: saved.speechStyle } : {}),
@@ -220,16 +227,25 @@ export default function LiveChat({ character, characterDocumentId, active = true
           nextTimeline = timelineSchema.parse(event.state);
           if (nextTimeline.revision !== timeline.revision + 1) throw new Error("Invalid shared timeline revision");
         } else if (isStory && event.type === "phase" && typeof event.phase === "string") {
-          setStoryPhase(storyPhases[event.phase] || "이야기 작성중");
+          const phase = event.phase;
+          setStoryPhase(previous => phase === "writing" && previous.startsWith("이야기 작성 중 ·") ? previous : storyPhases[phase] || "이야기 작성중");
+        } else if (isStory && event.type === "draft_progress" && typeof event.chars === "number" && event.chars > 0) {
+          setStoryPhase(`이야기 작성 중 · ${event.chars.toLocaleString("ko-KR")}자`);
+        } else if (isStory && event.type === "draft_live" && typeof event.text === "string") {
+          liveDraftVisible = Boolean(event.text);
+          setLiveStoryDraft(event.text);
+        } else if (isStory && event.type === "draft_preview" && typeof event.text === "string" && event.text.trim()) {
+          draftPreview = event.text;
         } else if (isStory && event.type === "chapter") {
-          if (nextChapter || typeof event.text !== "string" || !event.text.trim() || event.text.length > 8000)
+          if (nextChapter || typeof event.text !== "string" || !event.text.trim())
             throw new Error("이야기 응답 형식이 올바르지 않습니다.");
           const state = storyStateSchema.parse(event.state);
           if (event.expectedChapter !== (storyState?.chapter ?? 0) || state.chapter !== (storyState?.chapter ?? 0) + 1 || state.previousProse !== event.text)
             throw new Error("이야기 회차가 일치하지 않습니다. 다시 시도해주세요.");
           if ((state.seriesStartChapter ?? 0) !== (additionalConcept ? storyState?.chapter ?? 0 : storyState?.seriesStartChapter ?? 0))
             throw new Error("이야기 계획이 일치하지 않습니다. 다시 시도해주세요.");
-          nextChapter = { text: event.text, state };
+          const readerNickname = typeof event.readerNickname === "string" && event.readerNickname.length <= 80 ? event.readerNickname : event.readerNickname === null ? null : undefined;
+          nextChapter = { text: event.text, state, readerNickname };
         } else if (!isStory && event.type === "location" && typeof event.changed === "boolean") {
           locationChanged = event.changed;
         } else if (!isStory && event.type === "clothing" && typeof event.mentioned === "boolean") {
@@ -249,22 +265,36 @@ export default function LiveChat({ character, characterDocumentId, active = true
           if (answer.length > 8000) throw new Error("응답이 너무 길어 중단했습니다.");
           setMessages([...displayed, { role: "assistant", content: plainDialogue(answer, "chat") }]);
         } else if (event.type === "done") { completed = true; break; }
-        else if (event.type === "error") throw new Error(typeof event.message === "string" ? event.message : "응답이 중단되었습니다.");
+        else if (event.type === "error") {
+          if (isStory && draftPreview) continue;
+          throw new Error(typeof event.message === "string" ? event.message : "응답이 중단되었습니다.");
+        }
+      }
+      if (isStory && draftPreview && !nextChapter && !completed) {
+        if (liveDraftVisible) scrollAfterDraft.current = log.current?.scrollTop;
+        setStoryPreview(draftPreview);
+        saved.storyPreview = draftPreview;
+        setMessages(messages); setInput(additionalConcept);
+        setNotice("집필한 원고를 임시로 보여드려요. 회차 확정 전에 멈췄으며 하트는 차감하지 않았어요.");
+        return;
       }
       const prose = plainDialogue(isStory ? nextChapter?.text ?? "" : answer, isStory ? "prose" : "chat").trim();
       if (!completed || !prose) throw new Error("응답이 중단되었습니다. 다시 시도해주세요.");
       if (timeline && saved.timeline?.state.revision !== timeline.revision) throw new Error("공통 시간선이 변경되었습니다. 다시 시도해주세요.");
       if (nextTimeline && saved.timeline) saved.timeline.state = nextTimeline;
+      const assistantMessage: Message = { role: "assistant", content: prose, ...(nextChapter?.readerNickname !== undefined ? { readerNickname: nextChapter.readerNickname } : {}) };
       if (isStory && nextChapter) {
+        if (liveDraftVisible) scrollAfterDraft.current = log.current?.scrollTop;
+        setStoryPreview(undefined); saved.storyPreview = undefined;
         saved.storyState = nextChapter.state;
         const latestPage = displayed.filter(m => m.role === "assistant" && m.content.trim()).length;
         saved.storyPage = latestPage; setStoryPage(latestPage);
         saved.documentId ??= crypto.randomUUID();
         saved.lastJobId = response.headers.get("X-Job-Id") ?? undefined;
-        setMessages([...displayed, { role: "assistant", content: prose }]);
+        setMessages([...displayed, assistantMessage]);
       }
-      committed.current = [...history, { role: "assistant", content: prose }];
-      saved.archive = [...(saved.archive ?? saved.committed), { role: "user", content: text }, { role: "assistant", content: prose }];
+      committed.current = [...history, assistantMessage];
+      saved.archive = [...(saved.archive ?? saved.committed), { role: "user", content: text }, assistantMessage];
       saved.committed = committed.current;
       if (!isStory && nextSpeech) saved.speechStyle = nextSpeech;
       if (!isStory && nextPreference) saved.speechPreference = nextPreference;
@@ -295,13 +325,33 @@ export default function LiveChat({ character, characterDocumentId, active = true
       clearTimeout(timeout);
       if (saved.timeline && timelineRequests.get(saved.timeline) === abort) timelineRequests.delete(saved.timeline);
       abort.abort();
-      if (id === sequence.current) { controller.current = null; setBusy(false); }
+      if (id === sequence.current) { controller.current = null; setBusy(false); setLiveStoryDraft(""); }
     }
   }
   const isStory = character?.mode === "story";
   const chapters = messages.filter(m => m.role === "assistant" && m.content.trim());
   const pageIndex = Math.min(storyPage, Math.max(0, chapters.length - 1));
   const firstEpisode = Math.max(0, (saved.storyState?.chapter ?? 0) - chapters.length);
+  const shownChapter = firstEpisode + pageIndex + 1;
+  const hasLaterChapters = shownChapter < (saved.storyState?.chapter ?? 0);
+  async function deleteLaterChapters() {
+    if (!onRewindStory || !hasLaterChapters || busy || rewinding || imageJob || !saved.timeline) return;
+    const firstRemovedChapter = shownChapter + 1;
+    const kept = shownChapter === 1 ? "1화" : `1~${shownChapter}화`;
+    if (!await confirm({ title: `${shownChapter}화 뒤 이야기를 삭제할까요?`,
+      description: `${kept}를 남깁니다. ${firstRemovedChapter}화부터 원고를 삭제합니다. 만든 삽화는 갤러리에 보관합니다.`, confirmLabel: "뒤 이야기 삭제" })) return;
+    const timeline = saved.timeline;
+    if (timelineRequests.has(timeline)) { setNotice("진행 중인 대화나 이야기 생성이 끝난 뒤 다시 시도해주세요."); return; }
+    timelineRequests.set(timeline, new AbortController());
+    setRewinding(true);
+    try { await onRewindStory(firstRemovedChapter); }
+    catch (error) { setNotice(error instanceof Error ? error.message : "이 회차를 되돌리지 못했습니다."); }
+    finally { timelineRequests.delete(timeline); setRewinding(false); }
+  }
+  const storyAction = isStory && !storyPreview && !showingLiveDraft && chapters.length > 0 && user && saved.lastJobId && onRewindStory
+    ? <button className="story-rewind-button" type="button" disabled={!hasLaterChapters || busy || rewinding || !!imageJob}
+        onClick={() => void deleteLaterChapters()}><Trash2 size={17} aria-hidden="true" /><span>{rewinding ? "삭제 중…" : "뒤 이야기 삭제"}</span></button>
+    : null;
   useEffect(() => {
     if (isStory && active && chapters.length && saved.documentId && !busy) saveChapter(account?.userId ?? "demo", saved.documentId, firstEpisode + pageIndex + 1);
   }, [isStory, active, chapters.length, saved.documentId, firstEpisode, pageIndex, busy, account?.userId]);
@@ -309,19 +359,21 @@ export default function LiveChat({ character, characterDocumentId, active = true
 
   const visibleMessages = isStory ? chapters.length ? [chapters[pageIndex]] : messages.filter(m => m.role === "assistant") : messages;
   function turnPage(delta: number) {
-    if (!isStory) return;
+    if (!isStory || showingLiveDraft) return;
     setStoryPage(Math.max(0, Math.min(chapters.length - 1, pageIndex + delta)));
   }
-  useEffect(() => {
-    if (isStory && log.current) log.current.scrollTop = 0;
-  }, [isStory, pageIndex]);
+  useLayoutEffect(() => {
+    if (!isStory || !log.current) return;
+    log.current.scrollTop = scrollAfterDraft.current ?? 0;
+    scrollAfterDraft.current = undefined;
+  }, [isStory, pageIndex, storyPreview, showingLiveDraft]);
   return (
     <section className="live-chat" aria-label="AI 실시간 대화">
       <div className="live-chat-heading">
-        {headingContent ?? <div><h2><MessageCircle size={18} /> {character ? character.mode === "story" ? "함께 쓰는 이야기" : `${character.name}와 대화하기` : "AI와 대화하기"}</h2>{character?.mode !== "story" && <p>{character ? "그림 속 캐릭터와 나만의 장면을 이어가세요." : "궁금한 점이나 떠오르는 이야기를 나눠보세요."}</p>}</div>}
+        {headingContent?.(storyAction) ?? <div><h2><MessageCircle size={18} /> {character ? character.mode === "story" ? "함께 쓰는 이야기" : `${character.name}와 대화하기` : "AI와 대화하기"}</h2>{character?.mode !== "story" && <p>{character ? "그림 속 캐릭터와 나만의 장면을 이어가세요." : "궁금한 점이나 떠오르는 이야기를 나눠보세요."}</p>}</div>}
         
       </div>
-      {isStory && chapters.length > 1 && <div className="story-page-navigation" role="group" aria-label="이야기 페이지 이동">
+      {isStory && !storyPreview && !showingLiveDraft && chapters.length > 1 && <div className="story-page-navigation" role="group" aria-label="이야기 페이지 이동">
         <button type="button" aria-label="이전 이야기 보기" disabled={pageIndex === 0} onClick={() => turnPage(-1)}><ChevronLeft size={18} /></button>
         <button type="button" aria-label="다음 이야기 보기" disabled={pageIndex === chapters.length - 1} onClick={() => turnPage(1)}><ChevronRight size={18} /></button>
       </div>}
@@ -338,24 +390,31 @@ export default function LiveChat({ character, characterDocumentId, active = true
         const element = event.currentTarget;
         followOutput.current = element.scrollHeight - element.scrollTop - element.clientHeight < 64;
       }}>
-        {visibleMessages.map((m, i) => {
+        {isStory && showingLiveDraft ? <article className="chat-message assistant story-page"><span>작성 중인 초고</span>
+          <p>{formatStoryForReading(liveStoryDraft)}</p>
+        </article> : isStory && storyPreview ? <article className="chat-message assistant story-page"><span>임시 원고</span>
+          <p>{formatStoryForReading(plainDialogue(storyPreview))}</p>
+          <button className="story-rewind-button" type="button" onClick={() => setStoryPreview(undefined)}>임시 원고 닫기</button>
+        </article> : visibleMessages.map((m, i) => {
           if (character?.mode === "story" && m.role === "user") return null;
           const label = m.role === "user" ? character ? userDisplayName(character, saved.storyState?.seriesConcept) : account?.profile?.display_name || "당신" : character?.mode === "story" ? `이야기 #${firstEpisode + pageIndex + 1}` : character?.name || "AI";
-          const text = m.role === "assistant" ? plainDialogue(m.content, isStory ? "prose" : "chat") : m.content;
-          return <article className={`chat-message ${m.role} ${isStory ? "story-page" : ""}`} key={isStory ? pageIndex : i}><span>{label}</span><p>{text || (isStory ? storyPhase : busy && m.role === "assistant" ? <span className="chat-typing-dots" role="status" aria-label="응답을 작성하고 있어요"><i aria-hidden="true"/><i aria-hidden="true"/><i aria-hidden="true"/></span> : "")}</p></article>;
+          const text = m.role === "assistant" ? isStory ? formatStoryForReading(plainDialogue(m.content)) : plainDialogue(m.content, "chat") : m.content;
+          return <article className={`chat-message ${m.role} ${isStory ? "story-page" : ""}`} key={isStory ? pageIndex : i}><span>{label}</span>
+            <p>{text || (isStory ? storyPhase : busy && m.role === "assistant" ? <span className="chat-typing-dots" role="status" aria-label="응답을 작성하고 있어요"><i aria-hidden="true"/><i aria-hidden="true"/><i aria-hidden="true"/></span> : "")}</p>
+          </article>;
         })}
       </div>
       <GenerationFeedback message={notice ?? ""} onDismiss={() => setNotice("")} className="chat-error" role="status" />
       {onGenerateVisual&&imageOptions}
       {imageJob && <div className="character-visual-status" role="status"><span>{imageJob.kind === "illustration" ? "삽화를 그리고 있어요" : "그림을 그리고 있어요"}</span><button type="button" onClick={onCancelImage} aria-label="이미지 생성 취소">취소</button></div>}
       {onDismissImageError && <GenerationFeedback message={imageError ?? ""} onDismiss={onDismissImageError} className="character-visual-error" />}
-      {onGenerateVisual && character && (character.mode === "chat" || committed.current.some(message => message.role === "assistant" && message.content.trim())) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {
-        if (busy || imageJob) return;
+      {onGenerateVisual && character && (character.mode === "chat" || (!storyPreview && committed.current.some(message => message.role === "assistant" && message.content.trim()))) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {
+        if (busy || rewinding || imageJob) return;
         void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", imageContext, character.mode === "story" && saved.documentId ? { novelId: saved.documentId, chapter: firstEpisode + pageIndex + 1 } : undefined, isStory ? firstEpisode + pageIndex + 1 : undefined);
       }}><span className="visual-button-label">{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span> · {character.mode === "story" ? 50 : 30} ♥</span>}</span></button>}
       {character?.mode === "story" ? <div className="story-composer">
-      <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="추가하고 싶은 사건이나 설정 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>
-      <button className="story-next-button" type="button" disabled={busy || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
+      <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="필수 사건은 *별표*로 감싸세요 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>
+      <button className="story-next-button" type="button" disabled={busy || rewinding || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
         void submit(committed.current.length
           ? "앞선 이야기의 사건과 인물 관계를 이어서 다음 장면을 써줘. 이전 내용을 반복하지 말고 자연스럽게 이어줘."
           : "설정에 맞춰 첫 장면부터 이야기를 시작해줘.");

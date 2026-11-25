@@ -283,7 +283,7 @@ test("check-in capable characters still reject unsupported timed and task-comple
   assert.equal(next.facts[0].subjectId, "user");
   const character = { mode: "chat" as const, name: "희진", age: 25, personality: "다정함", concept: "정리 중", genre: "막장드라마" as const, imageDescription: "은발" };
   const instructions = characterInstructions(character);
-  assert.match(instructions, /scheduled check-in greetings after 3 minutes in the current test configuration/);
+  assert.match(instructions, /scheduled check-in greetings after 24 hours/);
   assert.match(instructions, /acknowledge that promise was wrong/);
   assert.doesNotMatch(characterInstructions({ ...character, mode: "story" }), /scheduled check-in greetings/);
   const shared = { ...emptyTimeline(), participants: [{ id: "user", name: "당신" }, { id: "character", name: "희진" }], promises: [{ subjectId: "character", key: "promise_notify", text: "끝나면 바로 말할게" }] };

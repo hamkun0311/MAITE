@@ -13,6 +13,11 @@ delete from public.store_listings;
 delete from public.character_checkins;
 delete from public.character_activity;
 delete from public.documents;
+do $$ begin
+  if to_regclass('public.image_generation_checkpoints') is not null then
+    delete from public.image_generation_checkpoints;
+  end if;
+end $$;
 delete from public.generation_jobs;
 
 select 'documents' as table_name, count(*) as remaining from public.documents

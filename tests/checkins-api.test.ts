@@ -134,7 +134,8 @@ test("local notification API needs no Firebase, enforces ownership and records o
   const receipt={action:"delivered",id:I,userId:A,documentId:D,userTurns:1,lastUserAt:"2026-11-15T00:00:00+00:00",dueAt:"2026-11-16T01:00:00.000Z",body:"뭐해?",characterName:"희진"};
   assert.equal((await send({...receipt,userId:D})).status,403);
   assert.equal((await send({...receipt,dueAt:"2026-11-15T00:02:00.000Z"})).status,400);
-  assert.equal((await send({...receipt,dueAt:"2026-11-15T00:03:00.000Z"})).status,200);assert.equal((await send(receipt)).status,200);assert.equal(insertCount,2);
+  assert.equal((await send({...receipt,dueAt:"2026-11-15T00:03:00.000Z"})).status,400);
+  assert.equal((await send({...receipt,dueAt:"2026-11-16T00:00:00.000Z"})).status,200);assert.equal((await send(receipt)).status,200);assert.equal(insertCount,2);
  }finally{globalThis.fetch=original;for(const[key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
 

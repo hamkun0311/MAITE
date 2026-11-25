@@ -10,10 +10,66 @@ import { verifyAdmob } from "../lib/server/admob.ts";
 import { verifyPurchase, playAccountId } from "../lib/server/play.ts";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { novelListings, unpublishedNovelRows, isPublishedNovel, listingId } from "../lib/server/publishing.ts";
+import { personalizeNovelText } from "../lib/novel/reader-name.ts";
 import { novelComplete, libraryNovels } from "../lib/account/library.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { userProfileSchema } from "../lib/account/profile.ts";
 import { PRODUCTS } from "../lib/account/policy.ts";
+
+test("rewinding a saved story restores both documents and rejects stale saves", async () => {
+  const db = new PGlite();
+  const studio = "33333333-3333-4333-8333-333333333333", novel = "44444444-4444-4444-8444-444444444444";
+  const jobs = ["55555555-5555-4555-8555-555555555555", "66666666-6666-4666-8666-666666666666"];
+  const savedImageJob = "77777777-7777-4777-8777-777777777777";
+  const times = [1, 2].map(revision => ({ revision, scene: [], participants: [], relationships: [], promises: [] }));
+  const pages = ["첫 번째 원고", "두 번째 원고"];
+  const messages = pages.flatMap(content => [{ role: "user", content: "다음" }, { role: "assistant", content }]);
+  const state = (index: number) => ({ chapter: index + 1, previousProse: pages[index] });
+  const payload = {
+    id: studio, story: { documentId: novel, storyState: state(1), lastJobId: jobs[1], archive: messages, committed: messages },
+    timeline: times[1], chat: { committed: [] },
+    gallery: [1, 2].map(chapter => ({ id: `illustration-${chapter}`, kind: "illustration", scene: { novelId: novel, chapter }, ...(chapter === 2 ? {jobId:savedImageJob} : {}) })),
+    backgrounds: { story: "illustration-2" },
+  };
+  try {
+    await db.exec(`create role anon; create role authenticated; create role service_role; create schema auth; create schema storage;
+      create table auth.users(id uuid primary key,raw_user_meta_data jsonb default '{}');
+      create function auth.uid() returns uuid language sql as $$ select '${A}'::uuid $$;
+      create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);`);
+    for (const migration of ["202611170001_accounts.sql", "202611180001_deferred_billing_and_character_delete.sql", "202611230001_story_rewind.sql"])
+      await db.exec(await readFile(new URL(`../supabase/migrations/${migration}`, import.meta.url), "utf8"));
+    await db.query("insert into auth.users(id) values($1),($2)", [A, B]);
+    await db.query("insert into documents(id,user_id,kind,title,payload) values($1,$3,'studio','Character',$4),($2,$3,'chapter','Story',$4)", [studio, novel, A, payload]);
+    for (const [index, id] of jobs.entries()) {
+      const events = [{ type: "timeline", expectedRevision: index, state: times[index] }, { type: "chapter", text: pages[index], state: state(index) }];
+      await db.query("insert into generation_jobs(id,user_id,kind,fingerprint,status,result) values($1,$2,'story','test','completed',$3)", [id, A, { events }]);
+    }
+    await db.query("insert into generation_jobs(id,user_id,kind,fingerprint,status,storage_path) values($1,$2,'illustration','test','completed',$3)", [savedImageJob,A,`${A}/${savedImageJob}.jpg`]);
+    const rewind = (owner: string, from: number, job: string) =>
+      db.query<{ result: typeof payload }>("select rewind_story($1,$2,$3,$4,$5) as result", [owner, studio, novel, from, job]);
+    await assert.rejects(rewind(B, 2, jobs[1]), /stale_story_snapshot/);
+    const { rows: [{ result }] } = await rewind(A, 2, jobs[1]);
+    assert.deepEqual(result.story.archive, messages.slice(0, 2));
+    assert.deepEqual(result.story.storyState, state(0));
+    assert.equal(result.story.lastJobId, jobs[0]);
+    assert.deepEqual(result.timeline, times[0]);
+    assert.deepEqual(result.gallery, payload.gallery.slice(0, 1));
+    assert.deepEqual(result.backgrounds, {});
+    const saved = await db.query("select payload from documents order by id");
+    assert.deepEqual(saved.rows, [{ payload: result }, { payload: result }]);
+    assert.equal((await db.query("select id from story_rewind_backups")).rows.length, 1);
+    await assert.rejects(db.query("update documents set payload=$1 where id=$2", [payload, studio]), /stale_story_snapshot/);
+    await db.exec(await readFile(new URL("../supabase/migrations/202611250002_preserve_rewound_illustrations.sql", import.meta.url), "utf8"));
+    const recovered = {id:`rewound-${savedImageJob}`,kind:"illustration",jobId:savedImageJob};
+    const galleries = await db.query("select payload->'gallery' as gallery from documents order by id");
+    assert.deepEqual(galleries.rows, Array.from({length:2},()=>({gallery:[payload.gallery[0],recovered]})));
+    const first = (await rewind(A, 1, jobs[0])).rows[0].result;
+    assert.deepEqual(first.story.archive, []);
+    assert.equal(first.story.storyState, undefined);
+    assert.equal(first.timeline.revision, 0);
+    assert.deepEqual(first.gallery,[{id:"illustration-1",kind:"illustration"},recovered]);
+  } finally { await db.close(); }
+});
 
 test("800-heart pass applies to future purchases while preserving both previous pass benefits",async()=>{
  const db=new PGlite();const C="55555555-5555-4555-8555-555555555555";
@@ -94,9 +150,18 @@ const A = "11111111-1111-4111-8111-111111111111";
 const B = "22222222-2222-4222-8222-222222222222";
 const job = "33333333-3333-4333-8333-333333333333";
 
+test("purchased prose uses the buyer nickname and adjusts Korean particles at name boundaries", () => {
+  const original = "햄군은 현아와 걸었다. “햄군아, 햄군에게도 말했어?” 햄군상점 옆에 작은햄군이 있었다.";
+  assert.equal(personalizeNovelText(original, "햄군", "하루"), "하루는 현아와 걸었다. “하루야, 하루에게도 말했어?” 햄군상점 옆에 작은햄군이 있었다.");
+  assert.equal(personalizeNovelText("하루가 하루로 소개했다. 이름은 하루예요.", "하루", "별빛"), "별빛이 별빛으로 소개했다. 이름은 별빛이에요.");
+  assert.equal(personalizeNovelText("하루로", "하루", "하늘"), "하늘로");
+  assert.equal(personalizeNovelText("A.B와 AxB", "A.B", "별빛"), "별빛과 AxB");
+  assert.equal(personalizeNovelText(original, "햄군", "햄군"), original);
+});
+
 test("novels publish every chapter atomically from a saved complete work and trusted final generation", () => {
   const sessions = createStudioSessions();
-  const archive = Array.from({ length: 5 }, (_, index) => [{ role: "user", content: "비공개 지시" }, { role: "assistant", content: `회차 ${index + 1}의 원고` }]).flat();
+  const archive = Array.from({ length: 5 }, (_, index) => [{ role: "user", content: "비공개 지시" }, { role: "assistant", content: `회차 ${index + 1}의 원고`, readerNickname: index === 0 ? "햄군" : index === 1 ? null : undefined }]).flat();
   const state = { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content, nextChapterGoal: "" };
   const snapshot = snapshotSchema.parse({ version: 1, id: job, art: { title: "서하", summary: "", prompt: "비공개 프롬프트", style: "neutral", description: "서점", profile: { name: "서하", age: 25, personality: "다정함", concept: "서점" }, width: 72, height: 128, jobId: job },
     chat: { ...sessions.chat, committed: [{ role: "user", content: "비공개 대화" }] }, story: { ...sessions.story, documentId: B, lastJobId: job, archive, storyState: state }, timeline: sessions.chat.timeline.state });
@@ -106,6 +171,7 @@ test("novels publish every chapter atomically from a saved complete work and tru
   assert.equal(novelComplete(snapshot), true);
   assert.equal(rows.length, 5);
   assert.deepEqual(rows.map(row => row.content.chapter), [1, 2, 3, 4, 5]);
+  assert.deepEqual(rows.map(row => row.content.readerNickname), ["햄군", null, undefined, undefined, undefined]);
   assert.equal(rows[0].title, "서점에서의 약속 #1");
   assert.equal(rows[4].content.novel.chapters, 5);
   assert.equal(isPublishedNovel(rows[0].content.novel), true);
@@ -143,11 +209,13 @@ function sessionSnapshotForTest(snapshot: ReturnType<typeof snapshotSchema.parse
 test("cloud snapshot restores full completed history while keeping model context compact and timeline shared", () => {
   const sessions = createStudioSessions();
   const archive = ["one", "two", "three"].flatMap(content => [{role:"user",content},{role:"assistant",content:`reply-${content}`}]);
+  const editedChapter = { role: "assistant", content: "편집한 원고", styleDraft: "집필한 초고" };
   const snapshot = snapshotSchema.parse({ version:1,id:job,
     art:{title:"서하",summary:"",prompt:"",style:"neutral",description:"서점",profile:{name:"서하",age:25,personality:"다정함",concept:"서점의 친구"},width:72,height:128,jobId:job},
-    chat:{...sessions.chat,committed:archive.slice(-2),archive},story:{...sessions.story,storyPage:1},timeline:sessions.chat.timeline.state });
+    chat:{...sessions.chat,committed:archive.slice(-2),archive},story:{...sessions.story,storyPage:1,archive:[editedChapter]},timeline:sessions.chat.timeline.state });
   const restored=restoreSessions(snapshot);
   assert.equal(restored.story.storyPage,1);
+  assert.deepEqual(restored.story.messages, [{ role: "assistant", content: editedChapter.content }]);
   assert.equal(restored.chat.messages.length,6); assert.equal(restored.chat.committed.length,2);
   assert.equal(restored.chat.timeline,restored.story.timeline);
   restored.chat.timeline.state.revision++; assert.equal(restored.story.timeline.state.revision,1);

@@ -8,7 +8,7 @@ export function userDisplayName(context: IdentityContext, additionalConcept = ""
   const selfName = "([가-힣A-Za-z][가-힣A-Za-z0-9_-]{0,11}?(?: [가-힣A-Za-z][가-힣A-Za-z0-9_-]{0,11}?)?)";
   for (const source of [additionalConcept, context.concept]) {
     const patterns = [
-      new RegExp(`(?:나|사용자|당신|화자)의?\\s*(?:이름|호칭)\\s*(?:은|는|:|=)\\s*[‘'\"]?${name}(?=[’'\".,。\\n]|(?:이|라)다|$)`),
+      new RegExp(`(?:내\\s+|(?:나|사용자|당신|화자)의?\\s*)(?:이름|호칭)\\s*(?:은|는|:|=)\\s*[‘'\"]?${name}(?=[’'\".,。\\n]|(?:이|라)다|$)`),
       new RegExp(`(?:나|사용자|당신|화자)\\s*\\(\\s*${name}\\s*\\)`),
       new RegExp(`(?:나를|사용자를|당신을)\\s*[‘'\"]${name}[’'\"](?:이?라고|으로)?\\s*부`),
       new RegExp(`(?:나는|사용자는|당신은|화자는)\\s+${selfName}(?:이다|이야|입니다|다)(?=[.。!,\\n]|$)`),

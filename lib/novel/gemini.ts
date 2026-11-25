@@ -54,11 +54,12 @@ export async function writeGeminiProse(options: {
   instructions: string;
   input: string;
   maxOutputTokens: number;
+  responseSchema?: object;
   feature: string;
   signal: AbortSignal;
   onUsage: UsageListener;
 }) {
-  const {model, key, instructions, input, maxOutputTokens, feature, signal, onUsage} = options;
+  const {model, key, instructions, input, maxOutputTokens, responseSchema, feature, signal, onUsage} = options;
   const base = geminiBase();
   const endpoint = base ? gatewayEndpoint(base) : `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
   const finish = trackUsage(feature, model, onUsage);
@@ -70,17 +71,19 @@ export async function writeGeminiProse(options: {
       headers: {"Content-Type": "application/json", ...(base ? {Authorization: `Bearer ${key}`} : {"x-goog-api-key": key})},
       body: JSON.stringify(base ? {
         model, max_tokens: maxOutputTokens, reasoning_effort: "low",
+        ...(responseSchema ? {response_format: {type: "json_object"}} : {}),
         messages: [{role: "system", content: instructions}, {role: "user", content: input}],
       } : {
         systemInstruction: {parts: [{text: instructions}]},
         contents: [{role: "user", parts: [{text: input}]}],
-        generationConfig: {maxOutputTokens, thinkingConfig: {thinkingLevel: "LOW"}},
+        generationConfig: {maxOutputTokens, thinkingConfig: {thinkingLevel: "LOW"},
+          ...(responseSchema ? {responseMimeType: "application/json", responseJsonSchema: responseSchema} : {})},
       }),
     });
     if (!response.ok) {
       finish(undefined, "failed");
       const body: unknown = await response.json().catch(() => undefined);
-      throw new NovelUpstreamError("gemini", response.status, body);
+      throw new NovelUpstreamError("gemini", response.status, body, response.headers.get("retry-after"));
     }
 
     if (base) {

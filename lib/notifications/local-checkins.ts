@@ -5,11 +5,19 @@ export type LocalPlan = Activity & { id:string; userId:string; dueAt:string; bod
 export type LocalState = { pending?:LocalPlan;pendingOthers?:LocalPlan[];lastFired?:LocalPlan;fired?:LocalPlan[];outbox:LocalPlan[];notificationIds?:Record<string,number> };
 export function pendingPlans(state:LocalState){return [...(state.pending?[state.pending]:[]),...(state.pendingOthers??[])];}
 export function consumeLocalPlan(state:LocalState,now:number):LocalState{
- const plans=pendingPlans(state),due=plans.filter(plan=>Date.parse(plan.dueAt)<=now);
- if(!due.length)return state;
- const remaining=plans.filter(plan=>Date.parse(plan.dueAt)>now),fired=new Map((state.fired??(state.lastFired?[state.lastFired]:[])).map(plan=>[plan.documentId,plan]));
+ const pending=pendingPlans(state);
+ const meetsDelay=(plan:LocalPlan)=>Date.parse(plan.dueAt)>=Date.parse(plan.lastUserAt)+CHECKIN_DELAY_MS;
+ const plans=pending.filter(meetsDelay),outbox=state.outbox.filter(meetsDelay);
+ const due=plans.filter(plan=>Date.parse(plan.dueAt)<=now);
+ if(!due.length&&plans.length===pending.length&&outbox.length===state.outbox.length)return state;
+ const discarded=new Set(state.outbox.filter(plan=>!meetsDelay(plan)).map(plan=>plan.id));
+ const remaining=plans.filter(plan=>Date.parse(plan.dueAt)>now);
+ const fired=new Map((state.fired??(state.lastFired?[state.lastFired]:[]))
+  .filter(plan=>!discarded.has(plan.id)).map(plan=>[plan.documentId,plan]));
  for(const plan of due)fired.set(plan.documentId,plan);
- return {...state,pending:remaining[0],pendingOthers:remaining.slice(1),lastFired:due.at(-1),fired:[...fired.values()],outbox:[...state.outbox,...due.filter(plan=>!state.outbox.some(item=>item.id===plan.id))]};
+ const lastFired=due.at(-1)??(state.lastFired&&!discarded.has(state.lastFired.id)?state.lastFired:undefined);
+ return {...state,pending:remaining[0],pendingOthers:remaining.slice(1),lastFired,fired:[...fired.values()],
+  outbox:[...outbox,...due.filter(plan=>!outbox.some(item=>item.id===plan.id))]};
 }
 type Delivered={documentId:string;userTurns:number;dueAt:string};
 export type LocalSettings = { pushEnabled:boolean; quietHours:boolean; nickname:string; activities:Activity[]; lastDelivered?:Delivered|null;lastDeliveredByCharacter?:Delivered[] };

@@ -11,14 +11,14 @@ export const novelQualityPrinciples=`NOVEL QUALITY PRINCIPLES — every genre:
 
 const writingTask="Check these principles throughout, including the closing exchange. In JSON mode place requested metadata only in its separate fields.";
 
-export const novelReviewTaskInstructions=`SCENE AUDIT: Compare the draft through its closing exchange to memory, previousProse and newer sharedTimeline. All four must be true, even with no register patch. rolesStable checks facts, viewpoint and knowledge. speechIntentClear checks clause links, referents and literal assertions/negations before inferred intent, plus addressee register. movementsConsistent checks routes, timing and sight/hearing. actionsCoherent checks means, motives, causal payoffs and replayed events. Cite the later passage if a completed action happens again without a new occurrence, even in paraphrase. Allow marked recollection. Broken pivotal speech, unsupported inferences and unearned endings are material. Flag unquoted direct speech or unclear speakers. Do not supply missing links from guessed intent. Allow ordinary ellipsis and coherent ambiguity. Cite CURRENT prose by source ID (reviewed) or exact quote (integrated), use an existing issue type and give a minimal fix. Preserve past chapters. 서술·대사에서 뜻을 깨뜨리는 오탈자, 빠지거나 끼어든 음절을 language로 지적하고 해당 문장만 최소 교정한다. 방언·고유명·의도한 말더듬은 보존한다.`;
+export const novelReviewTaskInstructions=`SCENE AUDIT: Compare the draft and its closing exchange to memory, previousProse and newer sharedTimeline. rolesStable checks facts, viewpoint and knowledge. speechIntentClear checks clause links, referents and literal assertions/negations before inferred intent, plus addressee register. movementsConsistent checks routes, timing and sight/hearing. actionsCoherent checks means, motives, causal payoffs and replayed events. Cite the later passage when a completed action is replayed, even in paraphrase. Allow marked recollection, ordinary ellipsis and coherent ambiguity. Treat broken pivotal speech, unsupported inferences and unearned endings as material when they change what the reader can understand. Cite current prose by source ID and propose the smallest useful fix. Preserve past chapters. 서술·대사에서 뜻을 깨뜨리는 오탈자를 language로 지적한다. 읽을 수 있는 가벼운 흠은 권고로 남기고 방언·고유명·의도한 말더듬은 보존한다.`;
 
 const registerTask=`REGISTER MEMORY: Record new or durably changed speaker/addressee pairs with exact evidence; otherwise []. New pairs use null changeEvidence; switches require on-page motivation/agreement. Omit temporary shifts.`;
 
+export async function novelWritingStyle() {
+ return (await readFile(join(process.cwd(),"novel_prompt.md"),"utf8")).trim();
+}
 export async function novelWriterQualityInstructions(){
- const style=(await readFile(join(process.cwd(),"novel_prompt.md"),"utf8")).trim();
- return [novelCharacterRules,novelDialogueRules,novelQualityPrinciples,writingTask,style].join("\n");
+ return [novelCharacterRules,novelDialogueRules,novelQualityPrinciples,writingTask,await novelWritingStyle()].join("\n");
 }
 export const novelReviewerQualityInstructions=[novelDialogueRules,novelQualityPrinciples,novelReviewTaskInstructions,registerTask].join("\n");
-// Integrated calls already contain the writer bundle: do not repeat shared principles.
-export const novelIntegratedReviewInstructions=[novelReviewTaskInstructions,registerTask].join("\n");

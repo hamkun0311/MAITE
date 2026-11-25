@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import CachedImage from "./CachedImage";
+import { CHARACTER_WIDTH, CHARACTER_HEIGHT } from "@/lib/characters/schema";
 
 export function CharacterImageViewer({ src, title, open, onClose, actions, cacheKey, onBlob }: { src: string; title: string; open: boolean; onClose: () => void; actions?: ReactNode; cacheKey?: string; onBlob?: (blob: Blob) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -24,7 +25,7 @@ export default function CharacterImage({ src, title, width, height }: { src: str
   const [open, setOpen] = useState(false);
   return <>
     <button className="character-image-trigger" type="button" onClick={() => setOpen(true)} aria-label="캐릭터 이미지 전체화면 보기" title="전체화면 보기">
-      <img src={src} width={width || 720} height={height || 1280} alt={`${title} — 생성된 2D 캐릭터 일러스트`} />
+      <img src={src} width={width || CHARACTER_WIDTH} height={height || CHARACTER_HEIGHT} alt={`${title} — 생성된 2D 캐릭터 일러스트`} />
     </button>
     <CharacterImageViewer src={src} title={title} open={open} onClose={() => setOpen(false)} />
   </>;

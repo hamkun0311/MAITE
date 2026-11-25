@@ -9,11 +9,12 @@ import { imageAssetKey } from "@/lib/platform/image-cache";
 import { loadAccountImage, seedAccountImage } from "@/lib/platform/image-loader";
 import { useAccount } from "./AccountProvider";
 import { usageImageFetch } from "@/lib/usage-store";
+import { beginImageAttempt } from "@/lib/platform/image-attempt";
 import { visualKeywords } from "@/lib/chat/presentation";
 import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
 import { useGenerationPolicyNotice } from "./ActionConfirm";
 
-type Reference = { blob: Blob; profile: CharacterProfile; style: string; description: string };
+type Reference = { blob: Blob; profile: CharacterProfile; style: string; description: string; documentId: string };
 export default function useCharacterGallery(reference?: Reference) {
   const showPolicyNotice = useGenerationPolicyNotice();
   const { user } = useAccount(); const scope = user?.id || "demo";
@@ -142,7 +143,9 @@ export default function useCharacterGallery(reference?: Reference) {
       body.set("messages", JSON.stringify([{ role: "user", content: kind === "illustration"
         ? "현재 선택한 이야기 원고의 한 장면을 그려주세요. 현재 원고의 실제 등장인물·시점·실제 현재 장소를 우선합니다. 원본 캐릭터가 그 장면에 없으면 넣지 말고 다른 등장인물이나 풍경만 그려주세요. 첨부 이미지는 캐릭터가 실제 등장할 때만 인물 식별용입니다. 원본 배경·과거 장면·회상·앞으로 갈 장소는 현재 장소보다 우선하지 않습니다."
         : "첨부 이미지는 인물 식별용입니다. scene.context의 완료된 대화와 확정 기억에서 캐릭터의 최신 의상과 현재 실제 장소를 각각 확정해 새 장면을 그려주세요. 원본 생성 설명이나 캐릭터의 직업·초기 컨셉으로 현재 의상과 배경을 되돌리지 마세요. 얼굴·나이·머리·눈과 정체성은 유지하되 현재 장면에 맞게 배경·소품·자세를 새로 구성하고, 의상 변경이 없다면 최근 확정 의상을 유지해주세요. 앞으로 갈 장소나 회상은 현재 장소로 오인하지 마세요." }]));
-      const response = await usageImageFetch(kind === "illustration" ? "삽화 생성" : "이미지 생성", "/api/characters", { method: "POST", body, signal: abort.signal });
+      const attempt = await beginImageAttempt(scope, kind, body, reference.documentId);
+      const response = await usageImageFetch(kind === "illustration" ? "삽화 생성" : "이미지 생성", "/api/characters", { method: "POST", body, headers: attempt.headers, signal: abort.signal });
+      attempt.remember(response);
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(data?.error || "이미지를 생성하지 못했습니다. 다시 시도해주세요.");
@@ -165,6 +168,7 @@ export default function useCharacterGallery(reference?: Reference) {
       setImages(imageRef.current);
       setBackgrounds(current => current[mode] === NO_BACKGROUND ? current : ({ ...current, [mode]: image.id }));
       remember(image);
+      attempt.complete();
       window.dispatchEvent(new Event("maite-gallery-committed"));
       return image;
     } catch (failure) {
@@ -178,5 +182,22 @@ export default function useCharacterGallery(reference?: Reference) {
       if (id === sequence.current) { controller.current = null; setJob(undefined); }
     }
   }
-  return { images, archive, backgrounds, job, error, dismissError: () => setError(""), cancel, clear, clearArchive, registerOriginal, restoreImages, restoreRemoteImages, originalLoaded, selectBackground, generate };
+  function retainImages(saved: Pick<CharacterGalleryImage, "id" | "scene">[], selected: { chat?: string; story?: string }) {
+    const byId = new Map(imageRef.current.map(image => [image.id, image]));
+    const scenes = new Map(saved.map(image => [image.id, image.scene]));
+    const detached = new Set<string>();
+    imageRef.current = saved.flatMap(({id, scene}) => {
+      const image = byId.get(id);
+      if (!image) return [];
+      if (image.scene && !scene && image.jobId) detached.add(image.jobId);
+      return [{ ...image, scene }];
+    });
+    const original = byId.get("original");
+    if (original && !scenes.has(original.id)) imageRef.current.unshift(original);
+    archiveRef.current = archiveRef.current.map(image => image.jobId && detached.has(image.jobId) ? { ...image, scene: undefined } : image);
+    setArchive(archiveRef.current);
+    setImages(imageRef.current);
+    setBackgrounds(selected);
+  }
+  return { images, archive, backgrounds, job, error, dismissError: () => setError(""), cancel, clear, clearArchive, registerOriginal, restoreImages, restoreRemoteImages, originalLoaded, selectBackground, retainImages, generate };
 }

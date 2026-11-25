@@ -2,7 +2,7 @@
 import type { ImageSceneSelection } from "@/lib/characters/visual";
 import ImageFramingFields from "./ImageFramingFields";
 import {defaultImageFraming,imageFramingSchema,type ImageFraming} from "@/lib/characters/framing";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, Images, Image as ImageIcon } from "lucide-react";
 import { useAccount } from "./AccountProvider";
 import CachedImage from "./CachedImage";
@@ -20,11 +20,12 @@ import CharacterBackgroundPicker from "./CharacterBackgroundPicker";
 import { CharacterImageViewer } from "./CharacterImage";
 import type { CharacterGalleryImage, CharacterImageJob, VisualKind, IllustrationScene } from "@/lib/characters/gallery";
 
-export default function CharacterExperience({ mode, characterDocumentId, imageUrl, avatarUrl, backgroundHidden = false, imageDescription, profile, active, onEdit, onBack, session, gallery, backgroundId, onBackground, onGenerateVisual, imageJob, imageError, onCancelImage, onDismissImageError }: {
-  characterDocumentId?: string; mode: "chat" | "story"; imageUrl: string; avatarUrl?: string; backgroundHidden?: boolean; imageDescription: string; profile: CharacterProfile; active: boolean; onEdit: () => void; onBack: () => void; session?: ChatSession;
+export default function CharacterExperience({ mode, characterDocumentId, rewindToken, imageUrl, avatarUrl, backgroundHidden = false, imageDescription, profile, active, onEdit, onBack, session, gallery, backgroundId, onBackground, onGenerateVisual, imageJob, imageError, onCancelImage, onDismissImageError, onRewindStory }: {
+  characterDocumentId?: string; rewindToken?: string; mode: "chat" | "story"; imageUrl: string; avatarUrl?: string; backgroundHidden?: boolean; imageDescription: string; profile: CharacterProfile; active: boolean; onEdit: () => void; onBack: () => void; session?: ChatSession;
   gallery: CharacterGalleryImage[]; backgroundId?: string; onBackground: (id: string) => void;
   onGenerateVisual: (kind: VisualKind, context: string, scene?: IllustrationScene, selection?: ImageSceneSelection) => Promise<CharacterGalleryImage | null>;
   imageJob?: CharacterImageJob; imageError: string; onCancelImage: () => void; onDismissImageError: () => void;
+  onRewindStory?: (chapter: number) => Promise<void>;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [preview, setPreview] = useState<CharacterGalleryImage | null>(null);
@@ -53,17 +54,18 @@ export default function CharacterExperience({ mode, characterDocumentId, imageUr
   useEffect(() => { if (active) heading.current?.focus({ preventScroll: true }); }, [active]);
   const userName = account?.profile?.display_name;
   const character = useMemo(() => ({ ...profile, mode, imageDescription, ...(userName ? { userName } : {}) }), [profile, mode, imageDescription, userName]);
-  const readerHeading = <div className="character-screen-heading">
+  const readerHeading = (storyAction: ReactNode) => <div className="character-screen-heading">
     <button type="button" onClick={onBack} aria-label="캐릭터 이미지로 돌아가기" title="캐릭터 이미지로 돌아가기"><ArrowLeft size={22} aria-hidden="true" /></button>
     {mode === "chat" && avatarUrl && <img className="reader-character-avatar" src={avatarUrl} alt=""/>}
     <div className="character-reader-title"><h2 ref={heading} tabIndex={-1}>{mode === "chat" ? profile.name : "이야기 만들기"}</h2><p>{profile.name} · {profile.age}세</p></div>
+    {storyAction}
     <button className="character-background-button" type="button" aria-label="배경 변경" disabled={!!imageJob} onClick={() => setPickerOpen(true)}><ImageIcon size={17}/>배경</button>
     <Link className="reader-gallery-button" href={`/ideal/gallery?from=${mode}`} aria-label="장면 갤러리"><Images size={17}/>갤러리</Link>
   </div>;
   return <section className={`character-experience character-${mode}-experience${backgroundHidden ? " character-no-background" : ""}`} aria-label={mode === "chat" ? "대화하기" : "이야기 만들기"}>
     {!backgroundHidden && <CachedImage className="character-backdrop" src={imageUrl} cacheKey={imageAssetKey(gallery.find(image => image.id === backgroundId) || {})} alt="" />}
     <div className="character-experience-content">
-      <LiveChat characterDocumentId={characterDocumentId} character={character} active={active} session={session} headingContent={readerHeading} imageOptions={mode==="story"&&!accountEnabled()?<details className="image-framing-options"><summary>이미지 구도</summary><ImageFramingFields value={framing} onChange={setFraming} disabled={!!imageJob}/></details>:undefined} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} onDismissImageError={onDismissImageError} />
+      <LiveChat rewindToken={rewindToken} onRewindStory={onRewindStory} characterDocumentId={characterDocumentId} character={character} active={active} session={session} headingContent={readerHeading} imageOptions={mode==="story"&&!accountEnabled()?<details className="image-framing-options"><summary>이미지 구도</summary><ImageFramingFields value={framing} onChange={setFraming} disabled={!!imageJob}/></details>:undefined} onGenerateVisual={generateVisual} imageJob={imageJob} imageError={imageError} onCancelImage={onCancelImage} onDismissImageError={onDismissImageError} />
     </div>
     <CharacterBackgroundPicker open={pickerOpen} images={gallery} selected={backgroundId} onSelect={onBackground} onClose={() => setPickerOpen(false)} />
     {preview && <CharacterImageViewer src={preview.url} title={preview.title} cacheKey={imageAssetKey(preview)} open={active} onClose={() => setPreview(null)} />}

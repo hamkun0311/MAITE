@@ -14,6 +14,7 @@ const action = z.discriminatedUnion("action", [
   z.object({ action: z.literal("save"), id: z.uuid(), ownerId: z.uuid(), title: z.string().trim().min(1).max(120), kind: z.enum(["character", "chapter", "studio"]), payload: z.record(z.string(), z.unknown()) }).strict(),
   z.object({ action: z.literal("delete"), id: z.uuid() }).strict(),
   z.object({ action: z.literal("deleteCharacter"), id: z.uuid() }).strict(),
+  z.object({ action: z.literal("rewindStory"), studioId: z.uuid(), novelId: z.uuid(), from: z.number().int().min(1).max(1000), lastJobId: z.uuid() }).strict(),
   z.object({ action: z.literal("report"), reason: z.string().trim().min(1).max(2000), jobId: z.uuid().optional(), listingId: z.uuid().optional() }).strict(),
 ]);
 export async function GET(request: Request) {
@@ -42,8 +43,15 @@ export async function GET(request: Request) {
       const { data, error } = await measure("document_db", () => db.from("documents").select("*").eq("id", z.uuid().parse(docId)).eq("user_id", user.id).is("deleted_at", null).single());
       if (error || !data) throw new AccountError("저장 내용을 찾지 못했습니다.", 404);
       if (url.searchParams.get("media") === "1") {
-        const media = await documentMedia(db, user.id, data.payload, measure);
-        return Response.json({ ...data, media }, { headers });
+        const { purchasedGallery, excludedPurchasedIds, ...media } = await documentMedia(db, user.id, data.payload, measure);
+        const excluded = new Set(excludedPurchasedIds);
+        const saved = Array.isArray(data.payload.gallery) ? data.payload.gallery : [];
+        const payload = purchasedGallery?.length || excluded.size
+          ? { ...data.payload,
+            gallery: [...saved.filter((image: { id?: string }) => !excluded.has(image?.id ?? "")), ...(purchasedGallery ?? [])],
+            backgrounds: Object.fromEntries(Object.entries(data.payload.backgrounds ?? {}).filter(([, id]) => typeof id !== "string" || !excluded.has(id))),
+          } : data.payload;
+        return Response.json({ ...data, payload, media }, { headers });
       }
       return Response.json(data, { headers });
     }
@@ -79,6 +87,23 @@ export async function POST(request: Request) {
       return Response.json({ ok: true }, { headers });
     }
     if (input.action === "daily") return Response.json(await rpc("claim_daily", { p_user: user.id }), { headers });
+    if (input.action === "rewindStory") {
+      const { data, error } = await db.rpc("rewind_story", {
+        p_user: user.id, p_studio: input.studioId, p_novel: input.novelId, p_from: input.from, p_job: input.lastJobId,
+      });
+      if (error) {
+        const messages: Record<string, string> = {
+          stale_story_snapshot: "저장된 이야기가 바뀌었습니다. 화면을 다시 열어주세요.",
+          rewind_checkpoint_missing: "이전 회차의 이어쓰기 기록을 찾지 못했습니다.",
+          rewind_chat_changed: "이 회차 이후 대화가 공통 시간선에 반영되어 되돌릴 수 없습니다.",
+          rewind_in_progress: "진행 중인 대화나 이야기 생성이 끝난 뒤 다시 시도해주세요.",
+          rewind_published: "다시 쓰려는 회차에 서점에 등록한 작품이 포함되어 있습니다.",
+        };
+        console.warn("story-rewind-failed", { code: error.code, reason: Object.hasOwn(messages, error.message) ? error.message : "rewind_failed" });
+        throw new AccountError(error.code === "PGRST202" ? "회차 다시 쓰기 DB 업데이트가 필요합니다." : messages[error.message] ?? "이 회차를 되돌리지 못했습니다.", error.code === "PGRST202" ? 503 : 409);
+      }
+      return Response.json(data, { headers });
+    }
     if (input.action === "save") {
       if (input.ownerId !== user.id) throw new AccountError("계정이 변경되었습니다. 저장 내용을 다시 확인해주세요.", 409);
       const existing = await db.from("documents").select("user_id,title,deleted_at").eq("id", input.id).maybeSingle();
@@ -92,6 +117,7 @@ export async function POST(request: Request) {
       // On conflict never update ownership: use explicit owner-constrained UPDATE.
       const record = { title: input.kind === "chapter" && existing.data ? existing.data.title : input.title, kind: input.kind, payload: input.payload, updated_at: new Date().toISOString() };
       const result = existing.data ? await db.from("documents").update(record).eq("id", input.id).eq("user_id", user.id) : await db.from("documents").insert({ id: input.id, user_id: user.id, ...record });
+      if (result.error?.message === "stale_story_snapshot") throw new AccountError("다른 화면에서 회차를 되돌렸습니다. 화면을 다시 열어주세요.", 409);
       if (result.error) throw new AccountError("저장하지 못했습니다.", 503);
       logNovelDocumentSaved(input.payload,input.id,input.kind);
     } else if (input.action === "deleteCharacter") {

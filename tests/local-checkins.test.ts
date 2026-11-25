@@ -3,13 +3,27 @@ import assert from "node:assert/strict";
 import {afterQuietHours,nextLocalPlan,nextLocalPlans,pendingPlans,greeting,koreaDay,consumeLocalPlan,type LocalSettings} from "../lib/notifications/local-checkins.ts";
 import {CHECKIN_DELAY_MS,CHECKIN_DELAY_MINUTES} from "../lib/notifications/timing.ts";
 const settings:LocalSettings={pushEnabled:true,quietHours:true,nickname:"햄군",activities:[{documentId:"a",userTurns:1,lastUserAt:"2026-11-17T09:30:00+09:00",characterName:"희진"}]};
-test("the active test configuration schedules after three minutes and keeps quiet hours",()=>{
- assert.equal(CHECKIN_DELAY_MINUTES,3);assert.equal(CHECKIN_DELAY_MS,180000);
+test("check-ins wait 24 hours after the last conversation and respect quiet hours",()=>{
+ assert.equal(CHECKIN_DELAY_MINUTES,1440);assert.equal(CHECKIN_DELAY_MS,86400000);
  const now=Date.parse("2026-11-18T10:00:00+09:00"),current={...settings,activities:[{...settings.activities[0],lastUserAt:new Date(now).toISOString()}]};
- assert.equal(Date.parse(nextLocalPlan("user",current,undefined,now,"id")!.dueAt),now+180000);
- const night=Date.parse("2026-11-18T21:59:00+09:00");
+ assert.equal(Date.parse(nextLocalPlan("user",current,undefined,now,"id")!.dueAt),now+CHECKIN_DELAY_MS);
+ const night=Date.parse("2026-11-18T22:00:00+09:00");
  const later=nextLocalPlan("user",{...current,activities:[{...current.activities[0],lastUserAt:new Date(night).toISOString()}]},undefined,night,"night")!;
- assert.equal(later.dueAt,new Date("2026-11-19T10:00:00+09:00").toISOString());
+ assert.equal(later.dueAt,new Date("2026-11-20T10:00:00+09:00").toISOString());
+});
+
+test("old three-minute reservations and unsent receipts are rescheduled under the 24-hour rule",()=>{
+ const now=Date.parse("2026-11-18T10:00:00+09:00");
+ const activity={...settings.activities[0],lastUserAt:new Date(now).toISOString()};
+ const current={...settings,activities:[activity]};
+ const old=nextLocalPlan("user",current,undefined,now,"old",180000)!;
+ const earliest=now+CHECKIN_DELAY_MS;
+ for(const state of [{pending:old,outbox:[]},{lastFired:old,fired:[old],outbox:[old]}]){
+  const updated=consumeLocalPlan(state,now+180000);
+  assert.equal(updated.outbox.length,0);
+  assert.equal(pendingPlans(updated).length,0);
+  assert.equal(Date.parse(nextLocalPlans("user",current,updated,now+180000)[0].dueAt),earliest);
+ }
 });
 test("local quiet hours cover 22:00 through 09:59 and defer to 10:00 KST",()=>{
  for(const [input,output] of [
@@ -62,10 +76,11 @@ test("all characters reserve independently, and an unanswered greeting blocks on
  assert.equal(pendingPlans(fired).length,0);assert.equal(fired.outbox.length,2);
  assert.equal(consumeLocalPlan(fired,now+CHECKIN_DELAY_MS+5000).outbox.length,2);
  assert.equal(nextLocalPlans("user",all,fired,now+86400000).length,0);
- const replied={...all,activities:all.activities.map(a=>a.documentId==="b"?{...a,userTurns:5,lastUserAt:new Date(now+600000).toISOString()}:a)};
- const resumed=nextLocalPlans("user",replied,fired,now+600000);
+ const replyTime=now+CHECKIN_DELAY_MS+600000;
+ const replied={...all,activities:all.activities.map(a=>a.documentId==="b"?{...a,userTurns:5,lastUserAt:new Date(replyTime).toISOString()}:a)};
+ const resumed=nextLocalPlans("user",replied,fired,replyTime);
  assert.equal(resumed.length,1);assert.equal(resumed[0].documentId,"b");
- assert.equal(koreaDay(Date.parse(resumed[0].dueAt)),"2026-11-20");
+ assert.equal(koreaDay(Date.parse(resumed[0].dueAt)),"2026-11-21");
  const remote={...all,lastDeliveredByCharacter:plans.map(({documentId,userTurns,dueAt})=>({documentId,userTurns,dueAt}))};
  assert.equal(nextLocalPlans("user",remote,{outbox:[]},now+86400000).length,0);
  assert.equal(nextLocalPlans("user",{...all,pushEnabled:false},reserved,now).length,0);

@@ -1,14 +1,14 @@
 import {createNovelReviewLogger} from "../../../lib/novel/review-log.ts";
 import { changedCharacterLocation } from "../../../lib/chat/presentation.ts";
 import { timelineSchema, advanceTimeline, timelineChatMemory,timelineForChat } from "../../../lib/chat/timeline.ts";
-import { chatReasoningOptions, geminiNovelWriteModel, textModel } from "../../../lib/ai-model.ts";
+import { chatReasoningOptions, geminiNovelWriteModel, geminiNovelProofreadModel, textModel } from "../../../lib/ai-model.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import { z } from "zod";
 import { readEvents } from "../../../lib/chat/stream.ts";
 import { characterContextSchema, characterInstructions } from "../../../lib/chat/character.ts";
 import { storyStateSchema } from "../../../lib/novel/state.ts";
-import { NovelUpstreamError } from "../../../lib/novel/upstream-error.ts";
+import { isProviderQuotaError, novelRetryDelay, NovelUpstreamError } from "../../../lib/novel/upstream-error.ts";
 import { openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
 import { geminiApiKey } from "../../../lib/novel/gemini.ts";
 import { blocksTextGeneration, GENERATION_POLICY_MESSAGE } from "../../../lib/generation-policy.ts";
@@ -22,12 +22,18 @@ import {chatCharacterInstructions} from "../../../lib/chat/prompt.ts";
 import {personalityPatchSchema,personalityState} from "../../../lib/chat/personality.ts";
 import { userDisplayName } from "../../../lib/chat/identity.ts";
 import {completeCharacterReply,completedDialogueText} from "../../../lib/chat/completion.ts";
+import { createHash } from "node:crypto";
+import { MIN_STORY_CHARS, StoryDraftPaused, type StoryDraftStore } from "../../../lib/novel/checkpoint.ts";
+import { claimLocalStoryDraft } from "../../../lib/server/story-drafts.ts";
+import { AccountError } from "../../../lib/server/account.ts";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 const schema = z.object({
   character: characterContextSchema.optional(),
   storyState: storyStateSchema.optional(),
+  storyDocumentId: z.uuid().optional(),
+  rewindToken: z.uuid().optional(),
   timeline: timelineSchema.optional(),
   additionalConcept: z.string().trim().min(1).max(1000).optional(),
   chatMemory: chatMemorySchema.optional(),
@@ -37,7 +43,7 @@ const schema = z.object({
     role: z.enum(["user", "assistant"]),
     content: z.string().trim().min(1).max(8000),
   }).strict()).min(1).max(21),
-}).strict().refine(({ timeline, character }) => !timeline || !!character).refine(({ storyState, character }) => !storyState || character?.mode === "story")
+}).strict().refine(({ timeline, character }) => !timeline || !!character).refine(({ storyState, storyDocumentId, rewindToken, character }) => !(storyState || storyDocumentId || rewindToken) || character?.mode === "story")
   .refine(({ additionalConcept, character }) => !additionalConcept || character?.mode === "story")
   .refine(({ chatMemory, character }) => !chatMemory || character?.mode === "chat")
   .refine(({ speechPreference, character }) => !speechPreference || character?.mode === "chat")
@@ -46,9 +52,10 @@ const schema = z.object({
   messages.reduce((n, m) => n + m.content.length, 0) <= 24000,
 );
 const usage = { count: 0, until: 0 };
+const minimumStoryLength = MIN_STORY_CHARS.toLocaleString("ko-KR");
 export const OPTIONS = preflight;
 export const POST = withGeneration(handle);
-async function handle(request: Request) {
+async function handle(request: Request, draftStore?: StoryDraftStore) {
   const tracked = request.headers.get("X-Track-Usage") === "1";
   const records = new Map<string, UsageRecord>();
   let publishUsage: ((record: UsageRecord) => void) | undefined;
@@ -85,9 +92,10 @@ async function handle(request: Request) {
         chunks.push(value);
       }
     } finally { reader.releaseLock(); }
-    const { messages, character, storyState, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+    const body = Buffer.concat(chunks);
+    const { messages, character, storyState, storyDocumentId, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(body.toString("utf8")));
     if (blocksTextGeneration({messages, character, storyState, additionalConcept})) return fail(GENERATION_POLICY_MESSAGE, 422);
-    if (character?.mode === "story" && geminiNovelWriteModel() && !geminiApiKey())
+    if (character?.mode === "story" && (geminiNovelWriteModel() || geminiNovelProofreadModel()) && !geminiApiKey())
       return fail("선택한 제공자의 Gemini API 키를 서버에 설정해주세요.", 503);
     if (character?.mode !== "story") signal = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
     const userName = character ? userDisplayName(character, additionalConcept || storyState?.seriesConcept) : "당신";
@@ -98,6 +106,11 @@ async function handle(request: Request) {
     if (usage.count >= 15) return fail("요청이 많습니다. 잠시 후 다시 대화해주세요.", 429);
     usage.count++;
     if (character?.mode === "story") {
+      let localDraft: ReturnType<typeof claimLocalStoryDraft> | undefined;
+      if (storyDocumentId && !draftStore) {
+        try { localDraft = claimLocalStoryDraft(createHash("sha256").update(body).digest("hex")); }
+        catch (error) { if (error instanceof AccountError) return fail(error.message, error.status); throw error; }
+      }
       const encoder = new TextEncoder();
       let stage = "planning";
       const stream = new ReadableStream<Uint8Array>({
@@ -106,22 +119,60 @@ async function handle(request: Request) {
             if (!signal.aborted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
           };
           publishUsage = record => send({ type: "usage", record });
+          let draftPreview: string | undefined;
           try {
             const chapter = await generateChapter({ character, state: storyState, additionalConcept,
+              draftStore: draftStore ?? localDraft?.store,
               traceId:request.headers.get("X-Request-Id")??undefined,
               previous: messages.filter(message => message.role === "assistant").at(-1)?.content,
               direction: messages.at(-1)!.content, key, signal,
-              phase: phase => { stage = phase; send({ type: "phase", phase }); }, onUsage, timeline,
+              phase: phase => { stage = phase; send({ type: "phase", phase }); },
+              onDraftProgress: progress => send({ type: "draft_progress", ...progress }),
+              onDraftUpdate: text => send({ type: "draft_live", text }),
+              onDraftPreview: text => { draftPreview = text; },
+              onUsage, timeline,
             });
             if (timeline) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises, userName,chapter.sharedChanges) });
-            send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter });
+            const readerNickname = userName === character.userName && userName !== character.name ? userName : null;
+            send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter, readerNickname });
             send({ type: "done" });
           } catch (error) {
-            const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Unsupported memory", "Invalid manuscript source"];
-            console.warn("novel-failed", { stage, ...(error instanceof NovelUpstreamError ? error.diagnostics : {}), reason: signal.aborted ? "cancelled_or_timeout" : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });
-            if (!request.signal.aborted && !abort.signal.aborted)
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", ...(error instanceof NovelOutputLimitError ? { code: "output_token_limit" } : {}), message: error instanceof NovelOutputLimitError ? "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." : "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." })}\n\n`));
+            const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Novel chapter too short", "Unsupported memory", "Invalid manuscript source"];
+            console.warn("novel-failed", { stage, ...(error instanceof NovelUpstreamError ? error.diagnostics : {}), reason: signal.aborted ? "cancelled_or_timeout" : error instanceof StoryDraftPaused ? `story_draft_${error.reason}` : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });
+            if (request.signal.aborted || abort.signal.aborted) return;
+            if (draftPreview) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "draft_preview", text: draftPreview })}\n\n`));
+            }
+            if (signal.aborted) {
+              const message = draftStore || localDraft
+                ? "이번 요청의 시간이 끝났어요. 다시 시도하면 저장한 지점부터 이어갑니다."
+                : "이번 요청의 시간이 끝났어요. 이전 회차는 유지됩니다.";
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", code: "story_timeout", message })}\n\n`));
+            } else if (error instanceof StoryDraftPaused) {
+              send({ type: "error", code: "story_draft_paused",
+                message: error.reason === "event_recovery"
+                  ? error.eventFailure === "missing_transition" ? "장면 연결을 자동으로 복구하지 못했어요. 임시 원고는 보관했고 하트는 차감하지 않았어요."
+                    : error.eventFailure === "chapter_too_long" ? "장면을 회차 분량에 맞추지 못했어요. 임시 원고는 보관했고 하트는 차감하지 않았어요."
+                    : "장면을 자동으로 복구하지 못했어요. 저장된 진행 상황은 유지되며 하트는 차감하지 않았어요."
+                  : error.reason === "budget" ? "이 단계의 재시도 한도에 도달했어요. 저장된 진행 상황은 유지되며 하트는 차감하지 않았어요."
+                  : error.reason === "format" ? "응답 형식을 확인하지 못해 작성을 멈췄어요. 이전 회차는 유지되며 하트는 차감하지 않았어요."
+                  : error.reason === "quality" ? "임시 원고가 전개 검수를 통과하지 못해 작성을 멈췄어요. 앞 회차는 그대로이며 하트는 차감하지 않았어요."
+                  : `원고가 ${minimumStoryLength}자에 도달하지 못했어요. 하트는 차감하지 않았어요.` });
+            } else if (error instanceof NovelUpstreamError || novelRetryDelay(error, 0) !== undefined) {
+              send({ type: "error", code: "story_provider_failed", message: error instanceof NovelUpstreamError && isProviderQuotaError(error)
+                ? "AI 제공자의 사용 한도가 부족해 멈췄어요. 한도가 복구되면 저장된 지점에서 이어갈 수 있어요."
+                : error instanceof NovelUpstreamError && error.diagnostics.httpStatus === 401
+                  ? "AI 제공자 인증을 확인해야 해요. 설정이 복구되면 저장된 지점에서 이어갈 수 있어요."
+                  : "AI 제공자가 요청을 처리하지 못했어요. 저장된 진행 상황은 유지되며 하트는 차감하지 않았어요." });
+            } else if (error instanceof Error && error.message === "Novel chapter too short") {
+              send({ type: "error", message: `${minimumStoryLength}자 이상인 원고를 완성하지 못했습니다. 이전 회차는 유지됩니다.` });
+            } else {
+              send(error instanceof NovelOutputLimitError
+                ? { type: "error", code: "output_token_limit", message: "생성 중 출력 토큰 한도에 도달했습니다. 자동 재시도는 하지 않았으며 이전 내용은 유지됩니다. 이미 처리된 토큰은 소비될 수 있으니 사용량을 확인해주세요." }
+                : { type: "error", message: "이야기를 완성하지 못했습니다. 이전 내용은 유지됩니다. 다시 시도해주세요." });
+            }
           } finally {
+            localDraft?.release();
             abort.abort();
             try { controller.close(); } catch { /* Client disconnected. */ }
           }

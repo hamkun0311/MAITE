@@ -18,6 +18,50 @@ const wallet=async(db:PGlite,id=A)=>(await db.query<{transferable:number;bonus:n
 const reserve=(db:PGlite,id:string,kind="character")=>db.query("select reserve_generation_v2($1,$2,$3,'same-input')",[A,id,kind]);
 const success=(db:PGlite,id:string)=>db.query("select finish_generation($1,$2,'{\"headers\":{}}'::jsonb,$3,true)",[A,id,`${A}/${id}.jpg`]);
 
+test("a story checkpoint retains its payload across workers and is private and exclusively leased", async () => {
+ const db = await setup();
+ try {
+  await db.exec(await readFile(new URL("../supabase/migrations/202611230002_story_draft_checkpoints.sql", import.meta.url), "utf8"));
+  const fingerprint = "a".repeat(64), first = randomUUID(), next = randomUUID();
+  const claim = async (user: string, lease: string) => (await db.query<{ draft: unknown }>(
+   "select claim_story_draft($1,$2,$3) as draft", [user, fingerprint, lease])).rows[0].draft;
+  await db.exec("alter role service_role bypassrls");
+  await db.exec("set role service_role");
+  assert.deepEqual(await claim(A, first), {});
+  assert.equal(await claim(A, next), null);
+  const saved = { scenes: [{ prose: "완료된 장면" }, null, null], calls: { scene_write: 1 } };
+  await db.query("update story_draft_checkpoints set payload=$1,lease=null,lease_until=null where user_id=$2 and lease=$3",
+    [JSON.stringify(saved), A, first]);
+  assert.deepEqual(await claim(A, next), saved);
+  assert.deepEqual(await claim(B, next), {});
+  await db.exec("set role authenticated");
+  await assert.rejects(db.query("select payload from story_draft_checkpoints"), /permission denied/);
+  await assert.rejects(claim(A, first), /permission denied/);
+ } finally { await db.close(); }
+});
+
+test("image checkpoints are private and reset on a changed input or new attempt", async () => {
+ const db = await setup();
+ try {
+  await db.exec(await readFile(new URL("../supabase/migrations/202611250001_image_generation_checkpoints.sql", import.meta.url), "utf8"));
+  await db.exec("alter role service_role bypassrls; set role service_role");
+  const scope = "character:default", attempt = randomUUID();
+  const claim = async (user: string, fingerprint: string, id = attempt) => (await db.query<{saved: unknown}>(
+    "select claim_image_checkpoint($1,$2,$3,$4,$5) as saved",[user,scope,fingerprint.repeat(64),id,randomUUID()])).rows[0].saved;
+  const saved = {approved:true,brief:{title:"완료한 설명"}};
+  const release = () => db.query("update image_generation_checkpoints set payload=$1, lease=null, lease_until=null where user_id=$2 and scope=$3", [saved,A,scope]);
+  assert.deepEqual(await claim(A,"a"),{});
+  assert.equal(await claim(A,"b"),null);
+  await release(); assert.deepEqual(await claim(A,"a"),saved);
+  assert.deepEqual(await claim(B,"a"),{});
+  await release(); assert.deepEqual(await claim(A,"b"),{});
+  await release(); assert.deepEqual(await claim(A,"a"),{});
+  await release(); assert.deepEqual(await claim(A,"a",randomUUID()),{});
+  await db.exec("set role authenticated");
+  await assert.rejects(db.query("select payload from image_generation_checkpoints"), /permission denied/);
+ } finally { await db.close(); }
+});
+
 test("reservations leave balances unchanged; successful persisted output debits once and failures never debit",async()=>{
  const db=await setup();try{
   const first=randomUUID(),second=randomUUID();const before=await wallet(db);

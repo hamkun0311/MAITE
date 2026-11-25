@@ -3,7 +3,7 @@ import type { StoryState } from "../novel/state.ts";
 import type { SpeechStyle } from "./speech.ts";
 import type { ChatMemory } from "./memory.ts";
 import type { VisualScene } from "./visual-scene.ts";
-export type ChatMessage = { role: "user" | "assistant"; content: string; checkinId?: string };
+export type ChatMessage = { role: "user" | "assistant"; content: string; checkinId?: string; readerNickname?: string | null };
 export type ChatSession = {
   timeline?: TimelineStore;
   messages: ChatMessage[];
@@ -15,6 +15,7 @@ export type ChatSession = {
   started: boolean;
   storyState?: StoryState;
   storyPage?: number;
+  storyPreview?: string;
   documentId?: string;
   lastJobId?: string;
   speechStyle?: SpeechStyle;

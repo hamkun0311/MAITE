@@ -9,7 +9,7 @@ export type AccountData = {
 };
 export function novelChapters(snapshot: StudioSnapshot) {
   return (snapshot.story.archive ?? snapshot.story.committed).filter(message => message.role === "assistant" && message.content.trim())
-    .map((message, index) => ({ chapter: index + 1, text: message.content }));
+    .map((message, index) => ({ chapter: index + 1, text: message.content, readerNickname: message.readerNickname }));
 }
 export function novelComplete(snapshot: StudioSnapshot) {
   const state = snapshot.story.storyState;
@@ -17,7 +17,7 @@ export function novelComplete(snapshot: StudioSnapshot) {
   return !!state && storyComplete(state) && state.nextChapterGoal === "" && chapters.length === state.chapter && chapters.at(-1)?.text === state.previousProse;
 }
 export function libraryNovels(documents: LibraryDocument[]) {
-  const novels = documents.filter(doc => doc.kind === "chapter");
+  const novels = documents.filter(doc => doc.kind === "chapter" && Number(doc.chapter) > 0);
   const savedIds = new Set(novels.map(doc => doc.id));
   return [...novels, ...documents.filter(doc => doc.kind === "studio" && Number(doc.chapter) > 0 && !savedIds.has(doc.novel_id ?? ""))];
 }

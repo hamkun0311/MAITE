@@ -31,7 +31,8 @@ export function novelListings(options: { payload: unknown; result: unknown; owne
   // Publish public prose only. Private conversations, plans and memory never leave the library.
   return chapters.map(chapter => ({ id: listingId(options.owner, options.documentId, chapter.chapter), seller_id: options.owner,
     kind: "chapter", title: `${options.title} #${chapter.chapter}`, description: options.description, storage_path: null,
-    content: { kind: "chapter", text: chapter.text, chapter: chapter.chapter, novel: { id: options.documentId, title: options.title, chapters: chapters.length, complete: novelComplete(snapshot) } } }));
+    content: { kind: "chapter", text: chapter.text, chapter: chapter.chapter, ...(chapter.readerNickname !== undefined ? { readerNickname: chapter.readerNickname } : {}),
+      novel: { id: options.documentId, title: options.title, chapters: chapters.length, complete: novelComplete(snapshot) } } }));
 }
 export function unpublishedNovelRows<T extends {id:string;content:Record<string,unknown>}>(rows:T[],existing:{id:string;content:Record<string,unknown>}[]) {
   const published=new Map(existing.map(row=>[row.id,row]));
