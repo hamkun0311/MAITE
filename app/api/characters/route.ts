@@ -30,6 +30,7 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 300;
 const usage: { count: number; until: number } = { count: 0, until: 0 };
+const adaptationInstructions = " Safety takes priority over scene and framing preferences. Prepare a standalone, age-appropriate, non-explicit visual brief. Preserve safe identity, setting and mood. If the surrounding adult narrative is explicit, select an ordinary, fully clothed moment before or after it, such as a conversation. Do not depict the explicit activity in any field or change anyone's age. Set adaptation to adapted when materially changing the action, clothing or selected moment for safety. Describe the resulting visible scene in the Korean summary. Use unchanged for normal requests. Set blocked if the request sexualizes an underage or age-ambiguous person, asks for non-consensual intimate imagery, or cannot be made safe without retaining prohibited content. For a blocked request use neutral placeholders in the remaining fields. These rules apply to all fields, including outfit, pose and camera.";
 class RequestError extends Error {
   readonly status: number;
   readonly policyRejected: boolean;
@@ -205,8 +206,9 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       if (Array.isArray(moderation.results) && moderation.results.length) progress.approved = true;
     }
     const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
-    const savedBrief = briefSchema.safeParse(progress.approved ? progress.brief : undefined);
-    const brief = savedBrief.success ? savedBrief.data : await (async () => {
+    const adaptationSchema = briefSchema.extend({ adaptation: z.enum(["unchanged", "adapted", "blocked"]) });
+    const savedBrief = adaptationSchema.safeParse(progress.approved ? progress.brief : undefined);
+    const { adaptation, ...brief } = savedBrief.success ? savedBrief.data : await (async () => {
       const previousData = prior instanceof File && !scene ? Buffer.from(await prior.arrayBuffer()).toString("base64") : null;
       const briefResponse = await measured("image.description", textModel(),
         responsesEndpoint, {
@@ -225,7 +227,7 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
               (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
               " Use the explicit gender and established appearance of each actual subject when resolving identity." +
               (scene ? " The profile's concept is backstory only. scene.context supplies the current scene." : " " + OVERLAP_DIRECTION + " Resolve the subject from the conversation, profile, and any previous result. Use the specific concept and setting to inform expression and atmosphere.") +
-              visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),
+              visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "") + framingDirection(framing) + adaptationInstructions,
             input: [
               {
                 role: "user",
@@ -248,7 +250,7 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
                 type: "json_schema",
                 name: "character_brief",
                 strict: true,
-                schema: z.toJSONSchema(briefSchema),
+                schema: z.toJSONSchema(adaptationSchema),
               },
             },
           }),
@@ -265,10 +267,18 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
             item.content || [],
         )
         .find((c: { type: string }) => c.type === "output_text")?.text;
-      const parsed = briefSchema.parse(JSON.parse(output || "null"));
+      const parsed = adaptationSchema.parse(JSON.parse(output || "null"));
       progress.brief = parsed;
       return parsed;
     })();
+    if (adaptation === "blocked") throw new RequestError(GENERATION_POLICY_MESSAGE, 422, true);
+    if (adaptation === "adapted" && !(savedBrief.success && request.headers.get("X-Image-Adaptation-Accepted") === "1")) {
+      const headers = retryHeaders();
+      if (!headers["X-Image-Retry"]) throw new RequestError("장면을 안전하게 바꿨어요. 이미지 생성 화면에서 다시 시도해주세요.", 409);
+      return Response.json({ code: "image_adaptation_confirmation", summary: brief.summary }, {
+        status: 409, headers: { "Cache-Control": "no-store", ...usageHeaders(), ...headers },
+      });
+    }
     const camera=requestedCamera(framing);
     if(camera&&"framing" in brief)brief.framing=camera;
     // Keep the saved cast classification consistent with an explicit profile gender.
@@ -280,8 +290,6 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
     const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
     const prompt = buildCharacterPrompt(brief, scene, framing, {
       profile: !scene || useIdentity ? profile : undefined,
-      latestRequest: !scene ? messages.at(-1)?.content : undefined,
-      characterConcept: scene?.kind === "illustration" && !useIdentity ? profile?.concept : undefined,
       hasIdentity: useIdentity,
     });
     const parameters = {

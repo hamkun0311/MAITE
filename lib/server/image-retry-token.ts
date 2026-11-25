@@ -11,7 +11,7 @@ export function imageRetryToken(owner: string | undefined, attempt: string, scop
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY || (owner ? undefined : demoSecret);
   if (!secret) return undefined;
   const key = Buffer.from(hkdfSync("sha256", secret, "maite", "image-retry-token", 32));
-  const binding = Buffer.from(JSON.stringify(["image-description-v1", owner ?? "demo", attempt, scope, fingerprint]));
+  const binding = Buffer.from(JSON.stringify(["image-description-v2", owner ?? "demo", attempt, scope, fingerprint]));
   return {
     read(token: string | null): ImageRetryProgress | undefined {
       if (!token || token.length > maxTokenLength || !/^[A-Za-z0-9_-]+$/.test(token)) return;

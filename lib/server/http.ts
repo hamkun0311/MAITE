@@ -15,7 +15,7 @@ export function corsHeaders(request: Request): Record<string, string> {
     "Access-Control-Allow-Origin": origin,
     "Vary": "Origin",
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Track-Usage, X-Request-Id, X-Image-Attempt, X-Image-Scope, X-Image-Retry",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Track-Usage, X-Request-Id, X-Image-Attempt, X-Image-Scope, X-Image-Retry, X-Image-Adaptation-Accepted",
     "Access-Control-Expose-Headers": "Server-Timing, X-Token-Usage, X-Job-Id, X-Character-Title, X-Character-Summary, X-Character-Prompt, X-Character-Style, X-Character-Composition, X-Character-Width, X-Character-Height, X-Image-Retry",
     "Cache-Control": "no-store",
   } : { "Cache-Control": "no-store" };

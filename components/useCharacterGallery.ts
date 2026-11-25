@@ -8,15 +8,15 @@ import { compositionSchema } from "@/lib/characters/visual";
 import { imageAssetKey } from "@/lib/platform/image-cache";
 import { loadAccountImage, seedAccountImage } from "@/lib/platform/image-loader";
 import { useAccount } from "./AccountProvider";
-import { usageImageFetch } from "@/lib/usage-store";
-import { beginImageAttempt } from "@/lib/platform/image-attempt";
+import { beginImageAttempt, requestImage } from "@/lib/platform/image-attempt";
 import { visualKeywords } from "@/lib/chat/presentation";
 import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
-import { useGenerationPolicyNotice } from "./ActionConfirm";
+import { useActionConfirm, useGenerationPolicyNotice } from "./ActionConfirm";
 
 type Reference = { blob: Blob; profile: CharacterProfile; style: string; description: string; documentId: string };
 export default function useCharacterGallery(reference?: Reference) {
   const showPolicyNotice = useGenerationPolicyNotice();
+  const confirm = useActionConfirm();
   const { user } = useAccount(); const scope = user?.id || "demo";
   const [images, setImages] = useState<CharacterGalleryImage[]>([]);
   const imageRef = useRef<CharacterGalleryImage[]>([]);
@@ -144,8 +144,9 @@ export default function useCharacterGallery(reference?: Reference) {
         ? "현재 선택한 이야기 원고의 한 장면을 그려주세요. 현재 원고의 실제 등장인물·시점·실제 현재 장소를 우선합니다. 원본 캐릭터가 그 장면에 없으면 넣지 말고 다른 등장인물이나 풍경만 그려주세요. 첨부 이미지는 캐릭터가 실제 등장할 때만 인물 식별용입니다. 원본 배경·과거 장면·회상·앞으로 갈 장소는 현재 장소보다 우선하지 않습니다."
         : "첨부 이미지는 인물 식별용입니다. scene.context의 완료된 대화와 확정 기억에서 캐릭터의 최신 의상과 현재 실제 장소를 각각 확정해 새 장면을 그려주세요. 원본 생성 설명이나 캐릭터의 직업·초기 컨셉으로 현재 의상과 배경을 되돌리지 마세요. 얼굴·나이·머리·눈과 정체성은 유지하되 현재 장면에 맞게 배경·소품·자세를 새로 구성하고, 의상 변경이 없다면 최근 확정 의상을 유지해주세요. 앞으로 갈 장소나 회상은 현재 장소로 오인하지 마세요." }]));
       const attempt = await beginImageAttempt(scope, kind, body, reference.documentId);
-      const response = await usageImageFetch(kind === "illustration" ? "삽화 생성" : "이미지 생성", "/api/characters", { method: "POST", body, headers: attempt.headers, signal: abort.signal });
-      attempt.remember(response);
+      const response = await requestImage(kind === "illustration" ? "삽화 생성" : "이미지 생성", body, attempt, abort.signal,
+        summary => confirm({ title: "바뀐 장면으로 이미지를 만들까요?", description: summary, confirmLabel: "이미지 생성" }));
+      if (!response) return null;
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(data?.error || "이미지를 생성하지 못했습니다. 다시 시도해주세요.");

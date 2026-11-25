@@ -1,5 +1,7 @@
 "use client";
 
+import { usageImageFetch } from "../usage-store.ts";
+
 type ImageAttempt = { id: string; fingerprint?: string; token?: string; updatedAt: number };
 const active = new Map<string, ImageAttempt>();
 const attemptKey = (owner: string, kind: string, scope: string) => `maite-image-attempt:${owner}:${kind}:${scope}`;
@@ -53,4 +55,22 @@ export async function beginImageAttempt(owner: string, kind: string, form: FormD
       forgetImageAttempt(owner, kind, scope);
     },
   };
+}
+
+export async function requestImage(label: string, body: FormData, attempt: Awaited<ReturnType<typeof beginImageAttempt>>, signal: AbortSignal, confirmAdaptation: (summary: string) => Promise<boolean>) {
+  const send = (headers: HeadersInit) => usageImageFetch(label, "/api/characters", { method: "POST", body, headers, signal });
+  let response = await send(attempt.headers);
+  attempt.remember(response);
+  if (response.status === 409) {
+    const preview = await response.clone().json().catch(() => null);
+    const token = response.headers.get("X-Image-Retry");
+    if (preview?.code === "image_adaptation_confirmation" && typeof preview.summary === "string" && token) {
+      const accepted = await confirmAdaptation(preview.summary);
+      signal.throwIfAborted();
+      if (!accepted) return null;
+      response = await send({ ...attempt.headers, "X-Image-Retry": token, "X-Image-Adaptation-Accepted": "1" });
+      attempt.remember(response);
+    }
+  }
+  return response;
 }

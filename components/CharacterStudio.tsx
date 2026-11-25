@@ -35,8 +35,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { usageImageFetch } from "@/lib/usage-store";
-import { beginImageAttempt, forgetImageAttempt, hasImageAttempt } from "@/lib/platform/image-attempt";
+import { beginImageAttempt, forgetImageAttempt, hasImageAttempt, requestImage } from "@/lib/platform/image-attempt";
 import CharacterExperience from "./CharacterExperience";
 import { CHARACTER_GENDERS, characterProfileSchema, type CharacterProfile } from "@/lib/chat/character";
 import {
@@ -477,13 +476,14 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       if (previous.current && previousStyle.current)
         body.set("previousStyle", previousStyle.current);
       const attempt = await beginImageAttempt(owner.current, "character", body);
-      const response = await usageImageFetch(previous.current ? "캐릭터 수정" : "캐릭터 생성", "/api/characters", {
-        method: "POST",
-        body,
-        headers: attempt.headers,
-        signal: abort.signal,
-      });
-      attempt.remember(response);
+      const response = await requestImage(previous.current ? "캐릭터 수정" : "캐릭터 생성", body, attempt, abort.signal,
+        summary => confirm({ title: "바뀐 장면으로 이미지를 만들까요?", description: summary, confirmLabel: "이미지 생성" }));
+      if (!response) {
+        pending.current = null;
+        setMessages(history.slice(0, -1));
+        setStatus("이미지 생성을 취소했어요.");
+        return;
+      }
       if (!response.ok) {
         const data = await response.json().catch(() => null);
         throw new Error(
