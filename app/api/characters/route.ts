@@ -10,7 +10,7 @@ import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
 import { characterProfileSchema } from "../../../lib/chat/character.ts";
 import {imageFramingSchema,framingDirection,requestedCamera} from "../../../lib/characters/framing.ts";
-import { ILLUSTRATION_DIRECTION, OVERLAP_DIRECTION, COMPOSITION_DIRECTION, compositionSchema, OUTFIT_DIRECTION, visualInstructions, visualRequestSchema, confirmedIllustrationTarget } from "../../../lib/characters/visual.ts";
+import { compositionSchema, visualInstructions, visualRequestSchema, confirmedIllustrationTarget } from "../../../lib/characters/visual.ts";
 import {
   characterMessages,
   characterBrief,
@@ -207,6 +207,7 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
     const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
     const savedBrief = briefSchema.safeParse(progress.approved ? progress.brief : undefined);
     const brief = savedBrief.success ? savedBrief.data : await (async () => {
+      const sceneDetails = scene && { kind: scene.kind, context: scene.context, selection: scene.selection };
       const previousData = prior instanceof File && !scene ? Buffer.from(await prior.arrayBuffer()).toString("base64") : null;
       const briefResponse = await measured("image.description", textModel(),
         responsesEndpoint, {
@@ -219,18 +220,12 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
             ...imageDescriptionReasoningOptions(),
             store: false,
             max_output_tokens: 5000,
-            instructions:
-              (scene?.kind === "illustration" ? ILLUSTRATION_DIRECTION : scene?.kind === "outfit" ? OUTFIT_DIRECTION : CHARACTER_DIRECTION) +
-              " Describe subject, expression, camera and light sources in the scene. The renderer supplies the visual style; leave drawing technique and color grading out of the brief." +
-              (profile?.appearance ? " Use profile.appearance for the explicitly requested physical features only when the profile character is present. In scene images, never transfer an absent profile character's appearance to a counterpart. For a present profile character, current scene clothing, pose and location override initial outfit or setting. " : "") +
-              " Use the explicit gender and established appearance of each actual subject when resolving identity." +
-              (scene ? " The profile's concept is backstory only. scene.context supplies the current scene." : " " + OVERLAP_DIRECTION + " Resolve the subject from the conversation, profile, and any previous result. Use the specific concept and setting to inform expression and atmosphere.") +
-              visualInstructions(scene) + (scene ? " " + COMPOSITION_DIRECTION : "")+framingDirection(framing),
+            instructions: CHARACTER_DIRECTION + (scene ? visualInstructions(scene) : "") + framingDirection(framing),
             input: [
               {
                 role: "user",
                 content: [
-                  { type: "input_text", text: JSON.stringify({ messages, profile, scene, framing }) },
+                  { type: "input_text", text: JSON.stringify({ messages, profile, scene: sceneDetails, framing }) },
                   ...(previousData && !scene
                     ? [
                         {
@@ -278,12 +273,7 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
     // A manually selected counterpart must never inherit the original character's identity image.
     if (target && target !== profile?.name && "characterPresent" in brief) brief.characterPresent = false;
     const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
-    const prompt = buildCharacterPrompt(brief, scene, framing, {
-      profile: !scene || useIdentity ? profile : undefined,
-      latestRequest: !scene ? messages.at(-1)?.content : undefined,
-      characterConcept: scene?.kind === "illustration" && !useIdentity ? profile?.concept : undefined,
-      hasIdentity: useIdentity,
-    });
+    const prompt = buildCharacterPrompt(brief, framing, useIdentity, scene?.selection);
     const parameters = {
       model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       prompt, size: CHARACTER_SIZE,
@@ -297,6 +287,15 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       imageForm.append("image[]", prior, "previous-character.jpg");
       imageBody = imageForm;
     } else imageBody = JSON.stringify(parameters);
+    if (process.env.NODE_ENV === "development" && process.env.DEBUG_IMAGE_RENDER_PROMPT === "1") {
+      console.info("image-render-prompt", JSON.stringify({
+        model: parameters.model,
+        endpoint: useIdentity ? "edits" : "generations",
+        kind: scene?.kind ?? "character",
+        hasReferenceImage: useIdentity,
+        prompt: parameters.prompt,
+      }));
+    }
     const generated = await measured("image.generate", parameters.model,
       useIdentity ? editEndpoint : generateEndpoint, {
         method: "POST",

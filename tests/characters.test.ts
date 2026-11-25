@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { POST } from "../app/api/characters/route.ts";
 import { imageRetryToken } from "../lib/server/image-retry-token.ts";
 import {imageFramingSchema,framingDirection,defaultImageFraming} from "../lib/characters/framing.ts";
-import { visualInstructions, visualRequestSchema, compositionSchema, OVERLAP_DIRECTION, COMPOSITION_DIRECTION } from "../lib/characters/visual.ts";
+import { visualInstructions, visualRequestSchema, compositionSchema } from "../lib/characters/visual.ts";
 import {
   MAX_CHARACTER_REQUEST,
   buildCharacterPrompt,
@@ -23,16 +23,10 @@ test("scene composition is explicit and recent pose metadata is bounded", () => 
     sceneLocation: "Inside a carriage.", locationSource: "narrative" as const,
     pose: "Seated facing right, leaning toward a companion, left hand on seat, right palm open, feet braced.",
     framing: "Wide interior shot from the opposite seat." };
-  const prompt = buildCharacterPrompt(brief, scene);
-  assert.ok(COMPOSITION_DIRECTION.includes(OVERLAP_DIRECTION));
-  assert.ok(prompt.includes(OVERLAP_DIRECTION));
-  assert.match(prompt, /Preserve required contact and narrative actions/);
-  assert.ok(prompt.includes(`REQUIRED NEW BODY STAGING: ${JSON.stringify(brief.pose)}`));
-  assert.ok(prompt.includes(`REQUIRED CAMERA: ${JSON.stringify(brief.framing)}`));
-  assert.match(prompt, /at least TWO unconstrained axes/);
-  assert.match(prompt, /when sitting\/riding is required/);
-  assert.ok(prompt.includes(composition.pose));
-  assert.match(prompt, /AVOIDANCE metadata only/);
+  const prompt = buildCharacterPrompt(illustrationBrief.parse(brief));
+  assert.match(prompt, /Staging: Seated facing right/);
+  assert.match(prompt, /Camera: Wide interior shot/);
+  assert.ok(!prompt.includes(composition.pose));
   assert.equal(illustrationBrief.safeParse({ ...brief, pose: undefined }).success, false);
 });
 
@@ -113,19 +107,21 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         const body = JSON.parse(String(options.body));
         assert.deepEqual(body.reasoning,{effort:"low"});
         if (sceneKind) {
-          assert.equal(JSON.parse(body.input[0].content[0].text).scene.kind, sceneKind);
-          assert.match(body.instructions, sceneKind === "outfit" ? /Change the named character's CLOTHING/ : /latest completed story scene/);
+          const scene = JSON.parse(body.input[0].content[0].text).scene;
+          assert.equal(scene.kind, sceneKind);
+          assert.equal(scene.previousCompositions, undefined);
+          assert.match(body.instructions, sceneKind === "outfit" ? /current dialogue scene/ : /latest completed chapter/);
           if (sceneKind === "outfit") {
-            assert.match(body.instructions, /latest ESTABLISHED current location/);
+            assert.match(body.instructions, /latest established outfit/);
             assert.ok(body.text.format.schema.required.includes("sceneLocation"));
             assert.ok(body.text.format.schema.required.includes("outfit"));
-            assert.match(body.instructions, /NOT recreating or describing the original portrait/);
+            assert.match(body.instructions, /keep the established location/);
             assert.doesNotMatch(body.instructions, /Preserve identity and unchanged details/);
           }
           if (sceneKind === "illustration") {
             assert.doesNotMatch(body.instructions, /Preserve identity and unchanged details/);
             assert.ok(body.text.format.schema.required.includes("sceneLocation"));
-            assert.match(body.instructions, /latest ESTABLISHED current physical location/);
+            assert.match(body.instructions, /actual location, actions and visible cast/);
           }
         }
         const expectedGender = profile === "female" ? "여성" : profile === "male" ? "남성" : undefined;
@@ -136,7 +132,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
           (item: { type: string }) => item.type === "input_image",
         );
         assert.equal(images.length, includePrior && !sceneKind ? 1 : 0);
-        assert.ok(body.instructions.includes("The renderer supplies the visual style"));
+        assert.match(body.instructions, /explicit appearance, style and scene details/);
         return Response.json({
           status: "completed",
           output: [
@@ -164,14 +160,14 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
       if (!(options.body instanceof FormData)) {
         const body = JSON.parse(String(options.body));
         if (sceneKind === "illustration" && !characterPresent) {
-          assert.match(body.prompt, /profile character is ABSENT/);
-          assert.doesNotMatch(body.prompt, /FIRST input image is IDENTITY ONLY/);
+          assert.doesNotMatch(body.prompt, /identity reference/);
         }
         assert.equal(body.model, "gpt-image-2.5-sunburst");
         assert.equal(body.size, "720x1280");
-        assert.match(body.prompt, /hand-drawn 2D anime game key visual/);
+        assert.match(body.prompt, /Adult woman with long hair|A man wearing a blue coat/);
+        assert.match(body.prompt, /Default rendering style: polished hand-drawn 2D anime illustration/);
         assert.doesNotMatch(body.prompt, /Rendering profile:/);
-        assert.equal(body.prompt.includes("B-cup"), !includePrior && !sceneKind && profile === "female");
+        assert.doesNotMatch(body.prompt, /B-cup|anime game key visual/);
         assert.ok(!body.prompt.includes("LAST input image is STYLE ONLY"));
         return Response.json({ data: [{ b64_json: source.toString("base64") }] });
       }
@@ -182,24 +178,17 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
       assert.equal(body.get("output_format"), "jpeg");
       assert.equal(body.has("steps"), false);
       const prompt = String(body.get("prompt"));
+      assert.match(prompt, /Default rendering style: polished hand-drawn 2D anime illustration/);
+      assert.match(prompt, /identity reference/);
       if (sceneKind === "outfit") {
-        assert.match(prompt, /FIRST input image is an IDENTITY reference/);
-        assert.match(prompt, /reference background is NOT locked/);
-        assert.match(prompt, /latest ESTABLISHED current location/);
-        assert.doesNotMatch(prompt, /preserve its identity and unchanged details/i);
-        assert.match(prompt, /REQUIRED CURRENT OUTFIT: "A blue coat with black trousers/);
-        assert.match(prompt, /스포츠브라와 돌핀팬츠/);
-        assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a clothing-store/);
+        assert.match(prompt, /Outfit: 스포츠브라와 돌핀팬츠/);
+        assert.match(prompt, /Location: 체육관/);
       }
       if (sceneKind === "illustration") {
-        assert.match(prompt, /FIRST input image is IDENTITY ONLY/);
-        assert.match(prompt, /pose, gesture, expression, clothing and composition/);
-        assert.match(prompt, /Do not merely replace the background/);
-        assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a bookshop/);
+        assert.match(prompt, /Location: Inside a bookshop/);
+        assert.match(prompt, /Staging: /);
       }
-      assert.match(prompt, /hand-drawn 2D anime game key visual/);
-      assert.ok(!/fuller-busted|sexy mature charisma|glamorous/.test(prompt));
-      assert.doesNotMatch(prompt, /B-cup/);
+      assert.doesNotMatch(prompt, /B-cup|anime game key visual/);
       const images = body.getAll("image[]") as File[];
       assert.equal(images.length, 1);
       if (includePrior) {
@@ -246,7 +235,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   assert.equal(metadata.format, "jpeg");
   assert.equal(first.headers.get("X-Character-Width"), "720");
   assert.equal(first.headers.get("X-Character-Height"), "1280");
-  assert.match(decodeURIComponent(first.headers.get("X-Character-Prompt")!), /hand-drawn 2D anime game key visual/);
+  assert.match(decodeURIComponent(first.headers.get("X-Character-Prompt")!), /Adult woman with long hair|A man wearing a blue coat/);
   const revision = form();
   source = await sharp(result).webp().toBuffer();
   sceneKind = "outfit";
@@ -326,12 +315,12 @@ test("a confirmed novel counterpart omits the profile identity even when the sce
   const url=String(input);
   if(url.endsWith("/moderations"))return Response.json({results:[{categories:{"sexual/minors":false}}]});
   if(url.endsWith("/responses")){
-   const body=JSON.parse(String(init.body));assert.match(body.instructions,/user explicitly chose that person as the PRIMARY subject/);
+   const body=JSON.parse(String(init.body));assert.match(body.instructions,/the selected primary subject/);
    assert.equal(JSON.parse(body.input[0].content[0].text).scene.selection.target,"민수");
    return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({title:"민수",summary:"민수의 보고",prompt:"An adult knight kneels before the king.",styleProfile:"male",characterPresent:true,...composition,sceneLocation:"A royal hall.",locationSource:"narrative"})}]}]});
   }
   assert.ok(url.endsWith("/images/generations"));assert.equal(init.body instanceof FormData,false);
-  const body=JSON.parse(String(init.body));assert.match(body.prompt,/REQUIRED PRIMARY SUBJECT: "민수"/);assert.match(body.prompt,/NO character identity image is supplied/);assert.doesNotMatch(body.prompt,/FIRST input image is IDENTITY ONLY/);
+  const body=JSON.parse(String(init.body));assert.match(body.prompt,/Primary subject: 민수/);assert.doesNotMatch(body.prompt,/identity reference/);
   rendered=true;return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
  });
  const form=new FormData();
@@ -356,23 +345,18 @@ test("all genders share text rendering and a counterpart gets concept facts with
    const body=JSON.parse(String(init.body));
    if(mode==="illustration")assert.deepEqual(JSON.parse(body.input[0].content[0].text).scene.selection.castConcepts,[castConcept]);
    return Response.json({status:"completed",output:[{type:"message",content:[{type:"output_text",text:JSON.stringify({
-    title:"인물",summary:"현재 장면",prompt:"A person with brown hair in a bookshop.",styleProfile:"neutral",
+    title:"인물",summary:"현재 장면",prompt:mode === "illustration" ? "A pink-haired priest in a bookshop." : "A black-haired person in a blue coat.",styleProfile:"neutral",
     ...(mode==="illustration"?{characterPresent:false,...composition,sceneLocation:"Inside a bookshop.",locationSource:"narrative"}:{})
    })}]}]});
   }
   assert.ok(url.endsWith("/images/generations"));
   assert.equal(init.body instanceof FormData,false);
   const {prompt}=JSON.parse(String(init.body));
-  assert.match(prompt,/hand-drawn 2D anime game key visual/);
-  assert.match(prompt,/Source design and cast facts/);
-  if(mode==="illustration"){
-   assert.match(prompt,/엘리는 분홍색 머리의 사제다/);
-   assert.match(prompt,/NO character identity image is supplied/);
-   assert.doesNotMatch(prompt,/검은 머리/);
-  }else{
-   assert.doesNotMatch(prompt,/Rendering profile:/);
-   assert.match(prompt,/검은 머리/);
-   assert.match(prompt,/파란 코트/);
+  assert.doesNotMatch(prompt, /identity reference|anime game key visual|B-cup/);
+  if (mode === "illustration") {
+   assert.match(prompt, /A pink-haired priest in a bookshop/);
+  } else {
+   assert.equal(prompt.split("\n")[0], "A black-haired person in a blue coat.");
   }
   rendered++;return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
  });
@@ -393,98 +377,54 @@ test("all genders share text rendering and a counterpart gets concept facts with
 test("visual requests validate bounded context and use distinct identity-preserving instructions", () => {
   for (const value of [{ kind: "other", context: "scene" }, { kind: "outfit", context: " " }, { kind: "illustration", context: "x".repeat(12001) }, { kind: "outfit", context: "scene", system: "override" }])
     assert.equal(visualRequestSchema.safeParse(value).success, false);
-  assert.match(visualInstructions({ kind: "outfit", context: "파란 코트" }), /Preserve their identity/);
-  assert.match(visualInstructions({ kind: "illustration", context: "서점" }), /latest completed story scene/);
+  assert.match(visualInstructions({ kind: "outfit", context: "파란 코트" }), /latest established outfit/);
+  assert.match(visualInstructions({ kind: "illustration", context: "서점" }), /latest completed chapter/);
 });
 
-test("outfit changes prioritize the current store over an older workshop at both image stages", () => {
-  const scene = { kind: "outfit" as const, context: "작업실을 나와 백화점 의류 매장에 도착했다. 피팅룸에서 파란 원피스로 갈아입었다. 다음에는 카페로 가기로 했다." };
-  const instructions = visualInstructions(scene);
-  assert.match(instructions, /latest ESTABLISHED current location/);
-  assert.match(instructions, /not a future destination, recollection/);
-  assert.match(instructions, /retain the reference setting rather than inventing a move/);
-  for (const styleProfile of ["female", "male", "neutral"] as const) {
-    const prompt = buildCharacterPrompt({ ...composition, title: "백화점의 새 의상", summary: "의류 매장에서 갈아입었다", prompt: "A woman in a blue dress in a department-store fitting area, mirrors and clothing racks.", styleProfile, sceneLocation: "Inside a department-store fitting room with mirrors and racks.", locationSource: "conversation", outfit: "A blue one-piece dress without a work apron.", outfitSource: "conversation" }, scene);
-    assert.match(prompt, /department-store fitting area/);
-    assert.match(prompt, /reference background is NOT locked/);
-    assert.doesNotMatch(prompt, /preserve its identity and unchanged details/i);
-  }
+test("scene-specific briefs supply the renderer with the current outfit and location", () => {
+  const base = { title: "새 의상", summary: "옷가게", prompt: "A person in a blue dress.", styleProfile: "female" as const };
+  assert.equal(outfitBrief.safeParse(base).success, false);
+  assert.equal(illustrationBrief.safeParse(base).success, false);
+  const brief = outfitBrief.parse({
+    ...base, ...composition, sceneLocation: "A clothing-store fitting room", locationSource: "conversation",
+    outfit: "A blue one-piece dress", outfitSource: "conversation",
+  });
+  const prompt = buildCharacterPrompt(brief, undefined, true);
+  assert.match(prompt, /Outfit: A blue one-piece dress/);
+  assert.match(prompt, /Location: A clothing-store fitting room/);
+  assert.match(prompt, /attached image as an identity reference/);
 });
 
-test("outfit briefs require both wardrobe and location and override a stale cafe subject", () => {
-  const scene = { kind: "outfit" as const, context: "카페를 나와 옷가게 피팅룸에서 파란 원피스를 입었다." };
-  const stale = { title: "카페 근무복", summary: "예전 설명", prompt: "Cafe worker wearing an apron and holding a coffee drink behind a cafe counter.", styleProfile: "female" as const };
-  assert.equal(outfitBrief.safeParse(stale).success, false);
-  assert.throws(() => buildCharacterPrompt(stale, scene));
-  const brief = outfitBrief.parse({ ...stale, ...composition, sceneLocation: "Inside a clothing-store fitting room with mirrors and clothing racks.", locationSource: "conversation", outfit: "A blue one-piece dress, no work apron.", outfitSource: "conversation" });
-  const prompt = buildCharacterPrompt(brief, scene);
-  assert.match(prompt, /REQUIRED CURRENT OUTFIT: "A blue one-piece dress/);
-  assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a clothing-store/);
-  assert.match(prompt, /override the reference image's outfit, background/);
-  assert.match(prompt, /do not layer the new dress over the old uniform/);
-});
-
-test("illustration location is required separately and carried to the final image prompt", () => {
-  const scene = { kind: "illustration" as const, context: "서하는 카페 창가에 앉아 커피를 마셨다. 작업실에서의 사건을 회상했다. 내일은 서점에 갈 계획이다." };
-  const brief = { title: "카페의 대화", summary: "카페 창가에서 나눈 대화", prompt: "A woman recalling an incident in her workshop.", styleProfile: "female" as const };
-  assert.equal(illustrationBrief.safeParse(brief).success, false);
-  assert.throws(() => buildCharacterPrompt(brief, scene));
-  const prompt = buildCharacterPrompt({ ...brief, ...composition, sceneLocation: "Inside a cafe, seated at a window table with coffee cups and a pastry display.", locationSource: "narrative" }, scene);
-  assert.match(prompt, /REQUIRED CURRENT SCENE LOCATION: "Inside a cafe/);
-  assert.match(prompt, /takes precedence over any conflicting background/);
-  assert.match(prompt, /not an earlier scene in the chapter/);
-  assert.match(prompt, /flashbacks, another person's location and future destinations/);
-  assert.match(prompt, /reference background is NOT locked/);
-});
-test("style-only prompts preserve requested subject without gender defaults", () => {
-  const base = {
-    title: "test",
-    summary: "test",
-    prompt: "A quiet boy in a blue raincoat beside a cat, serious expression.",
-    styleProfile: "male" as const,
-  };
-  const prompt = buildCharacterPrompt(characterBrief.parse(base));
-  assert.ok(prompt.includes(`Subject: ${base.prompt}`));
-  assert.match(prompt, /2D anime game key visual/);
-  assert.match(prompt, /jewel-like irises with sharp reflections/);
-  assert.match(prompt, /broad faceted highlights/);
-  assert.match(prompt, /cel-shadow shapes, then soften selected transitions/);
-  assert.match(prompt, /warm or cool edge lighting from the setting/);
-  const female = buildCharacterPrompt({ ...base, styleProfile: "female" });
-  assert.equal(female,prompt);
-  const neutral = buildCharacterPrompt({ ...base, styleProfile: "neutral" });
-  assert.ok(!neutral.includes("STYLE ONLY"));
-  assert.ok(!/fuller-busted|glamorous|sexy|Clearly adult|golden highlights|emerald accents/.test(prompt));
-  assert.ok(!/[\r\n]/.test(prompt));
-  assert.throws(() =>
-    characterBrief.parse({ ...base, prompt: "x".repeat(801) }),
-  );
-});
-
-test("only new adult woman designs get the body default, and explicit proportions take priority", () => {
-  const profile = { name: "서하", age: 30, gender: "여성", personality: "차분함", concept: "도시의 비밀", genre: "막장드라마", appearance: "작은 가슴" } as const;
-  const brief = { title: "서하", summary: "새 캐릭터", prompt: "An adult woman in a blue coat.", styleProfile: "female" } as const;
-  for (const hasIdentity of [true, false]) {
-    const prompt = buildCharacterPrompt(brief, undefined, undefined, { profile, hasIdentity });
-    assert.match(prompt, /작은 가슴.*Apply explicit traits to their named owner only/);
-    assert.equal(prompt.includes("B-cup"), !hasIdentity);
-    if (!hasIdentity) assert.match(prompt, /when the user's design leaves it unspecified\. Explicit body proportions take priority/);
-  }
-  assert.doesNotMatch(buildCharacterPrompt(brief, undefined, undefined, {profile:{...profile,age:17}}), /B-cup/);
+test("the shared default style preserves the requested character design without imposing proportions", () => {
+  const brief = characterBrief.parse({
+    title: "캐릭터", summary: "눈 내리는 거리", prompt: "A woman in a blue raincoat, watercolor illustration.", styleProfile: "female",
+  });
+  const prompt = buildCharacterPrompt(brief);
+  assert.equal(prompt.split("\n")[0], brief.prompt);
+  assert.match(prompt, /defined cel shadows softened at selected edges/);
+  assert.match(prompt, /If the brief explicitly requests another art style, follow that request/);
+  assert.doesNotMatch(prompt, /B-cup/);
+  assert.equal(buildCharacterPrompt({ ...brief, styleProfile: "male" }), prompt);
+  assert.throws(() => characterBrief.parse({ ...brief, prompt: "x".repeat(801) }));
 });
 
 test("image retries reuse the approved brief, replace it after an input change and remember policy rejections", async t => {
- const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED"];
+ const keys=["OPENAI_API_KEY","ACCOUNT_FEATURES_ENABLED","NODE_ENV","DEBUG_IMAGE_RENDER_PROMPT"];
  const previous=keys.map(key=>process.env[key]);
- Object.assign(process.env,{OPENAI_API_KEY:"fixture",ACCOUNT_FEATURES_ENABLED:"false"});
+ Object.assign(process.env,{OPENAI_API_KEY:"fixture",ACCOUNT_FEATURES_ENABLED:"false",NODE_ENV:"development",DEBUG_IMAGE_RENDER_PROMPT:"1"});
  t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
- let now=Date.parse("2034-01-01T00:00:00Z"); t.mock.method(Date,"now",()=>now);
+ let now=Date.parse("2031-06-01T00:00:00Z"); t.mock.method(Date,"now",()=>now);
  let moderation=0,description=0,render=0;
- t.mock.method(globalThis,"fetch",async(input:unknown)=>{
+ const prompts: string[] = [];
+ t.mock.method(console, "info", (event: string, data: string) => {
+  if (event === "image-render-prompt") prompts.push(JSON.parse(data).prompt);
+ });
+ t.mock.method(globalThis,"fetch",async(input:unknown, init: RequestInit)=>{
   const url=String(input);
   if(url.endsWith("/moderations")){moderation++;return Response.json({results:[{categories:{}}]});}
   if(url.endsWith("/responses")){description++;return Response.json({status:"completed",output:[{content:[{type:"output_text",text:JSON.stringify({title:"캐릭터",summary:"장면",prompt:"A person sitting by a window.",styleProfile:"neutral"})}]}]});}
   render++;
+  assert.equal(prompts[render - 1], JSON.parse(String(init.body)).prompt);
   return render < 3 ? Response.json({error:{code:"overloaded"}},{status:503}) : Response.json({error:{code:"moderation_blocked"}},{status:400});
  });
  const attempt=crypto.randomUUID();
@@ -503,6 +443,7 @@ test("image retries reuse the approved brief, replace it after an input change a
  assert.equal((await send("책상 앞에 앉아 있어요")).status,422);
  assert.equal((await send("책상 앞에 앉아 있어요")).status,422);
  assert.deepEqual([moderation,description,render],[2,2,3]);
+ assert.equal(prompts.length, 3);
 });
 
 test("image retry tokens reject tampering, expiry and a different account or request", t => {
@@ -527,10 +468,10 @@ test("image crops validate required focus and override visible anatomy without c
  assert.equal(imageFramingSchema.safeParse({shot:"invalid"}).success,false);
  assert.equal(imageFramingSchema.safeParse({shot:"face",expression:"x".repeat(121)}).success,false);
  const framing=imageFramingSchema.parse({shot:"face",angle:"threeQuarter",expression:"shy smile",pose:"show all legs"});
- const prompt=buildCharacterPrompt({title:"test",summary:"test",styleProfile:"male",prompt:"A man in a blue shirt."},undefined,framing);
- assert.match(prompt,/tight face close-up/);assert.match(prompt,/three-quarter view/);assert.match(prompt,/9:16/);
+ const prompt=buildCharacterPrompt({title:"test",summary:"test",styleProfile:"male",prompt:"A man in a blue shirt."},framing);
+ assert.match(prompt,/tight face close-up/);assert.match(prompt,/three-quarter view/);
  assert.match(prompt,/shy smile/);assert.doesNotMatch(prompt,/show all legs/);
- assert.match(prompt,/do not zoom out/);assert.match(prompt,/Preserve identity, age/);
+
  assert.match(framingDirection(imageFramingSchema.parse({shot:"detail",focus:"hand holding a flower"})),/hand holding a flower/);
 });
 
@@ -548,13 +489,13 @@ test("only illustrations apply camera settings; legacy creation and chat setting
   if(String(url).endsWith("/responses")){
    const body=JSON.parse(String(init?.body)),input=JSON.parse(body.input[0].content[0].text);
    if(kind==="illustration"){assert.match(body.instructions,/tight face close-up/);assert.deepEqual(input.framing,framing);}
-   else{assert.doesNotMatch(body.instructions,/USER IMAGE FRAMING/);assert.equal(input.framing,undefined);assert.equal(input.scene?.selection?.framing,undefined);}
+   else{assert.doesNotMatch(body.instructions,/Requested framing/);assert.equal(input.framing,undefined);assert.equal(input.scene?.selection?.framing,undefined);}
    const brief={title:"새 구도",summary:"얼굴 중심",styleProfile:"male",prompt:"A man in a blue shirt.",...(kind?{characterPresent:true,pose:"standing, arms at sides",framing:"full body",sceneLocation:"cafe",locationSource:kind==="outfit"?"conversation":"narrative"}:{}),...(kind==="outfit"?{outfit:"blue shirt",outfitSource:"conversation"}:{})};
    return Response.json({status:"completed",output:[{content:[{type:"output_text",text:JSON.stringify(brief)}]}]});
   }
   const body=init?.body instanceof FormData?Object.fromEntries(init.body.entries()):JSON.parse(String(init?.body));
-  if(kind==="illustration"){assert.match(String(body.prompt),/tight face close-up/);assert.match(String(body.prompt),/three-quarter view/);assert.match(String(body.prompt),/only visible outfit details|only visible clothing details/);}
-  else assert.doesNotMatch(String(body.prompt),/USER IMAGE FRAMING/);
+  if(kind==="illustration"){assert.match(String(body.prompt),/tight face close-up/);assert.match(String(body.prompt),/three-quarter view/);assert.match(String(body.prompt),/shy smile/);}
+  else assert.doesNotMatch(String(body.prompt),/Requested framing/);
   assert.equal(body.size,"720x1280");assert.equal(body.quality,"medium");
   return Response.json({data:[{b64_json:jpeg.toString("base64")}]});
  });
