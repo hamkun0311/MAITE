@@ -1,7 +1,7 @@
 import {createNovelReviewLogger} from "../../../lib/novel/review-log.ts";
 import { changedCharacterLocation } from "../../../lib/chat/presentation.ts";
 import { timelineSchema, advanceTimeline, timelineChatMemory,timelineForChat } from "../../../lib/chat/timeline.ts";
-import { chatReasoningOptions, geminiNovelWriteModel, geminiNovelProofreadModel, textModel } from "../../../lib/ai-model.ts";
+import { chatReasoningOptions, textModel } from "../../../lib/ai-model.ts";
 import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import { z } from "zod";
@@ -10,7 +10,6 @@ import { characterContextSchema, characterInstructions } from "../../../lib/chat
 import { storyStateSchema } from "../../../lib/novel/state.ts";
 import { isProviderQuotaError, novelRetryDelay, NovelUpstreamError } from "../../../lib/novel/upstream-error.ts";
 import { openAIResponsesEndpoint, openAITextKey } from "../../../lib/openai-endpoint.ts";
-import { geminiApiKey } from "../../../lib/novel/gemini.ts";
 import { blocksTextGeneration, GENERATION_POLICY_MESSAGE } from "../../../lib/generation-policy.ts";
 import { generateChapter, NovelOutputLimitError } from "../../../lib/novel/generate.ts";
 import { explicitSpeechRequest, replySpeechPolicy, speechInstructions, speechStyleSchema } from "../../../lib/chat/speech.ts";
@@ -22,9 +21,8 @@ import {chatCharacterInstructions} from "../../../lib/chat/prompt.ts";
 import {personalityPatchSchema,personalityState} from "../../../lib/chat/personality.ts";
 import { userDisplayName } from "../../../lib/chat/identity.ts";
 import {completeCharacterReply,completedDialogueText} from "../../../lib/chat/completion.ts";
-import { createHash } from "node:crypto";
 import { MIN_STORY_CHARS, StoryDraftPaused, type StoryDraftStore } from "../../../lib/novel/checkpoint.ts";
-import { claimLocalStoryDraft } from "../../../lib/server/story-drafts.ts";
+import { claimLocalStoryDraft, restartStoryDraft, storyDraftFingerprint } from "../../../lib/server/story-drafts.ts";
 import { AccountError } from "../../../lib/server/account.ts";
 
 export const runtime = "nodejs";
@@ -33,6 +31,7 @@ const schema = z.object({
   character: characterContextSchema.optional(),
   storyState: storyStateSchema.optional(),
   storyDocumentId: z.uuid().optional(),
+  storyRestartId: z.uuid().optional(),
   rewindToken: z.uuid().optional(),
   timeline: timelineSchema.optional(),
   additionalConcept: z.string().trim().min(1).max(1000).optional(),
@@ -44,6 +43,7 @@ const schema = z.object({
     content: z.string().trim().min(1).max(8000),
   }).strict()).min(1).max(21),
 }).strict().refine(({ timeline, character }) => !timeline || !!character).refine(({ storyState, storyDocumentId, rewindToken, character }) => !(storyState || storyDocumentId || rewindToken) || character?.mode === "story")
+  .refine(({ storyRestartId, storyDocumentId }) => !storyRestartId || !!storyDocumentId)
   .refine(({ additionalConcept, character }) => !additionalConcept || character?.mode === "story")
   .refine(({ chatMemory, character }) => !chatMemory || character?.mode === "chat")
   .refine(({ speechPreference, character }) => !speechPreference || character?.mode === "chat")
@@ -93,10 +93,9 @@ async function handle(request: Request, draftStore?: StoryDraftStore) {
       }
     } finally { reader.releaseLock(); }
     const body = Buffer.concat(chunks);
-    const { messages, character, storyState, storyDocumentId, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(JSON.parse(body.toString("utf8")));
+    const input = JSON.parse(body.toString("utf8"));
+    const { messages, character, storyState, storyDocumentId, storyRestartId, speechStyle, speechPreference, additionalConcept, chatMemory, timeline: rawTimeline } = schema.parse(input);
     if (blocksTextGeneration({messages, character, storyState, additionalConcept})) return fail(GENERATION_POLICY_MESSAGE, 422);
-    if (character?.mode === "story" && (geminiNovelWriteModel() || geminiNovelProofreadModel()) && !geminiApiKey())
-      return fail("선택한 제공자의 Gemini API 키를 서버에 설정해주세요.", 503);
     if (character?.mode !== "story") signal = AbortSignal.any([signal, AbortSignal.timeout(150000)]);
     const userName = character ? userDisplayName(character, additionalConcept || storyState?.seriesConcept) : "당신";
     const timeline = rawTimeline ? { ...rawTimeline, participants: rawTimeline.participants.map(p => p.id === "user" ? { ...p, name: userName } : p.id==="character"&&character?{...p,name:character.name}:p) } : undefined;
@@ -108,21 +107,25 @@ async function handle(request: Request, draftStore?: StoryDraftStore) {
     if (character?.mode === "story") {
       let localDraft: ReturnType<typeof claimLocalStoryDraft> | undefined;
       if (storyDocumentId && !draftStore) {
-        try { localDraft = claimLocalStoryDraft(createHash("sha256").update(body).digest("hex")); }
+        try { localDraft = claimLocalStoryDraft(storyDraftFingerprint(body, input)); }
         catch (error) { if (error instanceof AccountError) return fail(error.message, error.status); throw error; }
       }
       const encoder = new TextEncoder();
       let stage = "planning";
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
+          const canFinalize = () => !request.signal.aborted && !abort.signal.aborted;
           const send = (event: object) => {
             if (!signal.aborted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+          };
+          const sendCompleted = (event: object) => {
+            if (canFinalize()) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
           };
           publishUsage = record => send({ type: "usage", record });
           let draftPreview: string | undefined;
           try {
             const chapter = await generateChapter({ character, state: storyState, additionalConcept,
-              draftStore: draftStore ?? localDraft?.store,
+              draftStore: restartStoryDraft(draftStore ?? localDraft?.store, storyRestartId),
               traceId:request.headers.get("X-Request-Id")??undefined,
               previous: messages.filter(message => message.role === "assistant").at(-1)?.content,
               direction: messages.at(-1)!.content, key, signal,
@@ -130,12 +133,12 @@ async function handle(request: Request, draftStore?: StoryDraftStore) {
               onDraftProgress: progress => send({ type: "draft_progress", ...progress }),
               onDraftUpdate: text => send({ type: "draft_live", text }),
               onDraftPreview: text => { draftPreview = text; },
-              onUsage, timeline,
+              onUsage, timeline, canFinalize,
             });
-            if (timeline) send({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises, userName,chapter.sharedChanges) });
+            if (timeline && !chapter.fromDraft) sendCompleted({ type: "timeline", expectedRevision: timeline.revision, state: advanceTimeline(timeline, character.name, undefined, chapter.state, storyState, chapter.closedPromises, userName,chapter.sharedChanges) });
             const readerNickname = userName === character.userName && userName !== character.name ? userName : null;
-            send({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter, readerNickname });
-            send({ type: "done" });
+            sendCompleted({ type: "chapter", text: chapter.text, state: chapter.state, expectedChapter: chapter.expectedChapter, readerNickname });
+            sendCompleted({ type: "done" });
           } catch (error) {
             const knownReasons = ["Chapter review failed", "Incomplete novel stage", "Empty novel stage", "Novel upstream failed", "Novel chapter too short", "Unsupported memory", "Invalid manuscript source"];
             console.warn("novel-failed", { stage, ...(error instanceof NovelUpstreamError ? error.diagnostics : {}), reason: signal.aborted ? "cancelled_or_timeout" : error instanceof StoryDraftPaused ? `story_draft_${error.reason}` : error instanceof NovelOutputLimitError ? "output_token_limit" : error instanceof z.ZodError ? "invalid_stage_output" : error instanceof Error && knownReasons.includes(error.message) ? error.message : "generation_failed" });

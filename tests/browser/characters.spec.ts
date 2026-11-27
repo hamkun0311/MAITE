@@ -1,6 +1,28 @@
 import { test, expect } from "@playwright/test";
 import { fillCharacterProfile } from "./character-helpers";
 
+test("mobile character generation scrolls and focuses the image while waiting", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/ideal");
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  await page.route("**/api/characters", async route => {
+    await pending;
+    await route.fulfill({ status: 503, json: { error: "테스트용 생성 중단" } });
+  });
+  try {
+    await fillCharacterProfile(page);
+    await page.getByLabel("컨셉", { exact: true }).fill("도서관에서 일하는 친구");
+    await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
+    const result = page.getByRole("region", { name: "캐릭터 이미지", exact: true });
+    await expect(result).toBeFocused();
+    await expect(result.getByRole("heading", { name: "캐릭터 이미지", exact: true })).toBeInViewport();
+    await expect(result.getByRole("heading", { name: "그림을 그리고 있어요", exact: true })).toBeVisible();
+  } finally {
+    finish();
+  }
+});
+
 test("top menus, character generation, full-screen preview and regeneration from fresh inputs", async ({
   page,
 }) => {

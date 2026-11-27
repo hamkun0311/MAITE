@@ -1,5 +1,5 @@
 // Prices are shared for display; PostgreSQL independently enforces these amounts.
-export const HEART_COST = { character: 50, chat: 2, story: 10, illustration: 50, outfit: 30 } as const;
+export const HEART_COST = { character: 50, chat: 2, story: 20, illustration: 50, outfit: 30 } as const;
 export type GenerationKind = keyof typeof HEART_COST;
 export const PRODUCTS = [
   { id: "hearts_100", hearts: 150, won: 2000, label: "하트 150개" },

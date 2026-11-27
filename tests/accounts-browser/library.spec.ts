@@ -612,6 +612,18 @@ async function accountRoutes(page: Page, complete = true, deleted: string[] = []
   await page.route("**/api/notifications**",route=>route.fulfill({json:{pushEnabled:false,quietHours:true,available:true,activities:[],messages:[]}}));
 }
 
+test("the store and account screen display red and blue balances separately", async ({ page }) => {
+ await signIn(page);await accountRoutes(page);
+ for (const path of ["/ideal/store", "/ideal/mypage"]) {
+  await page.goto(path);
+  const balances = page.locator(".native-wallet .wallet-balances");
+  await expect(balances.locator(".wallet-balance-red")).toContainText("빨간 하트");
+  await expect(balances.locator(".wallet-balance-red strong")).toHaveText("1,000");
+  await expect(balances.locator(".wallet-balance-blue")).toContainText("파란 하트");
+  await expect(balances.locator(".wallet-balance-blue strong")).toHaveText("5");
+ }
+});
+
 test("character thumbnails reuse display URLs after six minutes and restore from disk before metadata", async ({page}) => {
  await signIn(page);await accountRoutes(page);
  let downloads=0,previewReads=0,hold=false,offline=false;
@@ -926,12 +938,14 @@ test("scene keywords appear in image confirmation dialogs rather than generation
  let images=0;await page.route("**/api/characters",route=>{images++;return route.abort();});
  await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("tabpanel",{name:"대화 목록"}).getByRole("button").click();
  const button=page.getByRole("button",{name:"이미지 생성",exact:true});await expect(button.locator("small")).toHaveCount(0);await button.click();
- const popup=page.getByRole("dialog");await expect(popup.locator(".scene-details-list dt")).toHaveText(["장소","의상","등장인물"]);await expect(popup.getByLabel("장면 장소")).toHaveValue("떡볶이집");await expect(popup.getByLabel("장면 의상")).toHaveValue("흰 셔츠");await expect(popup.locator(".scene-details-list dd").last()).toHaveText("희진 (이미지 대상)");await expect(popup.getByText("부적절한 내용은 AI가 정상적으로 생성하지 않습니다.",{exact:true})).toBeVisible();
+ const popup=page.getByRole("dialog");await expect(popup.locator(".scene-details-list dt")).toHaveText(["장소","의상","등장인물"]);await expect(popup.getByLabel("장면 장소")).toHaveValue("");await expect(popup.getByLabel("장면 의상")).toHaveValue("");await expect(popup.locator(".scene-details-list dd").last()).toHaveText("희진 (이미지 대상)");await expect(popup.getByText("부적절한 내용은 AI가 정상적으로 생성하지 않습니다.",{exact:true})).toBeVisible();
  await popup.getByRole("button",{name:"취소",exact:true}).click();expect(images).toBe(0);
- await page.getByRole("button",{name:"캐릭터 이미지로 돌아가기",exact:true}).click();await expect(page).toHaveURL(/\/ideal\/new$/);
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"이야기 만들기",exact:true}).click();
+ await page.goto(`/ideal/characters/${characterId}`);
+ await page.getByRole("tab",{name:"소설",exact:true}).click();await page.getByRole("tabpanel",{name:"소설 목록"}).getByRole("button").click();
  const illustration=page.getByRole("button",{name:"삽화 생성",exact:true});await expect(illustration.locator("small")).toHaveCount(0);await illustration.click();
- await expect(popup.getByLabel("장면 장소")).toHaveValue("카페");await expect(popup.getByLabel("장면 의상")).toHaveValue("검은 코트");await expect(popup.locator(".scene-details-list dd").last()).toHaveText("민수 (이미지 대상)");await expect(popup.getByText("부적절한 내용은 AI가 정상적으로 생성하지 않습니다.",{exact:true})).toBeVisible();
+ await expect(popup.getByLabel("장면 장소")).toHaveValue("");await expect(popup.getByLabel("장면 의상")).toHaveValue("");
+ await expect(popup.getByLabel("삽화 대상 인물")).toHaveValue("");await expect(popup.locator("datalist")).toHaveCount(0);
+ await expect(popup.locator(".scene-details-list dd").last()).toHaveText("민수");await expect(popup.getByText("부적절한 내용은 AI가 정상적으로 생성하지 않습니다.",{exact:true})).toBeVisible();
  await popup.getByRole("button",{name:"취소",exact:true}).click();expect(images).toBe(0);
 });
 
@@ -961,21 +975,23 @@ test("a novel illustration can focus a manually entered counterpart while the or
   images++;const form=await new Request(route.request().url(),{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();scene=JSON.parse(String(form.get("scene")));
   return route.fulfill({status:503,json:{error:"검증용 생성 중단"}});
  });
- await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"이야기 만들기",exact:true}).click();
+ await page.goto(`/ideal/characters/${characterId}`);
+ await page.getByRole("tab",{name:"소설",exact:true}).click();await page.getByRole("tabpanel",{name:"소설 목록"}).getByRole("button").click();
  await page.getByRole("button",{name:"삽화 생성",exact:true}).click();const popup=page.getByRole("dialog");
- await expect(popup.getByLabel("삽화 대상 인물")).toHaveValue("희진");
+ await expect(popup.getByLabel("삽화 대상 인물")).toHaveValue("");
+ for (const name of ["촬영 범위","카메라 각도","시선","표정 (선택)","자세·동작 (선택)"]) await expect(popup.getByLabel(name,{exact:true})).toHaveValue("");
+ await popup.getByLabel("장면 장소").fill("이전 장소");await popup.getByLabel("촬영 범위").selectOption("waist");
  await popup.getByRole("button",{name:"취소",exact:true}).click();expect(images).toBe(0);
  await page.getByRole("button",{name:"삽화 생성",exact:true}).click();
+ await expect(popup.getByLabel("장면 장소")).toHaveValue("");await expect(popup.getByLabel("촬영 범위")).toHaveValue("");
  await popup.getByLabel("삽화 대상 인물").fill("민수");await expect(popup.getByLabel("장면 의상")).toHaveValue("");
- await expect(popup.getByRole("button",{name:"그림 만들기",exact:true})).toBeDisabled();
  await popup.getByLabel("장면 장소").fill("왕궁 연회장");await popup.getByLabel("장면 의상").fill("검은 갑옷");
  await popup.getByRole("button",{name:"그림 만들기",exact:true}).click();await expect(page.locator(".character-visual-error")).toContainText("검증용 생성 중단");
  expect(images).toBe(1);expect(scene.selection).toMatchObject({target:"민수",targetConfirmed:true,confirmed:true,location:"왕궁 연회장",outfit:"검은 갑옷"});
  expect(scene.selection.characters).toContain("민수");expect(scene.context).toContain("희진");
 });
 
-test("missing illustration details require concrete confirmation and use the edited scene",async({page})=>{
+test("blank illustration fields allow automatic scene selection",async({page})=>{
  await signIn(page);await accountRoutes(page);
  const saved=structuredClone(snapshot);saved.story.started=true;saved.story.storyPage=0;saved.story.committed=saved.story.archive!;saved.story.archive![1].content="희진은 조용히 눈을 떴다.";
  await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({json:{id:characterId,title:"희진",payload:saved,media:{original:"https://example.test/image.jpg",gallery:{}}}}));
@@ -984,13 +1000,14 @@ test("missing illustration details require concrete confirmation and use the edi
   calls++;const form=await new Request(route.request().url(),{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();selection=JSON.parse(String(form.get("scene"))).selection;
   return route.fulfill({status:503,json:{error:"검증용 생성 중단"}});
  });
- await page.goto(`/ideal/characters/${characterId}`);await page.getByRole("button",{name:"이 캐릭터로 대화·이야기 시작"}).click();
- await page.getByRole("group",{name:"캐릭터와 함께하기"}).getByRole("button",{name:"이야기 만들기",exact:true}).click();await page.getByRole("button",{name:"삽화 생성",exact:true}).click();
+ await page.goto(`/ideal/characters/${characterId}`);
+ await page.getByRole("tab",{name:"소설",exact:true}).click();await page.getByRole("tabpanel",{name:"소설 목록"}).getByRole("button").click();
+ await page.getByRole("button",{name:"삽화 생성",exact:true}).click();
  const popup=page.getByRole("dialog"),generate=popup.getByRole("button",{name:"그림 만들기",exact:true});
- await expect(generate).toBeDisabled();await expect(popup.getByText("현재 장면에서 확인",{exact:true})).toHaveCount(0);await expect(popup.getByText("대상 인물의 장면 속 의상",{exact:true})).toHaveCount(0);expect(calls).toBe(0);
- await popup.getByLabel("장면 장소").fill("왕궁 연회장");await expect(generate).toBeDisabled();await popup.getByLabel("장면 의상").fill("붉은 비단 예복");await expect(generate).toBeEnabled();
+ await expect(generate).toBeEnabled();expect(calls).toBe(0);
  await expect(popup.getByText("부적절한 내용은 AI가 정상적으로 생성하지 않습니다.",{exact:true})).toBeVisible();await generate.click();
- await expect(page.locator(".character-visual-error")).toContainText("검증용 생성 중단");expect(selection).toMatchObject({location:"왕궁 연회장",outfit:"붉은 비단 예복",target:"희진",confirmed:true});expect(calls).toBe(1);
+ await expect(page.locator(".character-visual-error")).toContainText("검증용 생성 중단");expect(selection).toMatchObject({confirmed:true,targetConfirmed:false});expect(calls).toBe(1);
+ for (const key of ["location","outfit","target"]) expect(selection).not.toHaveProperty(key);
 });
 
 test("new illustrations retain the requested chapter when the reader moves before completion", async ({ page }) => {
@@ -1302,12 +1319,44 @@ test("character generation confirmation does not call the API until accepted", a
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   const confirmation = page.getByRole("dialog", { name: "새로운 캐릭터를 만날까요?" });
   await expect(confirmation).toContainText("50"); await expect(confirmation).toContainText("955");
+  await expect(page.locator(".character-output-heading")).toBeInViewport();
   await page.screenshot({ path: ".verification/native-confirm-character.png", caret: "initial" });
   await confirmation.getByRole("button", { name: "취소", exact: true }).click(); expect(requests).toBe(0);
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   await confirmation.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   await expect.poll(() => requests).toBe(1);
   await expect(page.getByRole("button", { name: "캐릭터 이미지 전체화면 보기", exact: true })).toBeVisible();
+});
+
+test.describe("desktop character result scrolling", () => {
+  test.use({ viewport: { width: 1280, height: 720 }, isMobile: false, hasTouch: false });
+  test("shows the image area on the first click and focuses it after confirmation", async ({ page }) => {
+    await signIn(page); await accountRoutes(page);
+    let requests = 0;
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    await page.route("**/api/characters", async route => {
+      requests++;
+      await pending;
+      await route.fulfill({ status: 503, json: { error: "테스트용 생성 중단" } });
+    });
+    try {
+      await page.goto("/ideal/new"); await fillCharacterProfile(page);
+      const heading = page.locator(".character-output-heading");
+      await expect(heading).toBeHidden();
+      await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
+      const confirmation = page.getByRole("dialog", { name: "새로운 캐릭터를 만날까요?" });
+      await expect(confirmation).toBeVisible();
+      await expect(heading).toBeInViewport();
+      expect(requests).toBe(0);
+      await confirmation.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
+      const result = page.getByRole("region", { name: "캐릭터 이미지", exact: true });
+      await expect(result).toBeFocused();
+      await expect(result.getByRole("heading", { name: "그림을 그리고 있어요", exact: true })).toBeInViewport();
+      const headerBox = await page.locator(".chat-header").boundingBox();
+      expect((await heading.boundingBox())!.y).toBeGreaterThanOrEqual(headerBox!.y + headerBox!.height);
+    } finally { finish(); }
+  });
 });
 
 test("profile photo previews, saves, survives reload and can be removed", async ({ page }) => {

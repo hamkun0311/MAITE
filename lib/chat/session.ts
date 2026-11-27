@@ -16,6 +16,7 @@ export type ChatSession = {
   storyState?: StoryState;
   storyPage?: number;
   storyPreview?: string;
+  storyNeedsRestart?: boolean;
   documentId?: string;
   lastJobId?: string;
   speechStyle?: SpeechStyle;

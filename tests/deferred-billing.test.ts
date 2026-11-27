@@ -25,7 +25,16 @@ test("mixed hearts pay for stories and store purchases while only transferable h
   for (const file of ["202611260001_remove_store_buyer_fees.sql", "202611260003_heart_settlements.sql", "202611260004_settlement_cancellation_and_notices.sql"]) {
    await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
   }
-  await db.query("update wallets set transferable=5,bonus=5 where user_id=$1", [A]);
+  const existing = randomUUID();
+  await db.query("select reserve_story_generation($1,$2,'existing')", [A,existing]);
+  await db.exec(await readFile(new URL("../supabase/migrations/202611270002_story_generation_twenty_hearts.sql", import.meta.url), "utf8"));
+  await db.query("select reserve_story_generation($1,$2,'existing')", [A,existing]);
+  assert.deepEqual((await db.query("select held_bonus,held_transferable from generation_jobs where id=$1", [existing])).rows[0],
+   { held_bonus:0, held_transferable:10 });
+  await db.query("select finish_generation($1,$2,null,null,false)", [A,existing]);
+  await db.query("update wallets set transferable=14,bonus=5 where user_id=$1", [A]);
+  await assert.rejects(db.query("select reserve_story_generation($1,$2,'below-cost')", [A,randomUUID()]), /insufficient_hearts/);
+  await db.query("update wallets set transferable=15,bonus=5 where user_id=$1", [A]);
   const job = randomUUID();
   await db.query("select reserve_story_generation($1,$2,'mixed')", [A,job]);
   const holds = (await db.query("select held_bonus,held_transferable from generation_jobs where id=$1", [job])).rows[0];
@@ -33,7 +42,7 @@ test("mixed hearts pay for stories and store purchases while only transferable h
   await db.query("select finish_generation($1,$2,$3::jsonb,null,true)", [A,job,JSON.stringify({events:[{type:"chapter",text:"완성된 소설",state:{chapter:1}},{type:"done"}]})]);
   assert.deepEqual(await wallet(db), {transferable:0,bonus:0,free_chats:5});
 
-  await db.query("update wallets set transferable=5,bonus=15 where user_id=$1", [A]);
+  await db.query("update wallets set transferable=5,bonus=20 where user_id=$1", [A]);
   const blueJob = randomUUID();
   await db.query("select reserve_story_generation($1,$2,'blue-first')", [A,blueJob]);
   assert.deepEqual((await db.query("select held_bonus,held_transferable from generation_jobs where id=$1", [blueJob])).rows[0],

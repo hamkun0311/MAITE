@@ -31,7 +31,7 @@ import { createFinalReviewSchema, createMemoryPatchSchema, createReviewSchema, e
 import { fiveEventDraftSchema as draftSchema, parseStyleEditResponse } from "./style-edit.ts";
 import { isProviderRateLimitError, novelRetryDelay, NovelUpstreamError } from "./upstream-error.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v117-distinct-names";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v118-completed-draft-fallback";
 const geminiWriteFormat = 'Return exactly one valid JSON object with the key "events" and exactly five non-empty string values in its array. Start with { and end with }. Put one planned event in each string, in plan order. Put the prose only inside the strings. Escape line breaks and quotes inside each string as required by JSON. Omit Markdown fences, explanations and any text outside the object.';
 const reviewPolicy = "material-v7-review-acceptance";
 const beats = ["발단", "전개", "위기", "절정", "결말"];
@@ -68,6 +68,7 @@ const repairCopyeditSchema = z.object({ edits: z.array(z.object({
 const pipelineSchema = z.object({
   version: z.literal(1), series: seriesPlanSchema.optional(), plan: eventPlanSchema.optional(),
   events: draftSchema.shape.events.optional(), copyedited: z.boolean().optional(),
+  completedDraft: draftSchema.shape.events.optional(),
   writePreview: z.array(z.string().min(1)).max(5).optional(),
   styleOriginal: draftSchema.shape.events.optional(), styleEvents: styleRevertsSchema.optional(),
   repaired: z.boolean().optional(), pendingRepairCopyedit: z.array(repairPassageSchema).max(6).optional(), blocked: z.boolean().optional(),
@@ -81,6 +82,12 @@ type Options = {
   onDraftProgress?: (progress: { chars: number; events: number }) => void;
   onDraftUpdate?: (text: string) => void;
   onDraftPreview?: (text: string) => void;
+  canFinalize?: () => boolean;
+};
+type ChapterResult = {
+  text: string; state: StoryState; expectedChapter: number;
+  sharedChanges: NonNullable<z.infer<ReturnType<typeof createMemoryPatchSchema>>["sharedChanges"]>;
+  closedPromises: string[]; fromDraft?: true;
 };
 
 export class NovelOutputLimitError extends Error {
@@ -129,7 +136,7 @@ function applyEventEdits(parts: string[], edits: z.infer<typeof editsSchema>) {
   return { events: draftSchema.parse({ events: result.map(text => text.trim()) }).events, passages };
 }
 
-export async function generateChapter(options: Options) {
+export async function generateChapter(options: Options): Promise<ChapterResult> {
   const { character, timeline, signal, key } = options;
   const old = options.state ?? { ...emptyStoryState(),
     previousEnding: options.previous?.slice(-700) ?? "", previousProse: options.previous?.slice(-8000) ?? "" };
@@ -138,6 +145,8 @@ export async function generateChapter(options: Options) {
   let stage = "planning", calls = 0, inputChars = 0, providerRetries = 0, preview = "";
   let partialWrite: string[] | undefined, streamedWrite = "";
   let cleanNames = (text: string) => text;
+  let completedProse = "";
+  let finalizeDraft: ((reason: string) => ChapterResult | undefined) | undefined;
   let useDirectWriter = false;
   const phase = (name: string) => { stage = name; options.phase(name); };
   const openAIPlanProvider = process.env.OPENAI_NOVEL_PLAN_PROVIDER?.trim() || undefined;
@@ -195,6 +204,7 @@ export async function generateChapter(options: Options) {
       return result.text;
     }
     const geminiModel = name === "style_edit" ? geminiStylist : isCopyedit ? geminiProofreader : isProse && !useDirectWriter ? geminiWriter : undefined;
+    if (geminiModel && !geminiKey) throw new Error("Missing Gemini API key");
     if (geminiModel && geminiKey) {
       const usageFeature = `novel.${feature}`;
       const useGatewayDefaults = usesVnaiWriteDefaults(usageFeature);
@@ -303,14 +313,6 @@ export async function generateChapter(options: Options) {
     if (checkpoint.events) preview = manuscript(checkpoint.events);
     else if (checkpoint.writePreview) preview = manuscript(checkpoint.writePreview);
     const save = async () => { await options.draftStore?.save({ ...saved, chapterPipeline: checkpoint }); };
-    const wasBlocked = checkpoint.blocked;
-    if (wasBlocked && checkpoint.blockedByPolicy === reviewPolicy)
-      throw new StoryDraftPaused(meetsMinimum(preview) ? "quality" : "length");
-    if (checkpoint.blocked) {
-      checkpoint.blocked = false;
-      await save();
-    }
-    if ((geminiWriter || geminiProofreader) && !geminiKey) throw new Error("Missing Gemini API key");
     const additionalConcept = z.string().trim().max(1000).parse(options.additionalConcept ?? "");
     if (storyComplete(old) && !additionalConcept) throw new Error("Story already complete");
     const seriesStartChapter = nextSeriesStart(old, additionalConcept);
@@ -374,6 +376,35 @@ export async function generateChapter(options: Options) {
     const conceptRules = groundedConceptRules(series.conceptRules, [seriesConcept, ...earlierConcepts, character.concept]);
     const markedSchedule = markedEvents.length ? scheduleMarkedEvents(markedEvents, series.markedSchedule, schedule.chapter, seriesStartChapter) : undefined;
     const dueMarkedEvents = markedEvents.filter((_, index) => markedSchedule?.[index].includes(schedule.chapter));
+    const chapterBase: StoryState = { ...old, seriesArc: series.arc, outlineVersion: 1, seriesStartChapter, seriesConcept, conceptHistory, conceptRules,
+      ...(markedSchedule ? { markedSchedule, markedConceptHash } : old.markedSchedule ? { markedSchedule: undefined, markedConceptHash: undefined } : {}) };
+    finalizeDraft = reason => {
+      if (!completedProse || !(options.canFinalize?.() ?? !signal.aborted)) return;
+      const text = completedProse;
+      const ending = text.slice(-240).trim();
+      const state = mergeMemory(chapterBase, {
+        summary: [old.summary, ending].filter(Boolean).join("\n").slice(-1400),
+        currentSituation: { text: ending, evidence: ending },
+        nextChapterGoal: finale ? "" : series.arc.installments[schedule.chapter]?.goal ?? "",
+        newEvents: [], resolvedEvents: [], openedThreads: [], closedThreads: [], worldFacts: [], characters: [],
+      }, text, series.arc.endingPromise);
+      trace.event("completed_from_draft", { stage, reason, calls, inputChars, events: 5, ...manuscriptFingerprint(text) });
+      return { text, state, expectedChapter: old.chapter, sharedChanges: [], closedPromises: [], fromDraft: true };
+    };
+    for (const savedComplete of [checkpoint.completedDraft, checkpoint.styleOriginal, checkpoint.events]) {
+      if (!savedComplete) continue;
+      const text = cleanNames(manuscript(savedComplete));
+      if (meetsMinimum(text)) { completedProse = text; break; }
+    }
+    if (checkpoint.blocked && checkpoint.blockedByPolicy === reviewPolicy) {
+      const recovered = finalizeDraft("saved_review_rejection");
+      if (recovered) return recovered;
+      throw new StoryDraftPaused(meetsMinimum(preview) ? "quality" : "length");
+    }
+    if (checkpoint.blocked) {
+      checkpoint.blocked = false;
+      await save();
+    }
     const draftPlan = checkpoint.plan;
     const needsAssignments = !plannedMarkedScenes(dueMarkedEvents, draftPlan?.markedScenes);
     const planChapter = (previous?: z.infer<typeof eventPlanSchema>) => structured("chapter_plan",
@@ -428,12 +459,15 @@ export async function generateChapter(options: Options) {
       const parts = result.events.map(text => cleanNames(cleanProse(text)));
       preview = manuscript(parts);
       checkpoint.events = draftSchema.parse({ events: parts }).events;
+      if (meetsMinimum(preview)) checkpoint.completedDraft = checkpoint.events;
       checkpoint.writePreview = undefined;
       await save();
+      if (checkpoint.completedDraft) completedProse = preview;
     }
     options.onDraftUpdate?.(cleanNames(manuscript(checkpoint.events)));
     const report = () => {
       preview = manuscript(checkpoint.events!);
+      if (!completedProse && meetsMinimum(preview)) completedProse = preview;
       options.onDraftProgress?.({ chars: storyChars(preview), events: 5 });
     };
     report();
@@ -495,7 +529,7 @@ export async function generateChapter(options: Options) {
         } catch (error) {
           signal.throwIfAborted();
           if (!(error instanceof SyntaxError || error instanceof z.ZodError || error instanceof NovelUpstreamError || error instanceof NovelOutputLimitError ||
-            error instanceof Error && ["Incomplete novel stage", "Empty novel stage"].includes(error.message))) throw error;
+            error instanceof Error && ["Missing Gemini API key", "Incomplete novel stage", "Empty novel stage"].includes(error.message))) throw error;
         }
       }
       checkpoint.copyedited = true;
@@ -542,7 +576,7 @@ export async function generateChapter(options: Options) {
             signal.throwIfAborted();
             if (!(error instanceof SyntaxError || error instanceof z.ZodError || error instanceof NovelUpstreamError ||
                 error instanceof NovelOutputLimitError || error instanceof Error &&
-                ["Incomplete novel stage", "Empty novel stage"].includes(error.message))) throw error;
+                ["Missing Gemini API key", "Incomplete novel stage", "Empty novel stage"].includes(error.message))) throw error;
             trace.event("repair_proofread_skipped", { reason: "copyedit_unavailable" });
           }
         }
@@ -679,8 +713,7 @@ export async function generateChapter(options: Options) {
         unsupportedPropChanges: unsupportedProps.length, unsupportedRegisterChanges: unsupportedRegisters.length,
         promiseAccepted: promise.accepted, endingValid, chars: storyChars(preview) });
       if (accepted && memory) {
-        const state = mergeMemory({ ...old, seriesArc: series.arc, outlineVersion: 1, seriesStartChapter, seriesConcept, conceptHistory, conceptRules,
-          ...(markedSchedule ? { markedSchedule, markedConceptHash } : old.markedSchedule ? { markedSchedule: undefined, markedConceptHash: undefined } : {}) },
+        const state = mergeMemory(chapterBase,
           { ...memory, propChanges: memory.propChanges?.filter(change => !unsupportedProps.includes(change)),
             dialogueRegisters: memory.dialogueRegisters?.filter(change => !unsupportedRegisters.includes(change)) },
           preview, series.arc.endingPromise);
@@ -745,6 +778,9 @@ export async function generateChapter(options: Options) {
       throw new StoryDraftPaused(meetsMinimum(preview) ? "quality" : "length");
     }
   } catch (error) {
+    const recovered = finalizeDraft?.(signal.aborted ? "deadline" : error instanceof StoryDraftPaused ? error.reason :
+      error instanceof NovelUpstreamError ? "provider_error" : error instanceof NovelOutputLimitError ? "output_token_limit" : "post_write_error");
+    if (recovered) return recovered;
     if (preview.trim() || streamedWrite) options.onDraftPreview?.(preview.trim() ? preview : streamedWrite);
     trace.event("failed", { stage, ...(error instanceof NovelUpstreamError ? error.diagnostics : {}),
       reason: signal.aborted ? "cancelled_or_timeout" : error instanceof StoryDraftPaused ? "story_draft_" + error.reason :

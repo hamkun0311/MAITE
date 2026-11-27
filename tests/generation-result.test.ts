@@ -5,6 +5,8 @@ import sharp from "sharp";
 import { withGeneration } from "../lib/server/generation.ts";
 import {emptyStoryState} from "../lib/novel/state.ts";
 import {manuscriptFingerprint} from "../lib/novel/review-log.ts";
+import { restartStoryDraft } from "../lib/server/story-drafts.ts";
+import { readStoryCheckpoint } from "../lib/novel/checkpoint.ts";
 const A="11111111-1111-4111-8111-111111111111";
 
 test("settled chapters replay only within the same story branch and short output remains uncharged", async t => {
@@ -48,9 +50,9 @@ test("settled chapters replay only within the same story branch and short output
   return new Response([{ type: "draft_live", text: "검수 전 초고" }, { type: "chapter", text, state }, { type: "done" }].map(event => `data: ${JSON.stringify(event)}\n\n`).join(""),
    { headers: { "Content-Type": "text/event-stream" } });
  });
- const send = (rewindToken?: string) => handler(new Request("https://app.example/api/chat", {
+ const send = (rewindToken?: string, storyRestartId?: string) => handler(new Request("https://app.example/api/chat", {
   method: "POST", headers: { Authorization: "Bearer fixture", "X-Request-Id": randomUUID() },
-  body: JSON.stringify({ character: { mode: "story" }, storyDocumentId: A, rewindToken }),
+  body: JSON.stringify({ character: { mode: "story" }, storyDocumentId: A, rewindToken, storyRestartId }),
  }));
  assert.doesNotMatch(await (await send()).text(), /"type":"done"/);
  assert.deepEqual(settlements, [false]);
@@ -59,7 +61,7 @@ test("settled chapters replay only within the same story branch and short output
  const live = await success.text();
  assert.match(live, /"type":"done"/);
  assert.match(live, /"type":"draft_live"/);
- const recovered = await send();
+ const recovered = await send(undefined, randomUUID());
  const replay = await recovered.text();
  assert.match(replay, /"type":"done"/);
  assert.doesNotMatch(replay, /"type":"draft_live"/);
@@ -76,6 +78,19 @@ test("settled chapters replay only within the same story branch and short output
  assert.equal(handlerCalls, 3);
  assert.equal(reservations, 3);
  assert.deepEqual(settlements, [false, true, true]);
+});
+
+test("an explicit story restart discards an old plan and reuses only its own checkpoint on replay", async () => {
+ const id = randomUUID();
+ const oldPlan = { chapterPipeline: { plan: "old", blocked: true } };
+ let payload: unknown = oldPlan;
+ const store = { load: payload, async save(value: unknown) { payload = value; } };
+ assert.equal(restartStoryDraft(store)?.load, oldPlan);
+ const fresh = restartStoryDraft(store, id)!;
+ assert.deepEqual(fresh.load, {});
+ await fresh.save(readStoryCheckpoint({ chapterPipeline: { plan: "new" } }));
+ assert.deepEqual(readStoryCheckpoint(restartStoryDraft({ ...store, load: payload }, id)!.load).chapterPipeline, { plan: "new" });
+ assert.deepEqual(restartStoryDraft({ ...store, load: payload }, randomUUID())!.load, {});
 });
 
 test("novel persistence traces confirm storage only after settlement succeeds and share the request ID",async t=>{

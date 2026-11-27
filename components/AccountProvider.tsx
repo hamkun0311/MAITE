@@ -21,7 +21,7 @@ import { clearCharacterPreviews, invalidateCharacterPreviews } from "@/lib/platf
 import { preloadCharacterPreviews } from "@/lib/platform/preload-images";
 
 type User = { id: string; email?: string };
-type AccountContext = { user?: User; account?: AccountData; refresh: () => Promise<void>; logout: () => Promise<void>; editProfile: () => void };
+type AccountContext = { user?: User; account?: AccountData; refresh: (fresh?: boolean) => Promise<void>; logout: () => Promise<void>; editProfile: () => void };
 const Context = createContext<AccountContext>({ refresh: async () => {}, logout: async () => {}, editProfile: () => {} });
 export const useAccount = () => useContext(Context);
 const loginKey = "maite-web-login-started";
@@ -96,10 +96,12 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
     void preloadCharacterPreviews(owner,ids,()=>alive,(loaded,total)=>{if(alive)setImagePreparation(current=>current?.owner===owner?{...current,loaded,total}:current);}).catch(()=>undefined).finally(()=>{clearTimeout(timeout);reveal();});
     return()=>{alive=false;clearTimeout(timeout);};
   },[enabled,user?.id,hasAccount,profileReady]);
-  async function refresh() {
-    if (!active.current) return;
-    if (pending.current) return pending.current;
+  async function refresh(fresh = false) {
     const id = active.current;
+    if (!id) return;
+    if (fresh && pending.current) await pending.current.catch(() => undefined);
+    if (active.current !== id) return;
+    if (pending.current) return pending.current;
     const work = (async () => { const data = await jsonApi("/api/account"); if (active.current === id) setAccount(data); })();
     pending.current = work;
     try { await work; } finally { if (pending.current === work) pending.current = undefined; }

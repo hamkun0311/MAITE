@@ -20,7 +20,7 @@ import { loadAccountImage } from "@/lib/platform/image-loader";
 import { accountEnabled } from "@/lib/account/client";
 import { isNative, saveFile } from "@/lib/platform/native";
 import { localSnapshot, snapshotSchema, sessionSnapshot, restoreSessions, type StudioSnapshot } from "@/lib/platform/snapshot";
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import CharacterImage, { CharacterImageViewer } from "./CharacterImage";
@@ -174,6 +174,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     };
   }, [menu]);
   const result = useRef<HTMLElement>(null);
+  const resultHeadingId = useId();
+  const [confirmingCharacter, setConfirmingCharacter] = useState(false);
   const profileFields = useRef<HTMLFieldSetElement>(null);
   const [draft, setDraft] = useState({ name: "", age: "", gender: "", appearance: "", personality: "", funElement: "", concept: "" });
   const [selectedRenderStyle, setSelectedRenderStyle] = useState("");
@@ -182,7 +184,10 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       if (target === "profile") {
         profileFields.current?.scrollIntoView({ behavior: "smooth", block: "start" });
         profileFields.current?.querySelector("input")?.focus({ preventScroll: true });
-      } else result.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        result.current?.focus({ preventScroll: true });
+        result.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
     });
   }
   function openMenu(next: "image" | "chat" | "story") {
@@ -413,6 +418,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     };
   }, [art]);
   useEffect(() => {
+    if (busy || confirmingCharacter) return;
     if (art) {
       result.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
@@ -420,7 +426,14 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     if (messages.length)
       bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     else bottom.current?.parentElement?.scrollTo({ top: 0 });
-  }, [messages, art]);
+  }, [messages, art, busy, confirmingCharacter]);
+  useLayoutEffect(() => {
+    if (!busy && !confirmingCharacter) return;
+    const image = result.current;
+    // The confirmation owns focus until it closes. Bring the image into view behind it.
+    if (busy) image?.focus({ preventScroll: true });
+    image?.scrollIntoView({ behavior: "instant", block: "start" });
+  }, [busy, confirmingCharacter]);
   function cancel() {
     generation.current++;
     controller.current?.abort();
@@ -458,14 +471,19 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     reset();
   }
   async function submit() {
-    if (controller.current) return;
+    if (controller.current || confirmingCharacter) return;
     const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age), appearance: draft.appearance.trim() || undefined, funElement: draft.funElement.trim() || undefined });
     if (!parsedProfile.success) { setError("캐릭터 이름·나이·성별·성격·컨셉을 입력해주세요."); return; }
     if (blocksImageGeneration({profile:parsedProfile.data})) { showPolicyNotice(); return; }
     const balance = (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0);
     const retrying = hasImageAttempt(owner.current, "character");
     if (accountEnabled() && balance < HEART_COST.character && !retrying) { setError("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
-    if (accountEnabled() && !await confirm({ title: "새로운 캐릭터를 만날까요?", description: "나만의 캐릭터를 만들어보세요!", lines: balance < HEART_COST.character ? [] : [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${balance - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" })) return;
+    if (accountEnabled()) {
+      setConfirmingCharacter(true);
+      const accepted = await confirm({ title: "새로운 캐릭터를 만날까요?", description: "나만의 캐릭터를 만들어보세요!", lines: balance < HEART_COST.character ? [] : [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${balance - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" });
+      setConfirmingCharacter(false);
+      if (!accepted) return;
+    }
     if (controller.current) return;
     const profile = parsedProfile.data;
     const user: Message = { role: "user", content: profile.concept };
@@ -629,8 +647,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
           </div>
         </section>
         </div>
-        <section className="chat-output character-output" ref={result}>
-          <div className="character-output-heading"><ImagePlus size={16} aria-hidden="true" /><h2>캐릭터 이미지</h2></div>
+        <section className={`chat-output character-output${confirmingCharacter ? " is-awaiting-confirmation" : ""}`} aria-labelledby={resultHeadingId} tabIndex={-1} ref={result}>
+          <div className="character-output-heading"><ImagePlus size={16} aria-hidden="true" /><h2 id={resultHeadingId}>캐릭터 이미지</h2></div>
           <div className={`character-canvas ${art ? "has-art" : ""}`} aria-busy={busy}>
             {art ? (
                 <CharacterImage src={art.url} title={art.title} width={art.width} height={art.height} />

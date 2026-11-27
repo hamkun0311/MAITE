@@ -6,7 +6,7 @@ import { allowedOrigin, corsHeaders } from "../lib/server/http.ts";
 import { withGeneration } from "../lib/server/generation.ts";
 import { snapshotSchema, restoreSessions } from "../lib/platform/snapshot.ts";
 import { createStudioSessions } from "../lib/chat/session.ts";
-import { grantTestAdReward, testAdRewardStatus, verifyAdmob } from "../lib/server/admob.ts";
+import { adRewardConfirmed, grantTestAdReward, testAdRewardStatus, verifyAdmob } from "../lib/server/admob.ts";
 import { verifyPurchase, playAccountId } from "../lib/server/play.ts";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { novelListings, unpublishedNovelRows, isPublishedNovel, listingId } from "../lib/server/publishing.ts";
@@ -546,9 +546,24 @@ test("AdMob verifies signed test and production rewards, with a legacy productio
   try {
     Object.assign(process.env,{ADMOB_REWARDS_ENABLED:"true",ADMOB_REWARDED_UNIT_ID:"legacy-unit",ADMOB_REWARDED_UNIT_ID_TEST:"test-unit",ADMOB_REWARDED_UNIT_ID_PRODUCTION:"production-unit",NEXT_PUBLIC_SUPABASE_URL:"https://database.example",SUPABASE_SERVICE_ROLE_KEY:"test-key"});
     const pair=generateKeyPairSync("ec",{namedCurve:"prime256v1"});
-    globalThis.fetch=async(input)=>{
+    const attempt = crypto.randomUUID();
+    let confirmed = false;
+    globalThis.fetch=async(input,options)=>{
       if(String(input).includes("verifier-keys.json")) return Response.json({keys:[{keyId:123,pem:pair.publicKey.export({type:"spki",format:"pem"})}]});
-      if(String(input).includes("/rpc/grant_ad_reward")){grants++;return Response.json(true);}
+      if(String(input).includes("/rpc/grant_ad_reward")){
+        const { p_transaction } = JSON.parse(String(options?.body));
+        if (p_transaction.startsWith("reward:")) {
+          assert.equal(p_transaction, `reward:${attempt}:transaction-production-unit`);
+          if (confirmed) return Response.json(false);
+          confirmed = true;
+        }
+        grants++;return Response.json(true);
+      }
+      if(String(input).includes("/ad_reward_claims")){
+        const query = new URL(String(input)).searchParams;
+        assert.equal(query.get("transaction_id"), `like.reward:${attempt}:%`);
+        return Response.json(confirmed && query.get("user_id") === `eq.${A}` ? [{ transaction_id: "confirmed" }] : []);
+      }
       throw new Error("Unexpected external request");
     };
     const rewardPayload = (unit: string) => `ad_unit=${unit}&reward_amount=5&timestamp=${Date.now()}&transaction_id=transaction-${unit}&user_id=${A}`;
@@ -563,7 +578,12 @@ test("AdMob verifies signed test and production rewards, with a legacy productio
     await assert.rejects(verifyAdmob(new URL(probeUrl.replace("reward_amount=1","reward_amount=2"))),/서명/);
     const url = signedUrl(rewardPayload("test-unit"));
     assert.equal(await verifyAdmob(new URL(url)),true);
-    assert.equal(await verifyAdmob(new URL(signedUrl(rewardPayload("production-unit")))),true);
+    const watched = signedUrl(rewardPayload("production-unit") + `&custom_data=${attempt}`);
+    assert.equal(await adRewardConfirmed(A, attempt),false);
+    assert.equal(await verifyAdmob(new URL(watched)),true);
+    assert.equal(await adRewardConfirmed(A, attempt),true);
+    assert.equal(await adRewardConfirmed(B, attempt),false);
+    assert.equal(await verifyAdmob(new URL(watched)),false);
     await assert.rejects(verifyAdmob(new URL(signedUrl(rewardPayload("legacy-unit")))),/보상 정보/);
     delete process.env.ADMOB_REWARDED_UNIT_ID_PRODUCTION;
     assert.equal(await verifyAdmob(new URL(signedUrl(rewardPayload("legacy-unit")))),true);

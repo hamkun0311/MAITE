@@ -5,7 +5,7 @@ import type { StoryState } from "../../lib/novel/state";
 test("five chapters complete the story; failed finale does not advance; reset starts at one", async ({ page }) => {
   await page.goto("/ideal");
   await generateCharacter(page);
-  const bodies: { storyState?: StoryState; additionalConcept?: string }[] = [];
+  const bodies: { storyState?: StoryState; additionalConcept?: string; storyRestartId?: string }[] = [];
   let failedFinale = false;
   await page.route("**/api/chat", route => {
     const body = route.request().postDataJSON(); bodies.push(body);
@@ -29,10 +29,13 @@ test("five chapters complete the story; failed finale does not advance; reset st
   await next.click();
   await expect(story.getByText("마지막 회차를 다시 작성해주세요.")).toBeVisible();
   await expect(progress).toContainText("이야기 #4");
-  await expect(next).toBeEnabled();
-  await next.click();
+  const retry = story.getByRole("button", { name: "이번화 다시 쓰기", exact: true });
+  await expect(retry).toBeEnabled();
+  await retry.click();
   await expect(progress).toHaveText("이야기 #5");
-  expect(bodies.at(-1)).toEqual(bodies.at(-2));
+  const { storyRestartId, ...restarted } = bodies.at(-1)!;
+  expect(storyRestartId).toBeTruthy();
+  expect(restarted).toEqual(bodies.at(-2));
   const complete = story.getByRole("button", { name: "이야기 완결", exact: true });
   await expect(complete).toBeDisabled();
   await expect(story.getByRole("log").locator(".assistant")).toHaveCount(1);
@@ -91,7 +94,7 @@ test("a failed added concept keeps the old chapter and restores the concept for 
   await page.goBack(); await expect(page.getByRole("group", { name: "캐릭터와 함께하기" })).toBeVisible();
   await enterCharacterMode(page, "이야기 만들기");
   await expect(concept).toHaveValue("잃어버린 동생과 재회한다");
-  await next.click(); await expect(progress).toContainText("이야기 #3");
+  await story.getByRole("button", { name: "이번화 다시 쓰기", exact: true }).click(); await expect(progress).toContainText("이야기 #3");
   await expect(concept).toHaveValue("");
 });
 
@@ -99,9 +102,11 @@ test("a draft preview remains readable without advancing the chapter", async ({ 
   await page.goto("/ideal"); await generateCharacter(page);
   const draft = "서하가 편지를 내려다봤다. 그녀는 봉투를 열기로 했다.";
   const sent: number[] = [];
+  const restartIds: (string | undefined)[] = [];
   await page.route("**/api/chat", route => {
     const body = route.request().postDataJSON();
     sent.push(body.storyState?.chapter ?? 0);
+    restartIds.push(body.storyRestartId);
     return route.fulfill({ contentType: "text/event-stream", body: sent.length === 2
       ? `data: ${JSON.stringify({ type: "draft_preview", text: draft })}\n\ndata: {"type":"error","code":"story_draft_paused"}\n\n`
       : storyWire(body, "서하가 문을 열고 새로운 결정을 내렸다.") });
@@ -114,11 +119,16 @@ test("a draft preview remains readable without advancing the chapter", async ({ 
   await next.click();
   await expect(heading).toHaveText("임시 원고");
   await expect(story.getByText(draft)).toBeVisible();
+  const retry = story.getByRole("button", { name: "이번화 다시 쓰기", exact: true });
+  await expect(retry).toBeVisible();
   await story.getByRole("button", { name: "임시 원고 닫기" }).click();
   await expect(heading).toHaveText("이야기 #1");
-  await next.click();
+  await retry.click();
   await expect(heading).toHaveText("이야기 #2");
+  await expect(next).toBeVisible();
   expect(sent).toEqual([0, 1, 1]);
+  expect(restartIds.slice(0, 2)).toEqual([undefined, undefined]);
+  expect(restartIds[2]).toMatch(/^[\da-f-]{36}$/);
 });
 
 test("finishing a streamed story preserves reading position and only shows the final prose", async ({ page }) => {

@@ -894,10 +894,10 @@ test("following chapters reuse the arc, while added concepts replan five with co
  assert.equal(previous.chapter, 3);
 });
 
-test("a failed review keeps a readable draft and never replaces a whole event or advances memory", async t => {
+test("a rejected review finalizes the complete draft and resumes a blocked checkpoint without another model call", async t => {
  const calls: string[] = [];
  const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const };
- let preview = "", saved: StoryCheckpoint | object = {};
+ let displayed = "", saved: StoryCheckpoint | object = {};
  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
   const body = JSON.parse(String(init.body)), stage = body.text.format.name;
   calls.push(stage);
@@ -907,14 +907,43 @@ test("a failed review keeps a readable draft and never replaces a whole event or
   assert.equal(stage, "passage_repair");
   return response({ edits: [{ event: 2, before: eventDraft[1], after: "새 사건 전체" }] }, init);
  });
- const request = () => generateChapter({ ...options(), state, onDraftPreview: text => { preview = text; },
+ const request = () => generateChapter({ ...options(), state, onDraftUpdate: text => { displayed = text; },
   draftStore: { load: saved, async save(value) { saved = structuredClone(value); } } });
- await assert.rejects(request(), StoryDraftPaused);
+ const chapter = await request();
  assert.equal(state.chapter, 1);
- assert.equal(preview, eventDraft.join("\n\n"));
+ assert.equal(chapter.fromDraft, true);
+ assert.equal(chapter.state.chapter, 2);
+ assert.equal(chapter.text, displayed);
+ assert.equal(chapter.state.previousProse, eventDraft.join("\n\n"));
+ assert.deepEqual(chapter.sharedChanges, []);
+ assert.deepEqual(chapter.closedPromises, []);
  assert.deepEqual(calls, ["chapter_plan", "write", "chapter_review", "passage_repair"]);
- await assert.rejects(request(), StoryDraftPaused);
+ const { completedDraft: _original, ...legacyPipeline } = (saved as StoryCheckpoint).chapterPipeline as { completedDraft: string[] };
+ saved = { chapterPipeline: legacyPipeline };
+ assert.deepEqual(await request(), chapter);
  assert.equal(calls.length, 4);
+});
+
+test("a review deadline finalizes the shown draft only while the client still accepts the result", async t => {
+ const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const };
+ let deadline: AbortController;
+ t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+  const stage = JSON.parse(String(init.body)).text.format.name;
+  if (stage === "chapter_plan") return response(episodePlan, init);
+  if (stage === "write") return response({ events: eventDraft }, init);
+  assert.equal(stage, "chapter_review");
+  deadline.abort();
+  throw deadline.signal.reason;
+ });
+ const request = (hasClient: boolean) => {
+  deadline = new AbortController();
+  return generateChapter({ ...options(), state, signal: deadline.signal, canFinalize: () => hasClient });
+ };
+ const result = await request(true);
+ assert.equal(result.fromDraft, true);
+ assert.equal(result.state.chapter, 2);
+ assert.equal(result.text, eventDraft.join("\n\n"));
+ await assert.rejects(request(false), { name: "AbortError" });
 });
 
 test("an explicit ending replans the unwritten legacy milestone and closes the series", async t => {

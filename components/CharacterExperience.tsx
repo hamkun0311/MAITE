@@ -13,6 +13,7 @@ import { userDisplayName } from "@/lib/chat/identity";
 import Link from "next/link";
 import { useActionConfirm } from "./ActionConfirm";
 import { accountEnabled } from "@/lib/account/client";
+import { HEART_COST } from "@/lib/account/policy";
 import type { CharacterProfile } from "@/lib/chat/character";
 import type { ChatSession } from "@/lib/chat/session";
 import LiveChat from "./LiveChat";
@@ -34,16 +35,29 @@ export default function CharacterExperience({ mode, characterDocumentId, rewindT
   const confirm = useActionConfirm();
   const { account } = useAccount();
   async function generateVisual(kind: VisualKind, context: string, scene?: IllustrationScene, chapter?: number) {
+    const withConfirmation = accountEnabled();
+    const illustration = kind === "illustration";
     let selection = selectImageScene(context, { mode, profileName: profile.name,
       userNames: [userDisplayName({ concept: profile.concept, userName: account?.profile?.display_name }, session?.storyState?.seriesConcept), account?.profile?.display_name || "당신"],
       knownNames: [...(session?.chatMemory?.participants.filter(person => person.id !== "user").map(person => person.name) ?? []), ...(session?.storyState?.characters.map(person => person.name) ?? [])],
     });
-    if(kind==="illustration")selection={...selection,framing:!selection.target&&framing.shot!=="auto"&&framing.shot!=="detail"?defaultImageFraming():framing};
-    if (accountEnabled() && !await confirm({ title: kind === "illustration" ? "삽화를 그릴까요?" : "대화 장면을 그릴까요?", description: "현재 장면과 인물의 모습으로 이미지를 만들어요.", sceneDetails: selection, editableTarget: kind === "illustration", editableFraming: kind === "illustration", onSceneChange:next=>{selection=next;}, imageNotice:true, lines: [{ label: "이미지 생성", value: `${kind === "illustration" ? 50 : 30}하트` }], confirmLabel: "그림 만들기" })) return;
-    if(accountEnabled())selection={...selection,location:selection.location?.trim(),outfit:selection.outfit?.trim(),target:selection.target?.trim()||undefined,characters:[...new Set([...selection.characters,...(selection.target?.trim()?[selection.target.trim()]:[])])].slice(-8),confirmed:true};
-    if(kind==="illustration"){
+    if (withConfirmation) {
+      selection = {
+        ...selection, location: undefined, outfit: undefined,
+        ...(illustration ? { target: undefined, framing: defaultImageFraming() } : {}),
+      };
+      if (!await confirm({ title: illustration ? "삽화를 그릴까요?" : "대화 장면을 그릴까요?", description: "현재 장면과 인물의 모습으로 이미지를 만들어요.", sceneDetails: selection, editableTarget: illustration, editableFraming: illustration, onSceneChange: next => { selection = next; }, imageNotice: true, lines: [{ label: "이미지 생성", value: `${HEART_COST[kind]}하트` }], confirmLabel: "그림 만들기" })) return;
+      const target = selection.target?.trim() || undefined;
+      selection = {
+        ...selection, location: selection.location?.trim() || undefined, outfit: selection.outfit?.trim() || undefined, target,
+        characters: target ? [...new Set([...selection.characters, target])].slice(-8) : selection.characters,
+        confirmed: true, targetConfirmed: illustration && !!target,
+      };
+    } else if (illustration) {
+      selection = { ...selection, framing: !selection.target && framing.shot !== "auto" && framing.shot !== "detail" ? defaultImageFraming() : framing };
+    }
+    if(illustration){
       if(!imageFramingSchema.safeParse(selection.framing).success)return;
-      setFraming(selection.framing!);
       const castConcepts = storyConceptsForChapter(session?.storyState, chapter ?? scene?.chapter ?? session?.storyState?.chapter ?? 0);
       if (castConcepts.length) selection = {...selection,castConcepts};
     }

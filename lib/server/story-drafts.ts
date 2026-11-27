@@ -1,6 +1,25 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { AccountError, type serviceDb } from "./account.ts";
 import type { StoryCheckpoint, StoryDraftStore } from "../novel/checkpoint.ts";
+
+export function storyDraftFingerprint(body: Buffer, input: Record<string, unknown>) {
+  if (!Object.hasOwn(input, "storyRestartId")) return createHash("sha256").update(body).digest("hex");
+  // Restarting changes the draft, while locking and settled-result replay still use the original request.
+  const { storyRestartId: _restartId, ...original } = input;
+  return createHash("sha256").update(JSON.stringify(original)).digest("hex");
+}
+
+export function restartStoryDraft(store: StoryDraftStore | undefined, restartId?: string): StoryDraftStore | undefined {
+  if (!store || !restartId) return store;
+  const prior = store.load as { restartId?: string } | null;
+  return {
+    load: prior?.restartId === restartId ? store.load : {},
+    save: (draft: StoryCheckpoint) => {
+      const tagged = { ...draft, restartId };
+      return store.save(tagged);
+    },
+  };
+}
 
 export async function claimStoryDraft(db: ReturnType<typeof serviceDb>, owner: string, fingerprint: string) {
   const lease = randomUUID();

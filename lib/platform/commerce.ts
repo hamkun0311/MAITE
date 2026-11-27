@@ -15,7 +15,7 @@ export async function jsonApi(path: string, body?: object) {
   const ttl = /[?&](document|job|previews)=/.test(path) ? 15000 : path === "/api/store" || path.startsWith("/api/rewards?month=") ? 5000 : 0;
   return reads.get(session?.access_token || "demo", path, request, ttl);
 }
-export async function buyHearts(productId?: string) {
+export async function buyHearts(productId?: string, onVerifying?: () => void) {
   if (!isNative()) throw new Error("하트 충전은 Android 앱에서 사용할 수 있습니다.");
   const { NativePurchases, PURCHASE_TYPE } = await import("@capgo/native-purchases");
   await NativePurchases.configure({ autoFinishTransactions: false });
@@ -24,13 +24,20 @@ export async function buyHearts(productId?: string) {
     const { products } = await NativePurchases.getProducts({ productIdentifiers: [productId], productType: PURCHASE_TYPE.INAPP });
     if (!products.length) throw new Error("Google Play에 등록된 상품을 찾지 못했습니다.");
     const transaction = await NativePurchases.purchaseProduct({ productIdentifier: productId, productType: PURCHASE_TYPE.INAPP, appAccountToken: accountId, isConsumable: true, autoAcknowledgePurchases: false, offerToken: products[0].offerToken });
-    if (transaction.purchaseState !== "1") throw new Error("결제 승인 대기 중입니다. 완료 후 구매 복구를 눌러주세요.");
+    if (transaction.purchaseState !== "1") return { state: "pending" as const };
+    onVerifying?.();
     await jsonApi("/api/billing", { productId, token: transaction.purchaseToken ?? transaction.transactionId });
+    return { state: "purchased" as const };
   } else {
     const { purchases } = await NativePurchases.getPurchases({ productType: PURCHASE_TYPE.INAPP, appAccountToken: accountId });
+    let restored = 0;
     for (const transaction of purchases) {
-      if (transaction.purchaseState === "1") await jsonApi("/api/billing", { productId: transaction.productIdentifier, token: transaction.purchaseToken ?? transaction.transactionId });
+      if (transaction.purchaseState === "1") {
+        await jsonApi("/api/billing", { productId: transaction.productIdentifier, token: transaction.purchaseToken ?? transaction.transactionId });
+        restored++;
+      }
     }
+    return { state: "restored" as const, restored };
   }
 }
 export function rewardedAdConfig() {
@@ -42,7 +49,7 @@ export function rewardedAdConfig() {
     (testing ? "ca-app-pub-3940256099942544/5224354917" : "");
   return { testing, adId };
 }
-export async function watchReward(userId: string) {
+export async function watchReward(userId: string, attemptId?: string) {
   if (!isNative()) throw new Error("보상 광고는 Android 앱에서 사용할 수 있습니다.");
   const auth = await accountClient()?.auth.getSession();
   const user = auth?.data.session?.user;
@@ -55,7 +62,18 @@ export async function watchReward(userId: string) {
   if (!consent.canRequestAds) throw new Error("광고 개인정보 설정을 확인해주세요.");
   const { testing, adId } = config;
   await AdMob.initialize({ initializeForTesting: testing });
-  await AdMob.prepareRewardVideoAd({ adId, isTesting: testing, ...(testing ? {} : { ssv: { userId } }) });
+  await AdMob.prepareRewardVideoAd({ adId, isTesting: testing, ...(testing ? {} : { ssv: { userId, customData: attemptId } }) });
   await AdMob.showRewardVideoAd();
   // The SDK result is only used by the explicitly enabled QA reward flow.
+}
+
+export async function waitForAdReward(attemptId: string) {
+  for (const delay of [0, 1000, 2000, 3000, 4000]) {
+    if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+    const response = await apiFetch(`/api/ads/reward?attempt=${encodeURIComponent(attemptId)}`, { signal: AbortSignal.timeout(3500), cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? "광고 보상 정보를 확인하지 못했습니다.");
+    if (result.confirmed === true) return true;
+  }
+  return false;
 }

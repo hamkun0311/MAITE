@@ -9,7 +9,7 @@ import { storyStateSchema } from "../novel/state.ts";
 import {createNovelReviewLogger,manuscriptFingerprint} from "../novel/review-log.ts";
 import {blocksImageGeneration, blocksTextGeneration, GENERATION_POLICY_MESSAGE} from "../generation-policy.ts";
 import { MIN_STORY_CHARS, storyChars, type StoryDraftStore } from "../novel/checkpoint.ts";
-import { claimStoryDraft } from "./story-drafts.ts";
+import { claimStoryDraft, storyDraftFingerprint } from "./story-drafts.ts";
 import { claimImageCheckpoint, imageAttempt, imageFingerprint, loadCompletedImageJob } from "./image-checkpoints.ts";
 
 type Job = { id: string; status: "reserved" | "completed" | "failed"; result: { events?: object[]; headers?: Record<string, string> } | null; storage_path: string | null };
@@ -91,7 +91,7 @@ export function withGeneration(handler: (request: Request, draftStore?: StoryDra
         const data = JSON.parse(body.toString("utf8")); kind = data.character?.mode === "story" ? "story" : "chat";
         resumableStory = kind === "story" && typeof data.storyDocumentId === "string";
         if (blocksTextGeneration(data)) return jsonError(GENERATION_POLICY_MESSAGE, 422);
-        fingerprint = createHash("sha256").update(body).digest("hex");
+        fingerprint = resumableStory ? storyDraftFingerprint(body, data) : createHash("sha256").update(body).digest("hex");
       }
       const headers = { ...cors, "X-Job-Id": id };
       if (imageJob?.data?.storage_path) {

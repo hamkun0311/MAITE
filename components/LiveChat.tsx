@@ -59,6 +59,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
   const [messages, setMessages] = useState<Message[]>(saved.messages);
   const [storyPage, setStoryPage] = useState(saved.storyPage ?? Math.max(0, saved.messages.filter(m => m.role === "assistant" && m.content.trim()).length - 1));
   const [storyPreview, setStoryPreview] = useState(saved.storyPreview);
+  const [storyNeedsRestart, setStoryNeedsRestart] = useState(Boolean(saved.storyNeedsRestart));
   const [liveStoryDraft, setLiveStoryDraft] = useState("");
   const showingLiveDraft = Boolean(liveStoryDraft);
   const scrollAfterDraft = useRef<number | undefined>(undefined);
@@ -155,17 +156,24 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
     setSceneMemory({ turn: 0 }); saved.visualScene = undefined;
     setStoryPage(0); saved.storyPage = 0;
     setStoryPreview(undefined); saved.storyPreview = undefined;
+    setStoryNeedsRestart(false); saved.storyNeedsRestart = false;
     followOutput.current = true;
     setMessages([]); setInput(""); setNotice(""); setBusy(false);
   }
-  async function submit(initialText?: string) {
+  async function submit(initialText?: string, restartStory = false) {
     const text = (initialText ?? input).trim();
     const isStory = character?.mode === "story";
     const additionalConcept = isStory ? input.trim() : "";
     if (controller.current || !text || (isStory && storyComplete(saved.storyState) && !additionalConcept)) return;
     if (blocksTextGeneration({ messages:[{role:"user", content:text}], character, additionalConcept, storyState:saved.storyState })) { showPolicyNotice(); return; }
     if (isStory && accountEnabled() && (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) < HEART_COST.story) { setNotice("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
-    if (isStory && accountEnabled() && !await confirm({ title: "다음 이야기를 만들까요?", description: additionalConcept ? "추가한 컨셉을 반영해 이야기를 이어가요." : "최신 회차의 사건과 관계를 이어가요.", lines: [{ label: "이야기 생성", value: `${HEART_COST.story}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.story}하트` }], confirmLabel: "이야기 만들기" })) return;
+    if (isStory && accountEnabled() && !await confirm({
+      title: restartStory ? "이번 화를 다시 쓸까요?" : "다음 이야기를 만들까요?",
+      description: restartStory ? "이번 회차의 설계부터 새로 시작해요."
+        : additionalConcept ? "추가한 컨셉을 반영해 이야기를 이어가요." : "최신 회차의 사건과 관계를 이어가요.",
+      lines: [{ label: "이야기 생성", value: `${HEART_COST.story}하트` }, { label: "생성 후 보유 하트", value: `${(account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0) - HEART_COST.story}하트` }],
+      confirmLabel: restartStory ? "이번화 다시 쓰기" : "이야기 만들기",
+    })) return;
     if (controller.current) return;
     if (saved.timeline && timelineRequests.has(saved.timeline)) { setNotice("진행 중인 대화나 이야기 생성이 끝나면 이어서 요청해주세요."); return; }
     const storyState = saved.storyState;
@@ -186,6 +194,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
     setMessages([...displayed, { role: "assistant", content: "" }]);
     setInput(""); setNotice(""); setBusy(true);
     setLiveStoryDraft("");
+    if (restartStory) { setStoryPreview(undefined); saved.storyPreview = undefined; }
     setStoryPhase("다음 전개 구상 중…");
     let answer = "", completed = false;
     let nextChapter: { text: string; state: StoryState; readerNickname?: string | null } | undefined;
@@ -204,6 +213,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
       const requestBody = { messages: history, character, ...(timeline ? { timeline } : {}), ...(isStory && storyState ? { storyState } : {}),
         ...(isStory ? { storyDocumentId: saved.documentId } : {}),
         ...(isStory && rewindToken ? { rewindToken } : {}),
+        ...(restartStory ? { storyRestartId: crypto.randomUUID() } : {}),
         ...(additionalConcept ? { additionalConcept } : {}),
         ...(!isStory && character && saved.chatMemory ? { chatMemory: saved.chatMemory } : {}),
         ...(!isStory && character && saved.speechStyle ? { speechStyle: saved.speechStyle } : {}),
@@ -275,6 +285,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
         if (liveDraftVisible) scrollAfterDraft.current = log.current?.scrollTop;
         setStoryPreview(draftPreview);
         saved.storyPreview = draftPreview;
+        setStoryNeedsRestart(true); saved.storyNeedsRestart = true;
         setMessages(messages); setInput(additionalConcept);
         setNotice("집필한 원고를 임시로 보여드려요. 회차 확정 전에 멈췄으며 하트는 차감하지 않았어요.");
         return;
@@ -287,6 +298,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
       if (isStory && nextChapter) {
         if (liveDraftVisible) scrollAfterDraft.current = log.current?.scrollTop;
         setStoryPreview(undefined); saved.storyPreview = undefined;
+        setStoryNeedsRestart(false); saved.storyNeedsRestart = false;
         saved.storyState = nextChapter.state;
         const latestPage = displayed.filter(m => m.role === "assistant" && m.content.trim()).length;
         saved.storyPage = latestPage; setStoryPage(latestPage);
@@ -317,6 +329,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
       window.dispatchEvent(new Event("maite-account-refresh"));
     } catch (error) {
       if (id !== sequence.current) return;
+      if (isStory && !stopped.current) { setStoryNeedsRestart(true); saved.storyNeedsRestart = true; }
       if (error instanceof Error && error.message === GENERATION_POLICY_MESSAGE) showPolicyNotice();
       else setNotice(stopped.current ? "응답을 중지했습니다." : abort.signal.aborted ? "응답 시간이 초과되었습니다. 다시 시도해주세요." : error instanceof Error ? error.message : "대화 중 오류가 발생했습니다.");
       if (!answer) { setMessages(messages); setInput(isStory ? additionalConcept : text); }
@@ -418,8 +431,8 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
       <button className="story-next-button" type="button" disabled={busy || rewinding || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {
         void submit(committed.current.length
           ? "앞선 이야기의 사건과 인물 관계를 이어서 다음 장면을 써줘. 이전 내용을 반복하지 말고 자연스럽게 이어줘."
-          : "설정에 맞춰 첫 장면부터 이야기를 시작해줘.");
-      }}>{busy ? "이야기를 쓰고 있어요" : storyFinished && !input.trim() ? "이야기 완결" : "다음 이야기"} {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
+          : "설정에 맞춰 첫 장면부터 이야기를 시작해줘.", storyNeedsRestart);
+      }}>{busy ? "이야기를 쓰고 있어요" : storyFinished && !input.trim() ? "이야기 완결" : storyNeedsRestart ? "이번화 다시 쓰기" : "다음 이야기"} {busy ? <LoaderCircle size={18} className="spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}</button>
       </div> : <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
         <textarea aria-label="AI에게 보낼 메시지" placeholder="캐릭터에게 이야기해보세요…" maxLength={2000} value={input} disabled={busy} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => {
           if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void submit(); }

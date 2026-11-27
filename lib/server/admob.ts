@@ -1,7 +1,17 @@
 import { verify } from "node:crypto";
 import { AccountError, rpc, serviceDb } from "./account.ts";
 import { koreaDay } from "../account/policy.ts";
+import { z } from "zod";
 let keys: { until: number; values: { keyId: number; pem: string }[] } | undefined;
+const rewardAttempt = z.uuid();
+const rewardPrefix = (attempt: string) => `reward:${attempt.toLowerCase()}:`;
+
+export async function adRewardConfirmed(userId: string, attempt: string) {
+  const { data, error } = await serviceDb().from("ad_reward_claims")
+    .select("transaction_id").eq("user_id", userId).like("transaction_id", `${rewardPrefix(attempt)}%`).limit(1);
+  if (error) throw new AccountError("광고 보상 기록을 확인하지 못했습니다.", 503);
+  return Boolean(data?.length);
+}
 
 export function canTestAdReward(userId: string) {
   return process.env.NEXT_PUBLIC_ADMOB_MODE === "test" &&
@@ -56,5 +66,7 @@ export async function verifyAdmob(url: URL) {
     console.warn("admob-ssv-rejected", { reason: "invalid_timestamp" });
     throw new AccountError("만료된 보상입니다.", 403);
   }
-  return rpc("grant_ad_reward", { p_user: userId, p_transaction: transaction });
+  const attempt = rewardAttempt.safeParse(url.searchParams.get("custom_data"));
+  // Retries of a signed event retain both its Google transaction ID and its client attempt ID.
+  return rpc("grant_ad_reward", { p_user: userId, p_transaction: attempt.success ? rewardPrefix(attempt.data) + transaction : transaction });
 }
