@@ -513,17 +513,22 @@ test("AdMob verifies signed test and production rewards, with a legacy productio
       if(String(input).includes("/rpc/grant_ad_reward")){grants++;return Response.json(true);}
       throw new Error("Unexpected external request");
     };
-    const signedUrl = (unit: string) => {
-      const raw=`ad_unit=${unit}&reward_amount=5&timestamp=${Date.now()}&transaction_id=transaction-${unit}&user_id=${A}`;
+    const rewardPayload = (unit: string) => `ad_unit=${unit}&reward_amount=5&timestamp=${Date.now()}&transaction_id=transaction-${unit}&user_id=${A}`;
+    const signedUrl = (raw: string) => {
       const signature=sign("SHA256",Buffer.from(raw),pair.privateKey).toString("base64url");
       return `https://app.example/api/ads/ssv?${raw}&signature=${signature}&key_id=123`;
     };
-    const url = signedUrl("test-unit");
+    const probe = "ad_unit=example&custom_data=maite-verify-ssv&reward_amount=1";
+    const probeUrl = signedUrl(probe);
+    assert.equal(await verifyAdmob(new URL(probeUrl)),undefined);
+    assert.equal(grants,0);
+    await assert.rejects(verifyAdmob(new URL(probeUrl.replace("reward_amount=1","reward_amount=2"))),/서명/);
+    const url = signedUrl(rewardPayload("test-unit"));
     assert.equal(await verifyAdmob(new URL(url)),true);
-    assert.equal(await verifyAdmob(new URL(signedUrl("production-unit"))),true);
-    await assert.rejects(verifyAdmob(new URL(signedUrl("legacy-unit"))),/보상 정보/);
+    assert.equal(await verifyAdmob(new URL(signedUrl(rewardPayload("production-unit")))),true);
+    await assert.rejects(verifyAdmob(new URL(signedUrl(rewardPayload("legacy-unit")))),/보상 정보/);
     delete process.env.ADMOB_REWARDED_UNIT_ID_PRODUCTION;
-    assert.equal(await verifyAdmob(new URL(signedUrl("legacy-unit"))),true);
+    assert.equal(await verifyAdmob(new URL(signedUrl(rewardPayload("legacy-unit")))),true);
     await assert.rejects(verifyAdmob(new URL(url.replace("reward_amount=5","reward_amount=50"))),/서명/);
     await assert.rejects(verifyAdmob(new URL(url+"&reward_amount=5")),/잘못된/);assert.equal(grants,3);
   }finally{globalThis.fetch=originalFetch;for(const [key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
