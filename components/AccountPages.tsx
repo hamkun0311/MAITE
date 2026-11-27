@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import { useAccount } from "./AccountProvider";
 import { useStudioSession } from "./CharacterStudio";
 import { jsonApi, invalidateApiReads } from "@/lib/platform/commerce";
+import { trackAnalyticsEvent } from "@/lib/platform/analytics";
 import { accountEnabled } from "@/lib/account/client";
 import { libraryNovelComplete, libraryNovels, novelChapters, novelComplete } from "@/lib/account/library";
 import { snapshotSchema, type StudioSnapshot } from "@/lib/platform/snapshot";
@@ -252,7 +253,7 @@ export function StoreScreen() {
     return purchased ? character
           ? <button disabled={busy} onClick={() => void run(() => openCharacter(listing.id), "구매한 콘텐츠를 열었습니다.")}>내 캐릭터로 사용</button>
           : <Link className="bookshop-read-link" href={`/ideal/library/${listing.novel?.id ?? listing.id}?listing=${listing.id}`}>회차 읽기</Link>
-        : <button type="button" className="native-primary bookshop-purchase" aria-label={`${price.price}하트 구매`} disabled={busy || !listing.active} onClick={() => void (async () => { if (!await confirm({ title: "이 작품을 구매할까요?", description: listing.title, lines: [{ label: "사용 하트", value: `${price.price}하트` }], confirmLabel: "구매하기" })) return; await run(async () => { await jsonApi("/api/store", { action: "buy", id: crypto.randomUUID(), listingId: listing.id }); await load(); }, "구매했습니다."); })()}><span className="purchase-heart-amount">{price.price}<Heart size={13} fill="currentColor" aria-hidden="true"/></span> 구매</button>;
+        : <button type="button" className="native-primary bookshop-purchase" aria-label={`${price.price}하트 구매`} disabled={busy || !listing.active} onClick={() => void (async () => { if (!await confirm({ title: "이 작품을 구매할까요?", description: listing.title, lines: [{ label: "사용 하트", value: `${price.price}하트` }], confirmLabel: "구매하기" })) return; await run(async () => { await jsonApi("/api/store", { action: "buy", id: crypto.randomUUID(), listingId: listing.id }); trackAnalyticsEvent(character ? "character_purchased" : "chapter_purchased"); await load(); }, "구매했습니다."); })()}><span className="purchase-heart-amount">{price.price}<Heart size={13} fill="currentColor" aria-hidden="true"/></span> 구매</button>;
   }
   function listingCard(listing: Listing) {
     return <article className="store-listing bookshop-row" key={listing.id}>

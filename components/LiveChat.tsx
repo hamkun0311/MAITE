@@ -26,6 +26,7 @@ import { accountEnabled } from "@/lib/account/client";
 import { useAccount } from "./AccountProvider";
 import { userDisplayName } from "@/lib/chat/identity";
 import { HEART_COST } from "@/lib/account/policy";
+import { trackAnalyticsEvent } from "@/lib/platform/analytics";
 import { saveChapter } from "@/lib/account/reading-progress";
 
 const storyPhases: Record<string, string> = { planning: "다음 전개 구상 중…", writing: "이야기 작성중", copyediting: "감정 표현·문장 다듬는 중…", reviewing: "이야기 흐름 확인 중…", rewriting: "이야기 다듬는 중…", remembering: "이야기 마무리 중…" };
@@ -325,6 +326,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
         if (saved.latestClothingMentioned) saved.clothingDetected = true;
       }
       usageCompleted = true;
+      trackAnalyticsEvent(isStory ? "chapter_created" : "chat_message_completed");
       window.dispatchEvent(new Event("maite-session-committed"));
       window.dispatchEvent(new Event("maite-account-refresh"));
     } catch (error) {

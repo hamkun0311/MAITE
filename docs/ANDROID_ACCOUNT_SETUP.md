@@ -178,7 +178,14 @@ SDK의 사용자 동의 절차를 거쳐 광고를 표시한다. 서버는 Googl
 - 개인 생성 완료 결과와 스토어 구매는 서버에 보존하지만 Google/Supabase 장애, 만료된 로그인, 앱 강제 종료/저장 용량 초과, 네이티브 결제·광고·키보드·뒤로가기 동작은 실제 기기로 통합 검증해야 한다.
 - 푸시 알림/먼저 말 걸기와 예약 생성은 이번 범위에 추가하지 않았다. 캐릭터의 현재 기능 설명은 계속 선제 알림을 약속하지 않도록 유지한다.
 
-공식 참고: [Capacitor App](https://capacitorjs.com/docs/apis/app), [Supabase Google 로그인](https://supabase.com/docs/guides/auth/social-sign-in/auth-google), [Google 구매 검증 API](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.products), [AdMob SSV 서명 검증](https://developers.google.com/admob/android/ssv).
+## GA4 사용량과 리텐션
+
+- Firebase 프로젝트에서 Google Analytics를 연결하고 패키지명 `com.oestewdio.maite`로 Android 앱을 등록한다. 내려받은 `google-services.json`을 `apps/mobile/android/app/`에 두고 다시 빌드한다. 파일이 없는 앱은 Firebase에 이벤트를 전송하지 않는다.
+- 웹도 측정하려면 같은 GA4 속성에 웹 스트림을 만들고 향상된 측정을 끈다. MAITE가 정규화한 화면 경로로 페이지뷰를 직접 기록한다. `NEXT_PUBLIC_GA4_MEASUREMENT_ID`에 웹 스트림의 `G-...` 값을 설정한 후 Vercel에 재배포한다.
+- GA4 DebugView에서 화면 이동과 기능 완료 이벤트를 확인한다. Android 디버그 이벤트는 `adb shell setprop debug.firebase.analytics.app com.oestewdio.maite`로 켜고, 확인 후 `adb shell setprop debug.firebase.analytics.app .none.`으로 끈다. 웹은 GA4 DebugView의 Google Tag Assistant로 확인한다.
+- GA4 리텐션 보고서나 코호트 탐색에서 최초 방문·실행 뒤 재방문을 확인한다. 최초 캐릭터 생성과 첫 채팅·소설 완성은 활성화 퍼널에 사용하고, Android와 웹은 플랫폼별로 조회한다. 기능 이벤트에는 본문, 사용자 ID, 캐릭터·작품 ID, 거래 식별자를 포함하지 않는다.
+
+공식 참고: [Capacitor App](https://capacitorjs.com/docs/apis/app), [Supabase Google 로그인](https://supabase.com/docs/guides/auth/social-sign-in/auth-google), [Google 구매 검증 API](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.products), [AdMob SSV 서명 검증](https://developers.google.com/admob/android/ssv), [Firebase Analytics Android](https://firebase.google.com/docs/analytics/android/get-started), [GA4 DebugView](https://support.google.com/analytics/answer/7201382).
 
 추가 참고: [Gradle Java 호환성](https://docs.gradle.org/current/userguide/compatibility.html), [Play 일회성 제품 설정](https://support.google.com/googleplay/android-developer/answer/16430488), [서비스 계정의 Play 권한](https://developers.google.com/android-publisher/getting_started).
 ## 문의하기

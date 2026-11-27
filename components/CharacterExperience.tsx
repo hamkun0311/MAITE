@@ -14,6 +14,7 @@ import Link from "next/link";
 import { useActionConfirm } from "./ActionConfirm";
 import { accountEnabled } from "@/lib/account/client";
 import { HEART_COST } from "@/lib/account/policy";
+import { trackAnalyticsEvent } from "@/lib/platform/analytics";
 import type { CharacterProfile } from "@/lib/chat/character";
 import type { ChatSession } from "@/lib/chat/session";
 import LiveChat from "./LiveChat";
@@ -62,7 +63,10 @@ export default function CharacterExperience({ mode, characterDocumentId, rewindT
       if (castConcepts.length) selection = {...selection,castConcepts};
     }
     const image = await onGenerateVisual(kind, context, scene, selection);
-    if (image) setPreview(image);
+    if (image) {
+      setPreview(image);
+      trackAnalyticsEvent(illustration ? "illustration_created" : "chat_image_created");
+    }
   }
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => { if (active) heading.current?.focus({ preventScroll: true }); }, [active]);

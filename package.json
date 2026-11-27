@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "prepare:cad": "node scripts/prepare-cad.mjs",
     "postinstall": "npm run prepare:cad",
-    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts tests/novel.test.ts tests/usage.test.ts tests/account.test.ts tests/deferred-billing.test.ts tests/generation-result.test.ts tests/identity-gallery.test.ts tests/performance-read.test.ts tests/image-cache.test.ts tests/profile-photo.test.ts tests/persistent-images.test.ts tests/checkins.test.ts tests/checkins-api.test.ts tests/local-checkins.test.ts tests/visual-scene.test.ts tests/scene-selection.test.ts tests/rewards.test.ts",
+    "test": "node --experimental-strip-types --test tests/schema.test.ts tests/scene.test.ts tests/characters.test.ts tests/live-chat.test.ts tests/novel.test.ts tests/usage.test.ts tests/account.test.ts tests/deferred-billing.test.ts tests/generation-result.test.ts tests/identity-gallery.test.ts tests/performance-read.test.ts tests/image-cache.test.ts tests/profile-photo.test.ts tests/persistent-images.test.ts tests/checkins.test.ts tests/checkins-api.test.ts tests/local-checkins.test.ts tests/visual-scene.test.ts tests/scene-selection.test.ts tests/rewards.test.ts tests/analytics.test.ts",
     "test:e2e": "playwright test",
     "test:accounts": "playwright test --config playwright.accounts.config.ts",
     "mobile:dev": "vite apps/mobile --config apps/mobile/vite.config.ts",

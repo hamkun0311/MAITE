@@ -15,6 +15,7 @@ import { HEART_COST } from "@/lib/account/policy";
 import { useAccount } from "./AccountProvider";
 import { jsonApi } from "@/lib/platform/commerce";
 import { apiFetch } from "@/lib/platform/api";
+import { trackAnalyticsEvent } from "@/lib/platform/analytics";
 import { imageAssetKey } from "@/lib/platform/image-cache";
 import { loadAccountImage } from "@/lib/platform/image-loader";
 import { accountEnabled } from "@/lib/account/client";
@@ -559,6 +560,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       });
       setMessages([user, { role: "assistant", content: summary }]);
       setCreatedPreview({url,title});
+      trackAnalyticsEvent("character_created");
     } catch (e) {
       if (id !== generation.current) return;
       pending.current = null;

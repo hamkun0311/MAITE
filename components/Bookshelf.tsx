@@ -8,6 +8,7 @@ import {useStudioSession} from "./CharacterStudio";
 import {libraryNovels} from "@/lib/account/library";
 import {readChapter,saveChapter} from "@/lib/account/reading-progress";
 import {jsonApi} from "@/lib/platform/commerce";
+import {trackAnalyticsEvent} from "@/lib/platform/analytics";
 import {usePathname,useSearchParams} from "next/navigation";
 import {useScreenLoading} from "./ScreenLoading";
 import CachedImage from "./CachedImage";
@@ -111,6 +112,7 @@ export function PurchasedNovelScreen() {
         confirmLabel: "구매하기",
       })) return;
       await jsonApi("/api/store", { action: "buy", id: crypto.randomUUID(), listingId: next.id });
+      trackAnalyticsEvent("chapter_purchased");
       setCatalog(current => ({ ...current, owned: [...new Set([...current.owned, next.id])] }));
       setSelectedId(next.id);
       void refresh().catch(() => undefined);

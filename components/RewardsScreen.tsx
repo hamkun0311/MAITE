@@ -4,6 +4,7 @@ import Link from "next/link";
 import {CalendarDays,ChevronLeft,ChevronRight,Heart,LoaderCircle} from "lucide-react";
 import {useAccount} from "./AccountProvider";
 import {jsonApi,invalidateApiReads} from "@/lib/platform/commerce";
+import {trackAnalyticsEvent} from "@/lib/platform/analytics";
 import {koreaDay} from "@/lib/account/policy";
 import {hasRewardClaim,passForDay,rewardsCalendarPath,type RewardCalendar} from "@/lib/account/rewards";
 import {useScreenLoading} from "./ScreenLoading";
@@ -23,7 +24,7 @@ export default function RewardsScreen(){
  function move(delta:number){const next=new Date(Date.UTC(year,m-1+delta,1));const value=dateKey(next.getUTCFullYear(),next.getUTCMonth(),1);setMonth(value);setSelected(value.slice(0,7)===today.slice(0,7)?today:value);}
  async function claim(kind:"attendance"|"pass"){
   if(busy||!data)return;setBusy(true);setNotice("");const requestedMonth=month;
-  try{const result=await jsonApi("/api/rewards",{kind,day:selected});invalidateApiReads();const next=await load();if(requestedMonth===month)setData(next);await refresh();setNotice(result.claimed?`${result.claimed}하트를 받았어요.`:"이미 받은 보상이에요.");}
+  try{const result=await jsonApi("/api/rewards",{kind,day:selected});if(result.claimed)trackAnalyticsEvent(kind==="attendance"?"attendance_claimed":"pass_reward_claimed");invalidateApiReads();const next=await load();if(requestedMonth===month)setData(next);await refresh();setNotice(result.claimed?`${result.claimed}하트를 받았어요.`:"이미 받은 보상이에요.");}
   catch(error){setNotice(error instanceof Error?error.message:"보상을 받지 못했습니다.");}finally{setBusy(false);}
  }
  return <main className="native-page rewards-page"><Link className="native-back" href="/ideal/mypage"><ChevronLeft size={18}/>내 정보</Link><div className="native-page-title"><div><h1>출석·패스 보상</h1><p><HeartText text="오늘의 하트를 받아보세요."/></p></div><CalendarDays size={26}/></div>

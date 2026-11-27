@@ -12,6 +12,7 @@ import { useActionConfirm } from "./ActionConfirm";
 import { accountEnabled } from "@/lib/account/client";
 import { PRODUCTS } from "@/lib/account/policy";
 import { buyHearts, jsonApi, rewardedAdConfig, waitForAdReward, watchReward } from "@/lib/platform/commerce";
+import { trackAnalyticsEvent } from "@/lib/platform/analytics";
 import { isNative } from "@/lib/platform/native";
 import { useScreenLoading } from "./ScreenLoading";
 import WalletBalance from "./WalletBalance";
@@ -118,6 +119,7 @@ export function HeartStoreScreen() {
         setLoadingMessage("광고 보상을 확인하고 있어요…");
         if (!await waitForAdReward(attemptId)) return { title: "광고 보상 확인 중", description: "서버 확인이 늦어지고 있어요. 잠시 후 ‘보상 재확인’을 눌러주세요." };
         setPendingAdReward(undefined);
+        trackAnalyticsEvent("rewarded_ad_granted");
       }
       return { title: "광고 시청 성공", description: "파란 하트 5개를 받았어요.", success: true, refreshWallet: true };
     });
@@ -127,6 +129,7 @@ export function HeartStoreScreen() {
     await run("Google Play에 연결하고 있어요…", "하트 구매를 완료하지 못했어요", async () => {
       const result = await buyHearts(product.id, () => setLoadingMessage("구매를 확인하고 있어요…"));
       if (result.state === "pending") return { title: "결제 승인 대기 중", description: "Google Play에서 결제가 완료되면 ‘구매 복구’를 눌러주세요." };
+      trackAnalyticsEvent("heart_purchase_completed");
       return { title: "하트 구매 성공", description: `빨간 하트 ${product.hearts.toLocaleString()}개가 충전됐어요.`, success: true, refreshWallet: true };
     });
   }
