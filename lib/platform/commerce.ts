@@ -33,15 +33,24 @@ export async function buyHearts(productId?: string) {
     }
   }
 }
+export function rewardedAdConfig() {
+  const mode = process.env.NEXT_PUBLIC_ADMOB_MODE?.trim();
+  if (mode && mode !== "test" && mode !== "production") return undefined;
+  const testing = mode ? mode === "test" : process.env.NEXT_PUBLIC_ADMOB_TESTING !== "false";
+  const configuredId = testing ? process.env.NEXT_PUBLIC_ADMOB_REWARDED_ID_TEST : process.env.NEXT_PUBLIC_ADMOB_REWARDED_ID_PRODUCTION;
+  const adId = configuredId?.trim() || (!mode ? process.env.NEXT_PUBLIC_ADMOB_REWARDED_ID?.trim() : "") ||
+    (testing ? "ca-app-pub-3940256099942544/5224354917" : "");
+  return { testing, adId };
+}
 export async function watchReward(userId: string) {
   if (!isNative()) throw new Error("보상 광고는 Android 앱에서 사용할 수 있습니다.");
+  const config = rewardedAdConfig();
+  if (!config?.adId) throw new Error("광고 모드와 광고 단위 설정을 확인해주세요.");
   const { AdMob, AdmobConsentStatus } = await import("@capacitor-community/admob");
   let consent = await AdMob.requestConsentInfo();
   if (consent.isConsentFormAvailable && consent.status === AdmobConsentStatus.REQUIRED) consent = await AdMob.showConsentForm();
   if (!consent.canRequestAds) throw new Error("광고 개인정보 설정을 확인해주세요.");
-  const testing = process.env.NEXT_PUBLIC_ADMOB_TESTING !== "false";
-  const adId = process.env.NEXT_PUBLIC_ADMOB_REWARDED_ID;
-  if (!adId) throw new Error("광고 단위 설정이 필요합니다.");
+  const { testing, adId } = config;
   await AdMob.initialize({ initializeForTesting: testing });
   await AdMob.prepareRewardVideoAd({ adId, isTesting: testing, ssv: { userId } });
   await AdMob.showRewardVideoAd();

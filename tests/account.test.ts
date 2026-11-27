@@ -502,23 +502,30 @@ test("concurrent retries claim one worker without refunding its active reservati
     release();const response=await first;assert.match(await response.text(),/"done"/);assert.equal(settlements,1);
   }finally{release();globalThis.fetch=originalFetch;for(const[key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
-test("AdMob grants only a correctly signed allowed reward, never a tampered callback", async () => {
-  const originalFetch = globalThis.fetch; const names=["ADMOB_REWARDS_ENABLED","ADMOB_REWARDED_UNIT_ID","NEXT_PUBLIC_SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY"];
+test("AdMob verifies signed test and production rewards, with a legacy production fallback", async () => {
+  const originalFetch = globalThis.fetch; const names=["ADMOB_REWARDS_ENABLED","ADMOB_REWARDED_UNIT_ID","ADMOB_REWARDED_UNIT_ID_TEST","ADMOB_REWARDED_UNIT_ID_PRODUCTION","NEXT_PUBLIC_SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY"];
   const env=Object.fromEntries(names.map(name=>[name,process.env[name]])); let grants=0;
   try {
-    Object.assign(process.env,{ADMOB_REWARDS_ENABLED:"true",ADMOB_REWARDED_UNIT_ID:"unit-123",NEXT_PUBLIC_SUPABASE_URL:"https://database.example",SUPABASE_SERVICE_ROLE_KEY:"test-key"});
+    Object.assign(process.env,{ADMOB_REWARDS_ENABLED:"true",ADMOB_REWARDED_UNIT_ID:"legacy-unit",ADMOB_REWARDED_UNIT_ID_TEST:"test-unit",ADMOB_REWARDED_UNIT_ID_PRODUCTION:"production-unit",NEXT_PUBLIC_SUPABASE_URL:"https://database.example",SUPABASE_SERVICE_ROLE_KEY:"test-key"});
     const pair=generateKeyPairSync("ec",{namedCurve:"prime256v1"});
     globalThis.fetch=async(input)=>{
       if(String(input).includes("verifier-keys.json")) return Response.json({keys:[{keyId:123,pem:pair.publicKey.export({type:"spki",format:"pem"})}]});
       if(String(input).includes("/rpc/grant_ad_reward")){grants++;return Response.json(true);}
       throw new Error("Unexpected external request");
     };
-    const raw=`ad_unit=unit-123&reward_amount=5&timestamp=${Date.now()}&transaction_id=transaction-a&user_id=${A}`;
-    const signature=sign("SHA256",Buffer.from(raw),pair.privateKey).toString("base64url");
-    const url=`https://app.example/api/ads/ssv?${raw}&signature=${signature}&key_id=123`;
-    assert.equal(await verifyAdmob(new URL(url)),true);assert.equal(grants,1);
+    const signedUrl = (unit: string) => {
+      const raw=`ad_unit=${unit}&reward_amount=5&timestamp=${Date.now()}&transaction_id=transaction-${unit}&user_id=${A}`;
+      const signature=sign("SHA256",Buffer.from(raw),pair.privateKey).toString("base64url");
+      return `https://app.example/api/ads/ssv?${raw}&signature=${signature}&key_id=123`;
+    };
+    const url = signedUrl("test-unit");
+    assert.equal(await verifyAdmob(new URL(url)),true);
+    assert.equal(await verifyAdmob(new URL(signedUrl("production-unit"))),true);
+    await assert.rejects(verifyAdmob(new URL(signedUrl("legacy-unit"))),/보상 정보/);
+    delete process.env.ADMOB_REWARDED_UNIT_ID_PRODUCTION;
+    assert.equal(await verifyAdmob(new URL(signedUrl("legacy-unit"))),true);
     await assert.rejects(verifyAdmob(new URL(url.replace("reward_amount=5","reward_amount=50"))),/서명/);
-    await assert.rejects(verifyAdmob(new URL(url+"&reward_amount=5")),/잘못된/);assert.equal(grants,1);
+    await assert.rejects(verifyAdmob(new URL(url+"&reward_amount=5")),/잘못된/);assert.equal(grants,3);
   }finally{globalThis.fetch=originalFetch;for(const [key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
 test("Play validation rejects pending/foreign-account purchases and grants before consuming",async()=>{

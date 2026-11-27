@@ -13,7 +13,13 @@ function read(userId:string):State{
  try{const data=JSON.parse(localStorage.getItem(`maite-local-checkins:${userId}`)||"null");return data&&Array.isArray(data.outbox)?data:{outbox:[]};}catch{return {outbox:[]};}
 }
 function write(userId:string,state:State){localStorage.setItem(`maite-local-checkins:${userId}`,JSON.stringify(state));}
-export function localCheckinStatus(userId:string){try{return localStorage.getItem(`maite-checkin-status:${userId}`)||"안부 예약을 확인하고 있어요.";}catch{return "안부 예약을 확인하고 있어요.";}}
+export function localCheckinStatus(userId:string){
+ try{
+  const status=localStorage.getItem(`maite-checkin-status:${userId}`);
+  // Older versions saved the next reservation time and character count as display text.
+  return status?.startsWith("다음 안부:")?"":status??"안부 예약을 확인하고 있어요.";
+ }catch{return "안부 예약을 확인하고 있어요.";}
+}
 export function updateCheckinStatus(userId:string,message:string){
  if(localCheckinStatus(userId)===message)return;
  try{localStorage.setItem(`maite-checkin-status:${userId}`,message);}catch{/* Storage can be unavailable. */}
@@ -55,7 +61,7 @@ export function syncLocalCheckins(userId:string,nickname?:string){
   // Profile edits can be newer than the signed token's cosmetic nickname claim.
   const plans=granted?nextLocalPlans(userId,{...settings,nickname:nickname?.trim()||settings.nickname},state,now):[];
   const next=plans[0];
-  updateCheckinStatus(userId,!settings.pushEnabled?"앱 알림이 꺼져 있어요.":!granted?"기기 설정에서 알림 권한을 허용해주세요.":!settings.activities.length?"캐릭터와 대화를 마치면 안부를 예약해요.":next?`다음 안부: ${new Date(next.dueAt).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false})} (한국시간) · ${plans.length}명 예약` :"지난 안부에 답장하면 다음 안부를 예약해요.");
+  updateCheckinStatus(userId,!settings.pushEnabled?"앱 알림이 꺼져 있어요.":!granted?"기기 설정에서 알림 권한을 허용해주세요.":!settings.activities.length?"캐릭터와 대화를 마치면 안부를 예약해요.":next?"":"지난 안부에 답장하면 다음 안부를 예약해요.");
   const previous=pendingPlans(stored);
   if(JSON.stringify(plans)===JSON.stringify(previous)){
    if(!LocalNotifications)return next?.dueAt;

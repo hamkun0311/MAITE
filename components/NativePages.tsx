@@ -11,7 +11,7 @@ import { useStudioSession, CharacterCreationScreen } from "./CharacterStudio";
 import { useActionConfirm } from "./ActionConfirm";
 import { accountEnabled } from "@/lib/account/client";
 import { PRODUCTS } from "@/lib/account/policy";
-import { buyHearts, jsonApi, watchReward } from "@/lib/platform/commerce";
+import { buyHearts, jsonApi, rewardedAdConfig, watchReward } from "@/lib/platform/commerce";
 import { isNative } from "@/lib/platform/native";
 
 export function StudioHomeScreen() { return accountEnabled() ? <CharactersScreen/> : <CharacterCreationScreen/>; }
@@ -36,6 +36,9 @@ export function HeartStoreScreen() {
   const { account, refresh } = useAccount(); const confirm = useActionConfirm();
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState("");
   const balance = account ? account.wallet.transferable + account.wallet.bonus : 0;
+  const native = isNative();
+  const rewardAd = rewardedAdConfig();
+  const canWatchReward = Boolean(account && native && rewardAd?.adId && (rewardAd.testing || account.adsEnabled));
   async function run(work: () => Promise<unknown>, success: string) { if (busy) return; setBusy(true); setNotice(""); try { await work(); await refresh(); setNotice(success); } catch (error) { setNotice(error instanceof Error ? error.message : "요청을 완료하지 못했습니다."); } finally { setBusy(false); } }
   async function purchase(product: typeof PRODUCTS[number]) {
     if (!await confirm({ title: "하트를 충전할까요?", description: product.label, lines: [{ label: "결제 금액", value: `${product.won.toLocaleString()}원` }, { label: "즉시 지급", value: `${product.hearts}하트` }, ...("dailyHearts" in product ? [{label:"일일 지급",value:`${product.days}일간 날짜별 ${product.dailyHearts}하트 (최대 ${product.dailyHearts*product.days}하트)`},{label:"최대 총 지급",value:`${product.totalHearts}하트`}] : []), { label: "충전 후 보유 하트", value: `${(balance + product.hearts).toLocaleString()}하트` }], confirmLabel: "구매하기" })) return;
@@ -45,7 +48,7 @@ export function HeartStoreScreen() {
     <section className="native-wallet"><span>내가 가진 하트</span><strong><Heart fill="currentColor" size={29}/>{balance.toLocaleString()}</strong><small>빨간 하트 {account?.wallet.transferable ?? 0} · 파란 하트 {account?.wallet.bonus ?? 0}</small></section>
     <div className="native-section-title"><h2>하트 충전</h2><span>Google Play</span></div><div className="heart-product-list">{PRODUCTS.map((product, index) => <article className={`heart-product ${index === 2 ? "recommended" : ""}`} key={product.id}><div className="product-icon">{index === 3 ? <Sparkles size={26}/> : <Heart size={27} fill="currentColor"/>}</div><div><h3>{product.label}</h3>{index === 2 && <span className="native-badge">추천 상품</span>}{"description" in product && <small>{product.description}</small>}{index === 3 && <small>자동 갱신 없는 30일 이용권</small>}</div><button type="button" disabled={busy || !account?.billingEnabled || !isNative()} onClick={() => void purchase(product)}>{product.won.toLocaleString()}원</button></article>)}</div>
     {!isNative() && <p className="native-help">하트 구매는 Android 앱에서 이용할 수 있어요.</p>}{isNative() && !account?.billingEnabled && <p className="native-help">하트 충전 서비스 준비 중이에요.</p>}
-    <section className="native-reward-card"><Gift size={26}/><div><h3>광고 보고 파란 하트 받기</h3><p>한 번에 5개 · 하루 최대 5회 · 정산 제외</p></div><button disabled={busy || !account?.adsEnabled || !isNative()} onClick={() => void run(() => watchReward(account!.userId), "광고 보상 확인 후 파란 하트에 반영됩니다.")}>받기</button></section>
+    <section className="native-reward-card"><Gift size={26}/><div><h3>광고 보고 파란 하트 받기</h3><p>한 번에 5개 · 하루 최대 5회 · 정산 제외</p>{native && <p>{rewardAd ? (rewardAd.testing ? "광고 모드 · 테스트" : "광고 모드 · 운영") : "광고 모드 설정 오류"}</p>}</div><button disabled={busy || !canWatchReward} onClick={() => account && void run(() => watchReward(account.userId), rewardAd?.testing && !account.adsEnabled ? "테스트 광고 재생을 완료했어요." : "서버가 광고 보상을 확인하면 파란 하트에 반영됩니다.")}>받기</button></section>
     <p className="native-help">하트 패스는 즉시 200하트와 30일간 날짜별 20하트로 최대 800하트를 드려요. 내 정보의 출석보상 달력에서 직접 받으며, 놓친 패스 보상도 나중에 받을 수 있어요. 자동으로 갱신되지 않아요.</p>
     <button className="native-text-button" disabled={busy || !account?.billingEnabled || !isNative()} onClick={() => void run(() => buyHearts(), "미완료 구매를 확인했습니다.")}>구매 복구 <ChevronRight size={16}/></button>{notice && <p role="status">{notice}</p>}
   </main>;

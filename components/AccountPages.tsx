@@ -37,7 +37,7 @@ export function MyPageScreen() {
     <Link className="native-reward-entry" href="/ideal/notices">공지사항 <ChevronRight size={18}/></Link>
     <Link className="native-reward-entry" href="/ideal/rewards">출석보상 <ChevronRight size={18}/></Link>
     <Link className="native-reward-entry" href="/ideal/support">문의하기 <ChevronRight size={18}/></Link>
-    <Link className="native-reward-entry" href="/ideal/settlements">정산 요청 <ChevronRight size={18}/></Link>
+    <Link className="native-reward-entry" href="/ideal/settlements">정산요청 <ChevronRight size={18}/></Link>
     <section className="native-wallet"><span><HeartText text="보유 하트"/></span><strong className="heart-total"><Heart size={28} fill="currentColor" aria-hidden="true"/>{account ? (account.wallet.transferable + account.wallet.bonus).toLocaleString() : "0"}</strong><small>정산 가능 {account?.wallet.transferable ?? 0} · 정산 제외 {account?.wallet.bonus ?? 0}</small><Link className="native-account-primary" href="/ideal/store"><HeartText text="하트"/> 충전 <ChevronRight size={16}/></Link></section>
     <section className="native-settings-list"><h2>내 계정정보</h2><dl><div><dt>닉네임</dt><dd>{account?.profile?.display_name || "당신"}</dd></div><div><dt>성별</dt><dd>{account?.profile?.gender || "선택 안 함"}</dd></div><div><dt>무료 대화</dt><dd>{account?.wallet.free_chats ?? 0}회</dd></div></dl><p>대화와 소설은 캐릭터를 선택하면 볼 수 있어요.</p></section>
     <NotificationSettings/>

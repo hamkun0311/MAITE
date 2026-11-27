@@ -156,11 +156,18 @@ Play API에서 서비스 계정의 `ACCESS_GRANTED`, MAITE 앱 접근, 재무 �
 
 ## 4. 보상 광고
 
-AdMob Android 앱 및 보상형 광고 단위를 생성하고 보상을 5하트로 설정한다. SSV URL을 `https://서버/api/ads/ssv`로 등록한다. 서버의 `ADMOB_REWARDED_UNIT_ID`는 콜백의 `ad_unit` 값, 앱의 `NEXT_PUBLIC_ADMOB_REWARDED_ID`는 SDK가 받는 광고 단위 ID다. 서버 `ADMOB_REWARDS_ENABLED=true`는 연결 테스트 준비 후 켠다.
+AdMob Android 앱 및 보상형 광고 단위를 생성하고 보상을 5하트로 설정한다. SSV URL을 `https://서버/api/ads/ssv`로 등록한다. 서버의 `ADMOB_REWARDED_UNIT_ID_TEST`, `ADMOB_REWARDED_UNIT_ID_PRODUCTION`에는 해당 광고 단위에서 받은 서명된 콜백의 `ad_unit` 값을 설정한다. 콜백을 받아 보상을 지급할 배포 환경에서 `ADMOB_REWARDS_ENABLED=true`를 켠다.
 
 SDK의 사용자 동의 절차를 거쳐 광고를 표시하며 앱 완료 콜백으로 잔액을 올리지 않는다. 서버는 Google ECDSA 서명과 허용 단위·보상량·계정·타임스탬프를 검사하고 거래 ID 중복/일일 횟수를 DB에서 강제한다. 테스트 광고에서는 실제 SSV 보상이 발생하지 않을 수 있다. 이때 클라이언트 임의 보상으로 우회하지 않는다.
 
-개발 기본값은 테스트 광고 모드와 Google 샘플 앱 ID다. 실제 빌드에는 Gradle `-PADMOB_APP_ID=실제앱ID`를 전달하고 `NEXT_PUBLIC_ADMOB_TESTING=false`로 바꾸며 재빌드한다. 실제 앱 ID·개인정보 동의·SSV 테스트가 끝나기 전 공개 광고를 켜지 않는다.
+루트 `.env.local`의 `NEXT_PUBLIC_ADMOB_MODE`를 `test` 또는 `production`으로 설정한 뒤 `npm run android:apk` 또는 `npm run android:aab`로 다시 빌드한다. 모드는 빌드 로그와 Android 하트 스토어에 표시된다.
+
+| 모드 | Gradle 앱 ID | 광고 SDK 단위 ID |
+| --- | --- | --- |
+| 테스트 | `ADMOB_APP_ID_TEST` | `NEXT_PUBLIC_ADMOB_REWARDED_ID_TEST` |
+| 운영 | `ADMOB_APP_ID_PRODUCTION` | `NEXT_PUBLIC_ADMOB_REWARDED_ID_PRODUCTION` |
+
+테스트 모드는 기본 샘플 ID로 재생을 확인할 수 있다. 자체 테스트 단위로 보상까지 확인할 때는 AdMob에 등록한 테스트 기기를 사용한다. SDK가 테스트 기기로 인식한 경우 지정한 광고 단위를 사용하며, 그 외 기기에는 SDK 샘플 광고를 요청한다. Android Studio에서 Gradle을 직접 실행할 때는 선택한 모드와 동일한 앱 ID를 Gradle 속성 `ADMOB_APP_ID`로 전달한다.
 
 ## 확인한 것과 남은 것
 

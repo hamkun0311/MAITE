@@ -15,8 +15,9 @@ export async function verifyAdmob(url: URL) {
   const key = keys.values.find(key => String(key.keyId) === url.searchParams.get("key_id"));
   if (!key || !verify("SHA256", Buffer.from(raw.slice(0, marker)), key.pem, Buffer.from(url.searchParams.get("signature") ?? "", "base64url"))) throw new AccountError("서명 검증 실패", 403);
   const userId = url.searchParams.get("user_id") ?? ""; const transaction = url.searchParams.get("transaction_id") ?? "";
-  const unit = process.env.ADMOB_REWARDED_UNIT_ID;
-  if (!unit || url.searchParams.get("ad_unit") !== unit || url.searchParams.get("reward_amount") !== "5" || !/^[0-9a-f-]{36}$/i.test(userId) || !transaction || transaction.length > 500) throw new AccountError("보상 정보가 일치하지 않습니다.", 403);
+  const units = [process.env.ADMOB_REWARDED_UNIT_ID_TEST, process.env.ADMOB_REWARDED_UNIT_ID_PRODUCTION?.trim() || process.env.ADMOB_REWARDED_UNIT_ID]
+    .map(unit => unit?.trim()).filter(Boolean);
+  if (!units.includes(url.searchParams.get("ad_unit") ?? "") || url.searchParams.get("reward_amount") !== "5" || !/^[0-9a-f-]{36}$/i.test(userId) || !transaction || transaction.length > 500) throw new AccountError("보상 정보가 일치하지 않습니다.", 403);
   const timestamp = Number(url.searchParams.get("timestamp"));
   if (!Number.isFinite(timestamp) || Math.abs(Date.now() - timestamp) > 86400000) throw new AccountError("만료된 보상입니다.", 403);
   return rpc("grant_ad_reward", { p_user: userId, p_transaction: transaction });
