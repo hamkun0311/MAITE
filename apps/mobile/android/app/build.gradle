@@ -15,7 +15,7 @@ android {
         applicationId "com.oestewdio.maite"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 2
+        versionCode 3
         versionName "1.0.1"
         // Google's sample app ID keeps development builds safe. Set -PADMOB_APP_ID for production.
         manifestPlaceholders = [admobAppId: project.findProperty('ADMOB_APP_ID') ?: 'ca-app-pub-3940256099942544~3347511713']
