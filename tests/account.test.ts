@@ -15,6 +15,156 @@ import { novelComplete, libraryNovels } from "../lib/account/library.ts";
 import { emptyStoryState } from "../lib/novel/state.ts";
 import { userProfileSchema } from "../lib/account/profile.ts";
 import { PRODUCTS } from "../lib/account/policy.ts";
+import { GET as readSupport, POST as writeSupport } from "../app/api/support/route.ts";
+import { GET as readSettlements, POST as requestSettlement } from "../app/api/settlements/route.ts";
+import { GET as readNotices, POST as publishNotice } from "../app/api/notices/route.ts";
+
+test("only the verified operator sees settlement account numbers and can record completion", async t => {
+  for (const [key, value] of Object.entries({ ACCOUNT_FEATURES_ENABLED: "true", NEXT_PUBLIC_SUPABASE_URL: "https://settlements.test", SUPABASE_SERVICE_ROLE_KEY: "settlements-test-key" })) {
+    const previous = process.env[key];
+    process.env[key] = value;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  let email = "reader@example.com", confirmed = true;
+  let writes = 0;
+  const paidAt = "2026-11-27T01:00:00Z";
+  let completedAt: string | undefined;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    const target = new URL(String(url));
+    if (target.pathname === "/auth/v1/user") return Response.json({ id: A, email, email_confirmed_at: confirmed ? "2026-11-26T00:00:00Z" : undefined });
+    if (target.pathname.endsWith("/rpc/request_heart_settlement")) {
+      assert.deepEqual(JSON.parse(String(init?.body)), { p_user: A, p_id: B, p_payout_on: "2099-01-10", p_hearts: 500, p_bank: "은행", p_account_number: "0123456789", p_account_holder: "예금주", p_consent: true });
+      writes++;
+      return Response.json(null);
+    }
+    if (target.pathname.endsWith("/rpc/complete_heart_settlement")) {
+      assert.equal(email, "ohs999999@gmail.com");
+      assert.equal(confirmed, true);
+      assert.deepEqual(JSON.parse(String(init?.body)), { p_id: B, p_operator: A });
+      completedAt = paidAt;
+      return Response.json(paidAt);
+    }
+    assert.equal(target.pathname, "/rest/v1/heart_settlements");
+    const operator = confirmed && email === "ohs999999@gmail.com";
+    assert.equal(target.searchParams.get("user_id"), operator ? null : `eq.${A}`);
+    assert.equal(target.searchParams.get("select")?.split(",").includes("account_number"), operator);
+    assert.equal(target.searchParams.get("payout_on"), "eq.2099-01-10");
+    assert.ok(target.searchParams.get("select")?.split(",").includes("completed_at"));
+    return Response.json([{ id: B, payout_on: "2099-01-10", completed_at: completedAt,
+      ...(operator ? { user_id: B, account_number: "0123456789" } : { user_id: A }) }]);
+  });
+  const request = (input?: object) => new Request("http://localhost/api/settlements?month=2099-01", {
+    method: input ? "POST" : "GET", headers: { Authorization: "Bearer test", "Content-Type": "application/json" },
+    ...(input ? { body: JSON.stringify(input) } : {}),
+  });
+  const reader = await readSettlements(request());
+  assert.equal(reader.headers.get("Cache-Control"), "private, no-store");
+  assert.deepEqual(await reader.json(), { requests: [{ id: B, payout_on: "2099-01-10", canCancel: true }], isAdmin: false, hasMore: false });
+  const complete = { action: "complete", id: B };
+  assert.equal((await requestSettlement(request(complete))).status, 403);
+  email = "ohs999999@gmail.com";
+  confirmed = false;
+  assert.equal((await (await readSettlements(request())).json()).isAdmin, false);
+  assert.equal((await requestSettlement(request(complete))).status, 403);
+  confirmed = true;
+  assert.deepEqual(await (await readSettlements(request())).json(), { requests: [{ id: B, user_id: B, payout_on: "2099-01-10", account_number: "0123456789", canCancel: false }], isAdmin: true, hasMore: false });
+  const input = { id: B, month: "2099-01", hearts: 500, bank: "은행", accountNumber: "0123-456789", accountHolder: "예금주", consent: true };
+  assert.equal((await requestSettlement(request({ ...input, consent: false }))).status, 400);
+  assert.equal((await requestSettlement(request(input))).status, 200);
+  assert.equal(writes, 1);
+  const response = await requestSettlement(request(complete));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true, completedAt: paidAt });
+  email = "reader@example.com";
+  assert.deepEqual(await (await readSettlements(request())).json(), { requests: [{ id: B, payout_on: "2099-01-10", completed_at: paidAt, canCancel: false }], isAdmin: false, hasMore: false });
+});
+
+test("signed-in readers can read notices and only the verified operator can publish", async t => {
+  for (const [key, value] of Object.entries({ ACCOUNT_FEATURES_ENABLED: "true", NEXT_PUBLIC_SUPABASE_URL: "https://notices.test", SUPABASE_SERVICE_ROLE_KEY: "notices-test-key" })) {
+    const previous = process.env[key];
+    process.env[key] = value;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  let email = "reader@example.com", confirmed = true, writes = 0;
+  const item = { id: B, title: "점검 안내", body: "점검 예정" };
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    const target = new URL(String(url));
+    if (target.pathname === "/auth/v1/user") return Response.json({ id: A, email, email_confirmed_at: confirmed ? "2026-11-26T00:00:00Z" : undefined });
+    assert.equal(target.pathname, "/rest/v1/notices");
+    if (init?.method === "GET") return Response.json([item]);
+    assert.deepEqual(JSON.parse(String(init?.body)), { title: item.title, body: item.body });
+    writes++;
+    return new Response(null, { status: 201 });
+  });
+  const request = (input?: object) => new Request("http://localhost/api/notices", {
+    method: input ? "POST" : "GET", headers: { Authorization: "Bearer test", "Content-Type": "application/json" },
+    ...(input ? { body: JSON.stringify(input) } : {}),
+  });
+  const input = { title: item.title, body: item.body };
+  assert.deepEqual(await (await readNotices(request())).json(), { notices: [item], isAdmin: false, hasMore: false });
+  assert.equal((await publishNotice(request(input))).status, 403);
+  email = "ohs999999@gmail.com"; confirmed = false;
+  assert.equal((await publishNotice(request(input))).status, 403);
+  confirmed = true;
+  assert.equal((await (await readNotices(request())).json()).isAdmin, true);
+  assert.equal((await publishNotice(request({ ...input, title: " " }))).status, 400);
+  assert.equal((await publishNotice(request(input))).status, 201);
+  assert.equal(writes, 1);
+});
+
+test("support reads and edits are scoped to the signed-in owner and only a verified admin can reply", async t => {
+  const env = { ACCOUNT_FEATURES_ENABLED: "true", NEXT_PUBLIC_SUPABASE_URL: "https://support.test", SUPABASE_SERVICE_ROLE_KEY: "support-test-key" };
+  for (const [key, value] of Object.entries(env)) {
+    const previous = process.env[key];
+    process.env[key] = value;
+    t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  }
+  let email = "reader@example.com", confirmed = true;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    const target = new URL(String(url));
+    if (target.pathname === "/auth/v1/user") return Response.json({ id: A, email, email_confirmed_at: confirmed ? "2026-11-26T00:00:00Z" : undefined });
+    if (target.pathname === "/rest/v1/support_replies") {
+      assert.equal(email, "ohs999999@gmail.com");
+      assert.equal(confirmed, true);
+      return new Response(null, { status: 201 });
+    }
+    assert.equal(target.pathname, "/rest/v1/support_inquiries");
+    assert.equal(target.searchParams.get("user_id"), email === "ohs999999@gmail.com" && init?.method === "GET" ? null : `eq.${A}`);
+    if (init?.method !== "GET") return Response.json([]);
+    return Response.json([{ id: B, user_id: email === "ohs999999@gmail.com" ? B : A, replies: [] }]);
+  });
+  const request = (input?: object) => new Request("http://localhost/api/support", {
+    method: input ? "POST" : "GET", headers: { Authorization: "Bearer verified-fixture", "Content-Type": "application/json" },
+    ...(input ? { body: JSON.stringify(input) } : {}),
+  });
+  const own = await (await readSupport(request())).json();
+  assert.deepEqual(own, { inquiries: [{ id: B, isOwn: true, replies: [] }], isAdmin: false, hasMore: false });
+  assert.equal((await writeSupport(request({ action: "delete", id: B }))).status, 404);
+  assert.equal((await writeSupport(request({ action: "reply", id: B, body: "답글" }))).status, 403);
+  email = "ohs999999@gmail.com"; confirmed = false;
+  assert.equal((await writeSupport(request({ action: "reply", id: B, body: "답글" }))).status, 403);
+  confirmed = true;
+  const all = await (await readSupport(request())).json();
+  assert.equal(all.isAdmin, true);
+  assert.equal(all.inquiries[0].isOwn, false);
+  assert.equal((await writeSupport(request({ action: "reply", id: B, body: "답글" }))).status, 200);
+});
+
+test("support tables are private and deleting an inquiry deletes its replies", async () => {
+  const db = new PGlite();
+  try {
+    await db.exec("create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key);");
+    await db.exec(await readFile(new URL("../supabase/migrations/202611260002_support_inquiries.sql", import.meta.url), "utf8"));
+    await db.query("insert into auth.users values ($1)", [A]);
+    await db.exec("set role authenticated");
+    await assert.rejects(db.query("select * from support_inquiries"), /permission denied/);
+    await db.exec("set role service_role");
+    const row = await db.query<{ id: string }>("insert into support_inquiries(user_id,author_name,title,body) values ($1,'사용자','제목','내용') returning id", [A]);
+    await db.query("insert into support_replies(inquiry_id,body) values ($1,'답글')", [row.rows[0].id]);
+    await db.query("delete from support_inquiries where id=$1", [row.rows[0].id]);
+    assert.deepEqual((await db.query("select id from support_replies")).rows, []);
+  } finally { await db.close(); }
+});
 
 test("rewinding a saved story restores both documents and rejects stale saves", async () => {
   const db = new PGlite();
@@ -162,7 +312,8 @@ test("purchased prose uses the buyer nickname and adjusts Korean particles at na
 test("novels publish every chapter atomically from a saved complete work and trusted final generation", () => {
   const sessions = createStudioSessions();
   const archive = Array.from({ length: 5 }, (_, index) => [{ role: "user", content: "비공개 지시" }, { role: "assistant", content: `회차 ${index + 1}의 원고`, readerNickname: index === 0 ? "햄군" : index === 1 ? null : undefined }]).flat();
-  const state = { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content, nextChapterGoal: "" };
+  const state = { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content, nextChapterGoal: "",
+    seriesArc: { endingMode: "final" as const, endingPromise: "서점을 연다", installments: Array.from({ length: 5 }, (_, index) => ({ chapter: index + 1, goal: "목표", payoff: "결과" })) } };
   const snapshot = snapshotSchema.parse({ version: 1, id: job, art: { title: "서하", summary: "", prompt: "비공개 프롬프트", style: "neutral", description: "서점", profile: { name: "서하", age: 25, personality: "다정함", concept: "서점" }, width: 72, height: 128, jobId: job },
     chat: { ...sessions.chat, committed: [{ role: "user", content: "비공개 대화" }] }, story: { ...sessions.story, documentId: B, lastJobId: job, archive, storyState: state }, timeline: sessions.chat.timeline.state });
   const finalEvent = { type: "chapter", text: state.previousProse, state };

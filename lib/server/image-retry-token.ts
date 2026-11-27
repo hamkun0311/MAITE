@@ -1,11 +1,12 @@
 import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:crypto";
 import { z } from "zod";
+import { characterRenderStyle } from "../characters/render-style.ts";
 
 const lifetime = 60 * 60 * 1000;
 const maxTokenLength = 6500;
 const demoSecret = randomBytes(32);
-const claims = z.object({ expires: z.number(), approved: z.literal(true).optional(), brief: z.unknown().optional(), rejection: z.string().max(300).optional() });
-export type ImageRetryProgress = Pick<z.infer<typeof claims>, "approved" | "brief" | "rejection">;
+const claims = z.object({ expires: z.number(), approved: z.literal(true).optional(), brief: z.unknown().optional(), rejection: z.string().max(300).optional(), renderStyle: characterRenderStyle.optional() });
+export type ImageRetryProgress = Omit<z.infer<typeof claims>, "expires">;
 
 export function imageRetryToken(owner: string | undefined, attempt: string, scope: string, fingerprint: string) {
   const secret = process.env.SUPABASE_SERVICE_ROLE_KEY || (owner ? undefined : demoSecret);
@@ -23,8 +24,8 @@ export function imageRetryToken(owner: string | undefined, attempt: string, scop
         decipher.setAuthTag(bytes.subarray(12, 28));
         const decoded = claims.safeParse(JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString("utf8")));
         if (!decoded.success || decoded.data.expires <= Date.now()) return;
-        const { approved, brief, rejection } = decoded.data;
-        return { approved, brief, rejection };
+        const { expires: _expires, ...progress } = decoded.data;
+        return progress;
       } catch { return; }
     },
     issue(progress: ImageRetryProgress) {

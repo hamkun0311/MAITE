@@ -10,12 +10,18 @@ import { userProfileSchema } from "@/lib/account/profile";
 import { personalizeNovelText } from "@/lib/novel/reader-name";
 import { listingImagePaths, novelListingGallery, studioListingGallery } from "@/lib/server/listing-media";
 import { MAX_GALLERY_IMAGES } from "@/lib/characters/gallery";
+import { characterRenderStyle, characterStyleHeader, type CharacterRenderStyle } from "@/lib/characters/render-style";
 export const OPTIONS = preflight;
 const publish = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("character"), profile: characterProfileSchema, description: z.string().max(6000), imageJobId: z.uuid() }).strict(),
   z.object({ kind: z.literal("chapter"), text: z.string().trim().min(1).max(16000), chapter: z.number().int().min(1) }).strict(),
 ]);
 type StoreDb = ReturnType<typeof serviceDb>;
+function characterSaleFilter(documentId: string, jobId: unknown) {
+  const job = z.uuid().safeParse(jobId);
+  const source = `content->>sourceDocumentId.eq.${documentId}`;
+  return job.success ? `${source},and(content->>sourceDocumentId.is.null,content->>imageJobId.eq.${job.data})` : source;
+}
 function profileNickname(profile: unknown) {
   const parsed = userProfileSchema.safeParse(profile);
   return parsed.success ? parsed.data.nickname : undefined;
@@ -62,22 +68,42 @@ export async function GET(request: Request) {
     if (!allowedOrigin(request)) throw new AccountError("허용되지 않은 요청입니다.", 403);
     const { db, user } = await measure("auth", () => requireAccount(request));
     const params = new URL(request.url).searchParams;
+    const saleDocument = params.get("saleDocument");
+    if (saleDocument) {
+      const documentId = z.uuid().parse(saleDocument);
+      const kind = z.enum(["character", "novel"]).parse(params.get("kind"));
+      const document = await db.from("documents").select("job_id:payload->art->>jobId")
+        .eq("id", documentId).eq("user_id", user.id).is("deleted_at", null).maybeSingle();
+      if (document.error) throw new AccountError("원본 작품을 확인하지 못했습니다.", 503);
+      if (!document.data) throw new AccountError("본인의 저장된 작품을 선택해주세요.", 404);
+      let query = db.from("store_listings").select("id,active", { count: "exact" }).eq("seller_id", user.id)
+        .eq("kind", kind === "novel" ? "chapter" : "character");
+      if (kind === "novel") query = query.eq("content->novel->>id", documentId);
+      else query = query.or(characterSaleFilter(documentId, document.data.job_id));
+      const { data, error, count } = await query.order("active", { ascending: false }).limit(1).maybeSingle();
+      if (error) throw new AccountError("판매 상태를 확인하지 못했습니다.", 503);
+      return Response.json({ sale: data ? { listingId: data.id, active: data.active, count: count ?? 1 } : null }, { headers });
+    }
     const id = params.get("id");
     if (id) {
       const checkedId = z.uuid().parse(id);
+      const galleryOnly = params.get("gallery") === "1";
       const [listing, order] = await measure("listing_db", () => Promise.all([
         db.from("store_listings").select("*").eq("id", checkedId).single(),
         db.from("store_orders").select("id").eq("listing_id", checkedId).eq("buyer_id", user.id).maybeSingle(),
       ]));
       if (listing.error || !listing.data) throw new AccountError("상품을 찾지 못했습니다.", 404);
+      if (order.error) throw new AccountError("구매 내역을 확인하지 못했습니다.", 503);
+      if (galleryOnly && !order.data) throw new AccountError("구매 후 갤러리를 열 수 있습니다.", 403);
       if (listing.data.seller_id !== user.id && !order.data) throw new AccountError("구매 후 열람할 수 있습니다.", 403);
       const { content, storage_path: storedPath } = listing.data;
       const [media, chapterText] = await Promise.all([
         measure("listing_media", () => listingImagePaths(db, listing.data)).catch(() => {
+          if (galleryOnly) throw new AccountError("갤러리 이미지를 불러오지 못했습니다.", 503);
           console.warn("listing-gallery-unavailable");
           return [];
         }),
-        listing.data.kind === "chapter" && order.data && listing.data.seller_id !== user.id && typeof content?.text === "string" && content.readerNickname !== null
+        !galleryOnly && listing.data.kind === "chapter" && order.data && listing.data.seller_id !== user.id && typeof content?.text === "string" && content.readerNickname !== null
           ? measure("reader_nickname", async () => {
             const [authorNickname, buyerNickname] = await Promise.all([
               typeof content.readerNickname === "string" ? content.readerNickname : legacyAuthorNickname(db, listing.data.seller_id, content.novel?.id),
@@ -90,7 +116,7 @@ export async function GET(request: Request) {
         ? await listingCoverPaths(db, [listing.data]).then(paths => paths.get(checkedId)).catch(() => undefined) : undefined);
       const paths = [...new Set([path, ...media.map(image => image.path)].filter((item): item is string => !!item))];
       const signed = paths.length ? await measure("storage_sign", () => signedImages.get(db, user.id, paths.flatMap(item => [item, thumbnailPath(item)]))).catch(error => {
-        if (listing.data.kind !== "chapter") throw error;
+        if (galleryOnly || listing.data.kind !== "chapter") throw error;
         console.warn("chapter-media-unavailable");
         return new Map<string, string | undefined>();
       }) : new Map<string, string | undefined>();
@@ -100,6 +126,9 @@ export async function GET(request: Request) {
       });
       const originalUrl = path ? signed.get(path) : undefined;
       const originalThumbnail = path ? signed.get(thumbnailPath(path)) : undefined;
+      if (galleryOnly) return Response.json({ kind: listing.data.kind, title: content?.novel?.title ?? listing.data.title,
+        novelId: content?.novel?.id, images, imageUrl: originalUrl, thumbnailUrl: originalThumbnail,
+      }, { headers: { ...headers, "Cache-Control": "private, no-store" } });
       const { storage_path: _storage, content: _content, ...details } = listing.data;
       const { gallery: _gallery, galleryVersion: _version, coverPath: _cover, ...publicContent } = content ?? {};
       return Response.json({ ...details, content: chapterText === undefined ? publicContent : { ...publicContent, text: chapterText }, images, imageUrl: originalUrl, thumbnailUrl: originalThumbnail }, { headers: { ...headers, "Cache-Control": "private, no-store" } });
@@ -121,40 +150,39 @@ export async function GET(request: Request) {
       })).filter(row => row.active || ownedIds.has(row.id));
       return Response.json({ listings, owned }, { headers: { ...headers, "Cache-Control": "private, no-store" } });
     }
-    const columns = "id,seller_id,kind,title,description,created_at,active,storage_path,cover_path:content->>coverPath,authorNickname:content->>authorNickname,characterName:content->profile->>name,characterAge:content->profile->age,source_document_id:content->>sourceDocumentId,image_job_id:content->>imageJobId,novel:content->novel,chapter:content->chapter";
-    const [orders, active, selling] = await measure("store_db", () => Promise.all([
+    const columns = "id,seller_id,kind,title,description,created_at,active,storage_path,cover_path:content->>coverPath,authorNickname:content->>authorNickname,characterName:content->profile->>name,characterAge:content->profile->age,source_document_id:content->>sourceDocumentId,image_job_id:content->>imageJobId,novel:content->novel,chapter:content->chapter,purchases:store_orders(count)";
+    const [orders, active] = await measure("store_db", () => Promise.all([
       db.from("store_orders").select("listing_id").eq("buyer_id", user.id).order("created_at", { ascending: false }).limit(1000),
-      db.from("store_listings").select(columns).eq("active", true).order("created_at", { ascending: false }).limit(100),
-      db.from("store_listings").select(columns).eq("seller_id", user.id).order("created_at", { ascending: false }).limit(100),
+      db.from("store_listings").select(columns).eq("active", true).neq("seller_id", user.id).order("created_at", { ascending: false }).limit(100),
     ]));
     if (orders.error) throw new AccountError("구매 기록을 불러오지 못했습니다.", 503);
     const owned = orders.data.map(order => order.listing_id);
-    const visibleIds = new Set([...(active.data ?? []), ...(selling.data ?? [])].map(row => row.id));
+    const visibleIds = new Set((active.data ?? []).map(row => row.id));
     const missing = owned.filter(id => !visibleIds.has(id)).slice(0,100);
     const purchased = missing.length ? await measure("owned_db", () => db.from("store_listings").select(columns).in("id", missing)) : { data: [], error: null };
-    const results = [active, selling, purchased];
+    const results = [active, purchased];
     if (results.some(result => result.error)) throw new AccountError("스토어를 불러오지 못했습니다.", 503);
     const listings = [...new Map(results.flatMap(result => result.data ?? []).map(listing => [listing.id, listing])).values()]
       .map(listing => ({ ...listing, active: listing.active && (listing.kind !== "chapter" || isPublishedNovel(listing.novel)) }))
-      .filter(listing => listing.active || listing.seller_id === user.id || owned.includes(listing.id));
-    const legacySellerIds = [...new Set(listings.filter(row => !row.authorNickname && row.seller_id !== user.id).map(row => row.seller_id))];
+      .filter(listing => listing.seller_id !== user.id && (listing.active || owned.includes(listing.id)));
+    const legacySellerIds = [...new Set(listings.filter(row => !row.authorNickname).map(row => row.seller_id))];
     const previews = measure("cover_images", () => listingPreviews(db, user.id, listings)).catch(() => {
       console.warn("store-cover-unavailable");
       return new Map<string,string|undefined>();
     });
-    const [images, legacyProfiles, ownNickname, legacyCharacters] = await Promise.all([
+    const [images, legacyProfiles, legacyCharacters] = await Promise.all([
       previews,
       legacySellerIds.length ? db.from("profiles").select("id,display_name").in("id", legacySellerIds) : undefined,
-      listings.some(row => !row.authorNickname && row.seller_id === user.id) ? accountNickname(db, user.id, user.user_metadata?.maite_profile) : undefined,
       legacyCharacterDetails(db, listings),
     ]);
     const authorNames = new Map((legacyProfiles?.data ?? []).map(profile => [profile.id, profile.display_name]));
-    return Response.json({ listings: listings.map(({storage_path: _path, cover_path: _cover, source_document_id, image_job_id, ...listing}) => {
+    return Response.json({ listings: listings.map(({storage_path: _path, cover_path: _cover, source_document_id, image_job_id, purchases, ...listing}) => {
       const original = legacyCharacters.get(`doc:${listing.seller_id}:${source_document_id}`) ?? legacyCharacters.get(`job:${listing.seller_id}:${image_job_id}`);
       return {...listing,
+        purchaseCount: purchases?.[0]?.count ?? 0,
         characterName: listing.characterName || original?.name,
         characterAge: listing.characterAge ?? original?.age,
-        authorNickname: listing.authorNickname || (listing.seller_id === user.id ? ownNickname : authorNames.get(listing.seller_id)),
+        authorNickname: listing.authorNickname || authorNames.get(listing.seller_id),
         thumbnailUrl:images.get(listing.id),
       };
     }), owned }, { headers });
@@ -172,20 +200,31 @@ export async function POST(request: Request) {
       z.object({ action: z.literal("publishNovel"), documentId: z.uuid(), title: z.string().trim().min(1).max(100), description: z.string().trim().max(2000), coverJobId: z.uuid().optional() }).strict(),
       z.object({ action: z.literal("publishCharacter"), documentId: z.uuid(), title: z.string().trim().min(1).max(100), description: z.string().trim().max(2000), coverJobId: z.uuid().optional() }).strict(),
       z.object({ action: z.literal("unpublish"), listingId: z.uuid() }).strict(),
-      z.object({ action: z.literal("setSaleStatus"), listingId: z.uuid(), active: z.boolean() }).strict(),
+      z.object({ action: z.literal("setSaleStatus"), listingId: z.uuid(), active: z.boolean(), documentId: z.uuid().optional() }).strict(),
     ]).parse(JSON.parse(text));
     if (input.action === "buy") {
       const listing = await db.from("store_listings").select("kind,content").eq("id", input.listingId).single();
       if (listing.error || !listing.data) throw new AccountError("구매할 상품을 찾지 못했습니다.", 404);
       if (listing.data.kind === "chapter" && !isPublishedNovel(listing.data.content?.novel)) throw new AccountError("소설로 등록된 회차만 구매할 수 있습니다.", 409);
-      return Response.json(await rpc("buy_listing", { p_user: user.id, p_id: input.id, p_listing: input.listingId }), { headers });
+      return Response.json(await rpc("buy_store_listing", { p_user: user.id, p_id: input.id, p_listing: input.listingId }), { headers });
     }
     if (input.action === "setSaleStatus") {
       const { data: listing, error } = await db.from("store_listings").select("kind,content").eq("id", input.listingId).eq("seller_id", user.id).maybeSingle();
       if (error) throw new AccountError("판매 상태를 확인하지 못했습니다.", 503);
       if (!listing) throw new AccountError("본인의 판매 상품을 선택해주세요.", 404);
       const novelId = listing.kind === "chapter" && isPublishedNovel(listing.content?.novel) ? listing.content.novel.id as string : undefined;
-      if (input.active) {
+      const characterDocument = listing.kind === "character" ? input.documentId : undefined;
+      let characterFilter: string | undefined;
+      if (characterDocument) {
+        const document = await db.from("documents").select("job_id:payload->art->>jobId").eq("id", characterDocument)
+          .eq("user_id", user.id).is("deleted_at", null).maybeSingle();
+        if (document.error) throw new AccountError("원본 작품을 확인하지 못했습니다.", 503);
+        const source = listing.content?.sourceDocumentId;
+        if (!document.data || (source ? source !== characterDocument
+          : !document.data.job_id || document.data.job_id !== listing.content?.imageJobId))
+          throw new AccountError("본인의 판매 상품을 선택해주세요.", 404);
+        characterFilter = characterSaleFilter(characterDocument, document.data.job_id);
+      } else if (input.active) {
         const source = z.uuid().safeParse(novelId ?? listing.content?.sourceDocumentId);
         if (!source.success && (listing.kind === "chapter" || !z.uuid().safeParse(listing.content?.imageJobId).success))
           throw new AccountError("원본 작품이 없는 상품은 다시 판매할 수 없습니다.", 409);
@@ -196,7 +235,8 @@ export async function POST(request: Request) {
         if (!original.data) throw new AccountError("원본 작품이 없는 상품은 다시 판매할 수 없습니다.", 409);
       }
       const update = db.from("store_listings").update({ active: input.active }).eq("seller_id", user.id);
-      const result = await (novelId ? update.eq("kind", "chapter").eq("content->novel->>id", novelId) : update.eq("id", input.listingId));
+      const result = await (novelId ? update.eq("kind", "chapter").eq("content->novel->>id", novelId)
+        : characterFilter ? update.eq("kind", "character").or(characterFilter) : update.eq("id", input.listingId));
       if (result.error) throw new AccountError("판매 상태를 변경하지 못했습니다.", 503);
     } else if (input.action === "unpublish") {
       const { error } = await db.from("store_listings").update({ active: false }).eq("id", input.listingId).eq("seller_id", user.id);
@@ -230,13 +270,13 @@ export async function POST(request: Request) {
         const image = await db.from("generation_jobs").select("storage_path").eq("id", snapshot.art.jobId).eq("user_id", user.id).eq("kind", "character").eq("status", "completed").single();
         if (image.error || !image.data?.storage_path) throw new AccountError("본인이 생성한 캐릭터 이미지를 확인할 수 없습니다.", 409);
         rows = [{ id: listingId(user.id, input.documentId, 0), seller_id: user.id, kind: "character", title: input.title, description: input.description,
-          storage_path: image.data.storage_path, content: { kind: "character", profile: snapshot.art.profile, description: snapshot.art.description, imageJobId: snapshot.art.jobId, sourceDocumentId: input.documentId } }];
+          storage_path: image.data.storage_path, content: { kind: "character", profile: snapshot.art.profile, description: snapshot.art.description, imageJobId: snapshot.art.jobId, sourceDocumentId: input.documentId, renderStyle: snapshot.art.renderStyle } }];
       }
       const gallery = (await novelListingGallery(db, rows[0], [...snapshot.gallery, ...studioGallery])).slice(0, MAX_GALLERY_IMAGES - 1);
       rows = rows.map(row => ({ ...row, content: { ...row.content, gallery, galleryVersion: 2, authorNickname, ...(coverPath ? { coverPath } : {}) } }));
       // One atomic insert: no partially published novel or duplicated chapters on retry.
       const inserted = await db.from("store_listings").insert(rows);
-      if (inserted.error) throw new AccountError(inserted.error.code === "23505" ? "이미 등록한 작품입니다. 스토어에서 확인해주세요." : "스토어에 등록하지 못했습니다.", inserted.error.code === "23505" ? 409 : 503);
+      if (inserted.error) throw new AccountError(inserted.error.code === "23505" ? "이미 등록한 작품입니다. 작품 상세에서 판매 상태를 확인해주세요." : "서점에 등록하지 못했습니다.", inserted.error.code === "23505" ? 409 : 503);
       if (input.action === "publishNovel") {
         const renamed = await db.from("documents").update({ title: input.title }).eq("id", input.documentId).eq("user_id", user.id);
         if (renamed.error) return Response.json({ ok: true, warning: "판매 등록은 완료됐지만 보관함 제목을 갱신하지 못했습니다." }, { headers });
@@ -244,12 +284,16 @@ export async function POST(request: Request) {
     } else {
       if (input.content.kind === "chapter") throw new AccountError("소설 상세 화면에서 제목을 정해 등록해주세요.", 409);
       let storage: string | null = null;
+      let renderStyle: CharacterRenderStyle | undefined;
       if (input.content.kind === "character") {
-        const { data } = await db.from("generation_jobs").select("storage_path").eq("id", input.content.imageJobId).eq("user_id", user.id).eq("status", "completed").single();
-        if (!data?.storage_path) throw new AccountError("본인이 생성한 캐릭터 이미지를 선택해주세요."); storage = data.storage_path;
+        const { data } = await db.from("generation_jobs").select("storage_path,headers:result->headers").eq("id", input.content.imageJobId).eq("user_id", user.id).eq("status", "completed").single();
+        if (!data?.storage_path) throw new AccountError("본인이 생성한 캐릭터 이미지를 선택해주세요.");
+        storage = data.storage_path;
+        const imageHeaders = z.record(z.string(), z.unknown()).safeParse(data.headers).data;
+        renderStyle = characterRenderStyle.safeParse(imageHeaders?.[characterStyleHeader.toLowerCase()]).data;
       }
       const authorNickname = await accountNickname(db, user.id, user.user_metadata?.maite_profile);
-      const { error } = await db.from("store_listings").insert({ seller_id: user.id, kind: input.content.kind, title: input.title, description: input.description, content: {...input.content, authorNickname}, storage_path: storage });
+      const { error } = await db.from("store_listings").insert({ seller_id: user.id, kind: input.content.kind, title: input.title, description: input.description, content: {...input.content, authorNickname, renderStyle}, storage_path: storage });
       if (error) throw new AccountError("스토어에 등록하지 못했습니다.", 503);
     }
     return Response.json({ ok: true }, { headers });

@@ -1,7 +1,9 @@
 "use client";
 import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { accountClient, accountEnabled } from "@/lib/account/client";
+import { koreaDay } from "@/lib/account/policy";
+import { hasUnclaimedRewardsToday, rewardsCalendarPath, type RewardCalendar } from "@/lib/account/rewards";
 import { jsonApi, invalidateApiReads } from "@/lib/platform/commerce";
 import { isNative } from "@/lib/platform/native";
 import type { AccountData } from "@/lib/account/library";
@@ -22,17 +24,67 @@ type User = { id: string; email?: string };
 type AccountContext = { user?: User; account?: AccountData; refresh: () => Promise<void>; logout: () => Promise<void>; editProfile: () => void };
 const Context = createContext<AccountContext>({ refresh: async () => {}, logout: async () => {}, editProfile: () => {} });
 export const useAccount = () => useContext(Context);
+const loginKey = "maite-web-login-started";
+const rewardLandingKey = (owner: string) => `maite-reward-landing:${owner}`;
+
+function checkedRewardLandingToday(owner: string) {
+  try { return sessionStorage.getItem(rewardLandingKey(owner)) === koreaDay(); }
+  catch { return false; }
+}
+
+function rememberRewardLanding(owner: string, today: string) {
+  try { sessionStorage.setItem(rewardLandingKey(owner), today); } catch { /* Session storage is optional. */ }
+}
+
+function consumeWebLogin() {
+  try {
+    const started = Number(sessionStorage.getItem(loginKey));
+    sessionStorage.removeItem(loginKey);
+    return started > 0 && Date.now() - started < 15 * 60_000;
+  } catch { return false; }
+}
+
 export default function AccountProvider({ children }: { children: ReactNode }) {
-  const enabled = accountEnabled(); const client = accountClient(); const router = useRouter();
+  const enabled = accountEnabled(); const client = accountClient(); const router = useRouter(); const pathname = usePathname();
   const [ready, setReady] = useState(!enabled); const [user, setUser] = useState<User>();
   const [account, setAccount] = useState<AccountData>(); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [imagePreparation,setImagePreparation]=useState<{owner:string;ready:boolean;loaded:number;total:number}>();
   const active = useRef<string | undefined>(undefined); const pending = useRef<Promise<void> | undefined>(undefined);
   const checkedDay = useRef(""); const dailyPending = useRef(false);
+  const nativeLogin = useRef(false);
+  const [loginLanding, setLoginLanding] = useState<{ owner: string; fallback: string; destination?: string; checkedOn?: string }>();
   const hasAccount=!!account,profileReady=account?.profile?.onboarded!==false;
-  const preparingImages=!!(enabled&&user&&account&&profileReady&&account.documents.some(doc=>(doc.kind==="studio"||doc.kind==="character")&&doc.job_id)&&(imagePreparation?.owner!==user.id||!imagePreparation.ready));
-  useScreenLoading(enabled&&(!ready||(busy&&!user)||(!!user&&((!account&&!error)||preparingImages))));
+  const checkingLanding = !!loginLanding && loginLanding.owner === user?.id && profileReady && !error;
+  const preparingImages=!!(enabled&&user&&account&&profileReady&&pathname!=="/ideal/rewards"&&account.documents.some(doc=>(doc.kind==="studio"||doc.kind==="character")&&doc.job_id)&&(imagePreparation?.owner!==user.id||!imagePreparation.ready));
+  useScreenLoading(enabled&&(!ready||(busy&&!user)||(!!user&&((!account&&!error)||preparingImages||checkingLanding))));
+
+  useEffect(() => {
+    if (!loginLanding?.destination || loginLanding.owner !== user?.id || !hasAccount || !profileReady) return;
+    if (pathname === loginLanding.destination) {
+      if (loginLanding.checkedOn) rememberRewardLanding(loginLanding.owner, loginLanding.checkedOn);
+      setLoginLanding(undefined);
+    } else router.replace(loginLanding.destination);
+  }, [loginLanding, user?.id, hasAccount, profileReady, pathname, router]);
+
+  useEffect(() => {
+    if (!loginLanding || loginLanding.destination || loginLanding.owner !== user?.id || !hasAccount || !profileReady) return;
+    let active = true;
+    const land = (destination: string, checkedOn?: string) => {
+      if (!active) return;
+      active = false;
+      clearTimeout(timeout);
+      setLoginLanding({ ...loginLanding, destination, checkedOn });
+    };
+    const timeout = setTimeout(() => land(loginLanding.fallback), 3500);
+    const month = koreaDay().slice(0, 7) + "-01";
+    void jsonApi(rewardsCalendarPath(month)).then((calendar: RewardCalendar) => {
+      const currentMonth = calendar.today.slice(0, 7) + "-01";
+      return currentMonth === calendar.month ? calendar : jsonApi(rewardsCalendarPath(currentMonth)) as Promise<RewardCalendar>;
+    }).then(calendar => land(hasUnclaimedRewardsToday(calendar) ? "/ideal/rewards" : loginLanding.fallback, calendar.today))
+      .catch(() => land(loginLanding.fallback));
+    return () => { active = false; clearTimeout(timeout); };
+  }, [loginLanding, user?.id, hasAccount, profileReady]);
   useEffect(()=>{
     if(!enabled||!user||!hasAccount||!profileReady)return;
     const owner=user.id;let alive=true;
@@ -63,7 +115,7 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
       catch (error) { if (!disposed) setError(error instanceof Error ? error.message : "계정을 불러오지 못했습니다."); }
       finally { dailyPending.current = false; }
     }
-    const { data } = client.auth.onAuthStateChange((event, session) => {
+    const { data } = client.auth.onAuthStateChange((_event, session) => {
       if (disposed) return;
       const next = session?.user;
       if (active.current !== next?.id) {
@@ -71,7 +123,10 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
         if (active.current) void persistentImages.clear();
         imageBlobs.clear(); imageViews.clear(); clearCharacterPreviews();
         active.current = next?.id; pending.current = undefined; setAccount(undefined); setUser(next); checkedDay.current = ""; setEditing(false);
-        if (next && event === "SIGNED_IN") router.replace("/ideal");
+        const freshLogin = next && (nativeLogin.current || consumeWebLogin());
+        setLoginLanding(next && (freshLogin || !checkedRewardLandingToday(next.id))
+          ? { owner: next.id, fallback: freshLogin ? "/ideal" : window.location.pathname }
+          : undefined);
       }
       setReady(true);
       if (next) setTimeout(() => { if (!disposed) void daily(); }, 0);
@@ -81,7 +136,7 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
       const { owner, snapshot } = (event as CustomEvent<{ owner: string; snapshot: StudioSnapshot }>).detail;
       if (owner !== active.current) return;
       invalidateCharacterPreviews(owner, snapshot.art.jobId);
-      const fields = { updated_at: new Date().toISOString(), character_name: snapshot.art.profile.name, job_id: snapshot.art.jobId, source_id: snapshot.id, chapter: String(snapshot.story.storyState?.chapter || 0), novel_id: snapshot.story.documentId, next_goal: snapshot.story.storyState?.nextChapterGoal, series_start: String(snapshot.story.storyState?.seriesStartChapter || 0) };
+      const fields = { updated_at: new Date().toISOString(), character_name: snapshot.art.profile.name, job_id: snapshot.art.jobId, source_id: snapshot.id, chapter: String(snapshot.story.storyState?.chapter || 0), novel_id: snapshot.story.documentId, next_goal: snapshot.story.storyState?.nextChapterGoal, series_start: String(snapshot.story.storyState?.seriesStartChapter || 0), series_ending: snapshot.story.storyState?.seriesArc?.endingMode };
       const documents: LibraryDocument[] = [{ ...fields, id: snapshot.id, title: snapshot.art.title, kind: "studio" }];
       if (snapshot.story.documentId && snapshot.story.storyState?.chapter) documents.push({ ...fields, id: snapshot.story.documentId, title: `${snapshot.art.title.slice(0, 100)}의 이야기`, kind: "chapter" });
       setAccount(current => current && ({ ...current, documents: [...documents.map(doc => ({ ...doc, title: current.documents.find(old => old.id === doc.id)?.title || doc.title })), ...current.documents.filter(doc => !documents.some(saved => saved.id === doc.id))] }));
@@ -99,7 +154,11 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
           const parsed = new URL(url);
           if (parsed.protocol !== "com.oestewdio.maite:" || parsed.hostname !== "auth" || parsed.pathname !== "/callback") return;
           const code = parsed.searchParams.get("code");
-          if (code) { const { error } = await client.auth.exchangeCodeForSession(code); if (error) throw error; }
+          if (code) {
+            nativeLogin.current = true;
+            try { const { error } = await client.auth.exchangeCodeForSession(code); if (error) throw error; }
+            finally { nativeLogin.current = false; }
+          }
           const { Browser } = await import("@capacitor/browser"); await Browser.close().catch(() => undefined);
         } catch { if (!disposed) setError("로그인을 완료하지 못했습니다. 다시 시도해주세요."); }
       };
@@ -113,10 +172,11 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
     try {
       if (!client) throw new Error("Google 로그인을 위한 Supabase 설정이 필요합니다.");
       const native = isNative();
+      if (!native) { try { sessionStorage.setItem(loginKey, String(Date.now())); } catch { /* Login still works without storage. */ } }
       const { data, error } = await client.auth.signInWithOAuth({ provider: "google", options: { redirectTo: native ? "com.oestewdio.maite://auth/callback" : `${location.origin}/ideal`, skipBrowserRedirect: native } });
       if (error) throw error;
       if (native && data.url) { const { Browser } = await import("@capacitor/browser"); await Browser.open({ url: data.url }); }
-    } catch (error) { setError(error instanceof Error ? error.message : "로그인하지 못했습니다."); } finally { setBusy(false); }
+    } catch (error) { consumeWebLogin(); setError(error instanceof Error ? error.message : "로그인하지 못했습니다."); } finally { setBusy(false); }
   }
   async function logout() { await unregisterPush().catch(() => undefined); const { error } = await client!.auth.signOut(); if (error) throw error; router.replace("/ideal"); }
   if (enabled && (!ready || !user)) return <main className="login-screen"><div className="login-card"><span className="login-brand">maite.</span><h1>당신의 상상, <br/> 시작되는 이야기</h1><p>캐릭터를 만들고, 대화하고, 당신만의 소설을 완성하세요.</p>{ready ? <button disabled={busy || !client} onClick={() => void login()}>Google로 로그인</button> : null}{(!client || error) && <p role="alert">{error || "로그인 설정을 확인해주세요."}</p>}</div></main>;
@@ -133,10 +193,15 @@ export default function AccountProvider({ children }: { children: ReactNode }) {
     } else await jsonApi("/api/account", { action: "profile", ...profile });
     if (active.current !== owner) return;
     setAccount(current => current && ({ ...current, ...avatar, profile: { ...current.profile, display_name: profile.nickname, gender: profile.gender, age: profile.age, onboarded: true } }));
-    const first = account?.profile?.onboarded === false; setEditing(false); if (first) router.replace("/ideal/characters");
+    const first = account?.profile?.onboarded === false;
+    setEditing(false);
+    if (first) {
+      if (loginLanding?.owner === owner && loginLanding) setLoginLanding({ ...loginLanding, fallback: "/ideal/characters" });
+      else router.replace("/ideal/characters");
+    }
   }
   if (enabled && user && !account) return <main className="native-standalone account-preparing"><span className="native-wordmark">maite<span>.</span></span>{error && <p role="alert">{error}</p>}{error && <button onClick={() => { setError(""); void refresh().catch(() => setError("계정 연결을 확인해주세요.")); }}>다시 시도</button>}</main>;
   if (enabled && user && account?.profile?.onboarded === false) return <ProfileSetup initial={{ nickname: account.profile.display_name }} onSave={saveProfile}/>;
-  if(preparingImages)return <main className="native-standalone account-preparing" aria-busy="true"/>;
+  if(checkingLanding||preparingImages)return <main className="native-standalone account-preparing" aria-busy="true"/>;
   return <Context.Provider value={{ user, account, refresh, logout, editProfile: () => setEditing(true) }}><Fragment key={user?.id ?? "demo"}>{children}</Fragment>{editing && <ProfileEditModal avatarUrl={account?.avatarUrl} initial={{ nickname: account?.profile?.display_name, gender: account?.profile?.gender as UserProfile["gender"] }} onSave={saveProfile} onCancel={() => setEditing(false)}/>}</Context.Provider>;
 }

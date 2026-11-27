@@ -12,7 +12,7 @@ export async function jsonApi(path: string, body?: object) {
   };
   if (body) { reads.clear(); try { return await request(); } finally { reads.clear(); } }
   const auth = accountClient(); const session = auth ? (await auth.auth.getSession()).data.session : null;
-  const ttl = /[?&](document|job|previews)=/.test(path) ? 15000 : path === "/api/store" ? 5000 : 0;
+  const ttl = /[?&](document|job|previews)=/.test(path) ? 15000 : path === "/api/store" || path.startsWith("/api/rewards?month=") ? 5000 : 0;
   return reads.get(session?.access_token || "demo", path, request, ttl);
 }
 export async function buyHearts(productId?: string) {

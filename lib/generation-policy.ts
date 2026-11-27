@@ -23,7 +23,7 @@ export function hasBlockedGenerationRequest(...inputs: unknown[]) {
   });
 }
 
-type Profile = { appearance?: unknown; personality?: unknown; concept?: unknown };
+type Profile = { appearance?: unknown; personality?: unknown; funElement?: unknown; concept?: unknown };
 type Selection = { location?: unknown; outfit?: unknown; target?: unknown; framing?: {
   focus?: unknown; pose?: unknown; expression?: unknown;
 } };
@@ -40,7 +40,7 @@ export function blocksTextGeneration(data: {
   additionalConcept?: unknown; storyState?: { seriesConcept?: unknown };
 }) {
   return hasBlockedGenerationRequest(latestUserInput(data.messages), data.character?.appearance, data.character?.personality,
-    data.character?.concept, data.additionalConcept, data.storyState?.seriesConcept);
+    data.character?.funElement, data.character?.concept, data.additionalConcept, data.storyState?.seriesConcept);
 }
 
 export function blocksImageGeneration(data: {
@@ -48,7 +48,7 @@ export function blocksImageGeneration(data: {
   scene?: { selection?: Selection };
 }) {
   const selection = data.scene?.selection;
-  return hasBlockedGenerationRequest(latestUserInput(data.messages), data.profile?.appearance, data.profile?.personality, data.profile?.concept,
+  return hasBlockedGenerationRequest(latestUserInput(data.messages), data.profile?.appearance, data.profile?.personality, data.profile?.funElement, data.profile?.concept,
     selection?.location, selection?.outfit, selection?.target,
     selection?.framing?.focus, selection?.framing?.pose, selection?.framing?.expression);
 }

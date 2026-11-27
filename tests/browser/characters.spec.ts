@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { fillCharacterProfile } from "./character-helpers";
 
-test("top menus, character generation, full-screen preview and image-based revision", async ({
+test("top menus, character generation, full-screen preview and regeneration from fresh inputs", async ({
   page,
 }) => {
   await page.goto("/");
@@ -29,8 +29,13 @@ test("top menus, character generation, full-screen preview and image-based revis
     expect(body).toContain("messages");
     expect(body).toContain('"genre":"막장드라마"');
     expect(body).toContain('"gender":"여성"');
+    expect(body).toContain('"funElement":"서로 놀리며 티키타카"');
     expect(body).toContain(calls === 1 ? "성인 여성, 우아한 원피스" : "은발의 성인 여성, 우아한 원피스");
-    if (calls === 2) expect(body).toContain("previous-character.jpg");
+    if (calls === 2) {
+      expect(body).not.toContain("previous-character.jpg");
+      expect(body).not.toContain('"role":"assistant"');
+      expect(body).toContain('"appearance":"일상복"');
+    }
     await route.fulfill({
       status: 200,
       headers: {
@@ -47,6 +52,7 @@ test("top menus, character generation, full-screen preview and image-based revis
     });
   });
   await fillCharacterProfile(page);
+  await page.getByLabel("재미요소", { exact: true }).fill("서로 놀리며 티키타카");
   await expect(page.getByRole("button", { name: "그림체 참고", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "생성 프롬프트", exact: true })).toHaveCount(0);
   await page.getByLabel("컨셉", { exact: true }).fill("성인 여성, 우아한 원피스");
@@ -73,6 +79,7 @@ test("top menus, character generation, full-screen preview and image-based revis
   await expect(viewer).not.toBeVisible();
   await expect(page.getByRole("link", { name: "이미지 다운로드" })).toHaveCount(0);
   await page.getByLabel("컨셉", { exact: true }).fill("은발의 성인 여성, 우아한 원피스");
+  await page.getByLabel("외모", { exact: true }).fill("일상복");
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   await expect(page.locator(".character-canvas")).toHaveAttribute("aria-busy","false");
   expect(calls).toBe(2);

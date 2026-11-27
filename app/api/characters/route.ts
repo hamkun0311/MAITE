@@ -5,6 +5,8 @@ import { withGeneration, preflight } from "../../../lib/server/generation.ts";
 import { allowedOrigin } from "../../../lib/server/http.ts";
 import { imageAttempt, imageFingerprint } from "../../../lib/server/image-checkpoints.ts";
 import { imageRetryToken, type ImageRetryProgress } from "../../../lib/server/image-retry-token.ts";
+import { createHash, randomInt } from "node:crypto";
+import { characterRenderStyle, characterStyleHeader, legacyCharacterRenderStyles, newCharacterRenderStyles, selectableRenderStyle } from "../../../lib/characters/render-style.ts";
 import sharp from "sharp";
 import { z } from "zod";
 import { trackUsage, type UsageRecord } from "../../../lib/usage.ts";
@@ -17,12 +19,12 @@ import {
   illustrationBrief,
   outfitBrief,
   CHARACTER_DIRECTION,
+  NEW_CHARACTER_FRAMING,
   MAX_CHARACTER_IMAGE,
   MAX_CHARACTER_REQUEST,
   CHARACTER_WIDTH,
   CHARACTER_HEIGHT,
   CHARACTER_SIZE,
-  characterStyleProfile,
   buildCharacterPrompt,
   isJpeg,
 } from "../../../lib/characters/schema.ts";
@@ -137,7 +139,7 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       usage.until = now + 60000;
     }
     const form = await readForm(request);
-    const messages = characterMessages.parse(
+    const submittedMessages = characterMessages.parse(
       JSON.parse(String(form.get("messages") || "null")),
     );
     const profile = form.has("profile") ? characterProfileSchema.parse(JSON.parse(String(form.get("profile")))) : undefined;
@@ -147,16 +149,14 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       const {framing:_ignored,...selection}=sceneInput.selection;sceneInput.selection=selection;
     }
     const scene = form.has("scene") ? visualRequestSchema.parse(sceneInput) : undefined;
+    const requestedStyle = scene ? undefined : selectableRenderStyle.optional().parse(form.get("renderStyle") ?? undefined);
+    const messages = scene ? submittedMessages : submittedMessages.slice(-1);
     const framing=scene?.kind==="illustration"?(form.has("framing")?imageFramingSchema.parse(JSON.parse(String(form.get("framing")))):scene.selection?.framing):undefined;
     if (messages.at(-1)?.role !== "user")
       throw new RequestError("캐릭터 설명을 입력해주세요.", 400);
-    const priorProfile = form.get("previousStyle");
-    if (priorProfile !== null) characterStyleProfile.parse(priorProfile);
-    const prior = form.get("image");
+    const prior = scene ? form.get("image") : null;
     if (scene && (!profile || !(prior instanceof File)))
       throw new RequestError("삽화와 의상 변경에는 캐릭터 설정과 원본 이미지가 필요합니다.", 400);
-    if (prior !== null && !(prior instanceof File))
-      throw new RequestError("이미지 형식이 올바르지 않습니다.", 400);
     if (prior instanceof File) {
       if (
         prior.size > MAX_CHARACTER_IMAGE ||
@@ -170,9 +170,15 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
     }
     const attempt = imageAttempt(request);
     if (blocksImageGeneration({messages, profile, scene})) throw new RequestError(GENERATION_POLICY_MESSAGE, 422);
-    if (attempt) retry = imageRetryToken(owner, attempt.attempt, attempt.scope, await imageFingerprint(form));
+    const fingerprint = attempt && await imageFingerprint(form);
+    if (attempt && fingerprint) retry = imageRetryToken(owner, attempt.attempt, attempt.scope, fingerprint);
     progress = retry?.read(request.headers.get("X-Image-Retry")) ?? {};
     if (progress.rejection) throw new RequestError(progress.rejection, 422);
+    // Pre-change approved attempts used the previous set and have no saved style field.
+    const styles = progress.approved && !progress.renderStyle ? legacyCharacterRenderStyles : newCharacterRenderStyles;
+    const renderStyle = scene ? characterRenderStyle.safeParse(form.get("renderStyle")).data
+      : requestedStyle ?? progress.renderStyle ?? styles[attempt ? createHash("sha256").update(`${attempt.attempt}:${fingerprint}`).digest().readUInt32BE(0) % styles.length : randomInt(styles.length)];
+    if (!scene) progress.renderStyle = renderStyle;
     if (usage.count >= 3) throw new RequestError("잠시 후 다시 생성해주세요. 분당 3회까지 요청할 수 있습니다.", 429);
     usage.count++;
     const signal = AbortSignal.any([
@@ -205,10 +211,23 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       if (Array.isArray(moderation.results) && moderation.results.length) progress.approved = true;
     }
     const briefSchema = scene?.kind === "illustration" ? illustrationBrief : scene?.kind === "outfit" ? outfitBrief : characterBrief;
+    const imageDirection = scene ? visualInstructions(scene) : ` ${NEW_CHARACTER_FRAMING}`;
     const savedBrief = briefSchema.safeParse(progress.approved ? progress.brief : undefined);
+    const sceneDetails = scene && { kind: scene.kind, context: scene.context, selection: scene.selection };
+    const { funElement: _funElement, ...visualProfile } = profile ?? {};
+    const descriptionSource = { messages, profile: profile && visualProfile, scene: sceneDetails, framing };
+    const traceId = process.env.NODE_ENV === "development" && process.env.DEBUG_IMAGE_RENDER_PROMPT === "1" ? crypto.randomUUID() : undefined;
+    if (traceId) {
+      console.info("image-description-source", JSON.stringify({
+        traceId,
+        kind: scene?.kind ?? "character",
+        model: textModel(),
+        reusedBrief: savedBrief.success,
+        hasReferenceImage: false,
+        input: descriptionSource,
+      }));
+    }
     const brief = savedBrief.success ? savedBrief.data : await (async () => {
-      const sceneDetails = scene && { kind: scene.kind, context: scene.context, selection: scene.selection };
-      const previousData = prior instanceof File && !scene ? Buffer.from(await prior.arrayBuffer()).toString("base64") : null;
       const briefResponse = await measured("image.description", textModel(),
         responsesEndpoint, {
           method: "POST",
@@ -220,22 +239,11 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
             ...imageDescriptionReasoningOptions(),
             store: false,
             max_output_tokens: 5000,
-            instructions: CHARACTER_DIRECTION + (scene ? visualInstructions(scene) : "") + framingDirection(framing),
+            instructions: CHARACTER_DIRECTION + imageDirection + framingDirection(framing) + (renderStyle ? " A separate rendering preset controls visual treatment. Keep the brief focused on visible subjects and the scene." : ""),
             input: [
               {
                 role: "user",
-                content: [
-                  { type: "input_text", text: JSON.stringify({ messages, profile, scene: sceneDetails, framing }) },
-                  ...(previousData && !scene
-                    ? [
-                        {
-                          type: "input_image",
-                          image_url: `data:image/jpeg;base64,${previousData}`,
-                          detail: "low",
-                        },
-                      ]
-                    : []),
-                ],
+                content: [{ type: "input_text", text: JSON.stringify(descriptionSource) }],
               },
             ],
             text: {
@@ -272,8 +280,8 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
     const target = confirmedIllustrationTarget(scene);
     // A manually selected counterpart must never inherit the original character's identity image.
     if (target && target !== profile?.name && "characterPresent" in brief) brief.characterPresent = false;
-    const useIdentity = prior instanceof File && (!scene || (scene.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent));
-    const prompt = buildCharacterPrompt(brief, framing, useIdentity, scene?.selection);
+    const useIdentity = prior instanceof File && (scene?.kind === "illustration" ? illustrationBrief.parse(brief).characterPresent : outfitBrief.parse(brief).characterPresent);
+    const prompt = buildCharacterPrompt(brief, framing, useIdentity, scene?.selection, scene ? undefined : profile?.appearance, renderStyle);
     const parameters = {
       model: process.env.OPENAI_IMAGE_MODEL || "gpt-image-2.5-sunburst",
       prompt, size: CHARACTER_SIZE,
@@ -287,12 +295,15 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       imageForm.append("image[]", prior, "previous-character.jpg");
       imageBody = imageForm;
     } else imageBody = JSON.stringify(parameters);
-    if (process.env.NODE_ENV === "development" && process.env.DEBUG_IMAGE_RENDER_PROMPT === "1") {
+    if (traceId) {
       console.info("image-render-prompt", JSON.stringify({
+        traceId,
         model: parameters.model,
         endpoint: useIdentity ? "edits" : "generations",
         kind: scene?.kind ?? "character",
+        renderStyle,
         hasReferenceImage: useIdentity,
+        descriptionPrompt: brief.prompt,
         prompt: parameters.prompt,
       }));
     }
@@ -321,7 +332,8 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
       throw new RequestError("이미지 응답 형식이 올바르지 않습니다.", 502);
     const { data: image, info } = await sharp(raw, { limitInputPixels: 16_777_216 })
       .resize(CHARACTER_WIDTH, CHARACTER_HEIGHT, {
-        fit: "inside",
+        fit: "contain",
+        background: "#ffffff",
       })
       .flatten({ background: "#ffffff" })
       .jpeg({ quality: 85 })
@@ -337,6 +349,7 @@ async function handle(request: Request, _story?: unknown, owner?: string) {
         "X-Character-Summary": encodeURIComponent(brief.summary),
         "X-Character-Prompt": promptPreview(prompt),
         "X-Character-Style": brief.styleProfile,
+        ...(renderStyle ? { [characterStyleHeader]: renderStyle } : {}),
         ...(scene ? { "X-Character-Composition": encodeURIComponent(JSON.stringify(compositionSchema.strip().parse(brief))) } : {}),
         "X-Character-Width": String(info.width),
         "X-Character-Height": String(info.height),

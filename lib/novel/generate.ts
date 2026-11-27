@@ -4,34 +4,36 @@ import {
   claudeNovelModel, geminiNovelWriteModel, geminiNovelProofreadModel, geminiNovelStyleModel, openAINovelWriteModel, openAINovelProofreadModel,
   novelPlanMaxOutputTokens, novelReviewMaxOutputTokens, novelPlanReasoningOptions, novelReviewReasoningOptions, novelWriteReasoningOptions, textModel,
 } from "../ai-model.ts";
-import { conceptPriorityInstructions, type CharacterContext } from "../chat/character.ts";
-import { userDisplayName, userNamingInstructions } from "../chat/identity.ts";
+import { conceptPriorityInstructions, funElementInstructions, type CharacterContext } from "../chat/character.ts";
+import { userDisplayName } from "../chat/identity.ts";
 import { plainDialogue } from "../chat/presentation.ts";
 import type { Timeline } from "../chat/timeline.ts";
 import { openAIResponsesEndpoint, openAITextKey } from "../openai-endpoint.ts";
 import { usageFetch, type UsageListener } from "../usage.ts";
 import { MIN_STORY_CHARS, readStoryCheckpoint, storyChars, StoryDraftPaused, type StoryDraftStore } from "./checkpoint.ts";
 import { writeClaudeNovelStage } from "./claude.ts";
+import { novelNameCleanup } from "./naming.ts";
 import { conceptRuleAuditInstructions, conceptRuleAuditSchema, conceptRuleViolations, conceptRulesSchema, groundedConceptRules, markedConceptEvents, markedEventAuditSchema, markedEvidenceReviewInstructions, markedEvidenceReviewSchema, markedPlanInstructions, markedReviewInstructions, markedScenesSchema, markedScheduleSchema, novelConceptInstructions, plannedMarkedScenes, scheduleMarkedEvents } from "./concept.ts";
 import { novelTimelineContext, sourceContext } from "./context.ts";
 import { removeAdjacentRepeatedDialogue, unjustifiedRegisterChanges } from "./dialogue.ts";
 import { streamNovelWrite } from "./draft-stream.ts";
 import { eventAuditInstructions, eventAuditSchema, inspectEventAudit } from "./event-audit.ts";
-import { geminiApiKey, writeGeminiProse } from "./gemini.ts";
+import { geminiApiKey, usesVnaiWriteDefaults, writeGeminiProse } from "./gemini.ts";
 import { applyDialogueEdits, applyProofreading, koreanTimeNumberInstructions, proofreadingEditsSchema, proofreadingInstructions, residenceChecks, sceneContextChecks } from "./proofread.ts";
 import { inspectPromiseAudit, promiseAuditFields, promiseReviewInstructions, promiseWritingInstructions } from "./promises.ts";
 import { novelReviewerQualityInstructions, novelWriterQualityInstructions } from "./quality.ts";
 import { findRepeatedPassage, findReplayedInsertion } from "./repetition.ts";
 import { createNovelReviewLogger, manuscriptFingerprint } from "./review-log.ts";
 import { stripStoryMetadata } from "./scene-headings.ts";
-import { seriesArcSchema, seriesSchedule, storyComplete, storyConceptEntries } from "./series.ts";
+import { nextSeriesStart, plannedSeriesArcSchema, seriesArcSchema, seriesSchedule, storyComplete, storyConceptEntries } from "./series.ts";
 import { manuscriptSources, resolveSources } from "./sources.ts";
 import { createFinalReviewSchema, createMemoryPatchSchema, createReviewSchema, emptyStoryState, mergeMemory, repeatsPrevious, unsupportedPropChanges, type StoryState } from "./state.ts";
 import { fiveEventDraftSchema as draftSchema, parseStyleEditResponse } from "./style-edit.ts";
-import { novelRetryDelay, NovelUpstreamError } from "./upstream-error.ts";
+import { isProviderRateLimitError, novelRetryDelay, NovelUpstreamError } from "./upstream-error.ts";
 
-export const NOVEL_PROMPT_VERSION = "novel-progress-v110-review-format-recovery";
-const reviewPolicy = "material-v6-marked-evidence";
+export const NOVEL_PROMPT_VERSION = "novel-progress-v117-distinct-names";
+const geminiWriteFormat = 'Return exactly one valid JSON object with the key "events" and exactly five non-empty string values in its array. Start with { and end with }. Put one planned event in each string, in plan order. Put the prose only inside the strings. Escape line breaks and quotes inside each string as required by JSON. Omit Markdown fences, explanations and any text outside the object.';
+const reviewPolicy = "material-v7-review-acceptance";
 const beats = ["발단", "전개", "위기", "절정", "결말"];
 const detail = z.string().min(1).max(240);
 const seriesPlanSchema = z.object({ arc: seriesArcSchema, conceptRules: conceptRulesSchema, markedSchedule: markedScheduleSchema.optional() }).strict();
@@ -40,7 +42,7 @@ const eventPlanSchema = z.object({
   events: z.array(z.object({ entry: detail, action: detail, result: detail }).strict()).length(5),
   markedScenes: markedScenesSchema.optional(),
 }).strict();
-const combinedPlanSchema = seriesPlanSchema.extend({ chapterPlan: eventPlanSchema });
+const combinedPlanSchema = seriesPlanSchema.extend({ arc: plannedSeriesArcSchema, chapterPlan: eventPlanSchema });
 const markedChapterPlanSchema = eventPlanSchema.required({ markedScenes: true });
 const plainChapterPlanSchema = eventPlanSchema.omit({ markedScenes: true });
 const chapterPlanInstructions = "Establish this installment's goal, conflict, decisive choice and payoff. Respect the user's required trajectory even if a saved milestone points elsewhere. Give the chapter an observable consequence that carries the central premise forward; a setback or confrontation must still serve that arc. Plan an on-page scene when a central recurring activity or dynamic is due. Logistics, cover stories, promises and travel to it can set it up, but do not fulfill it. Vary what happens in each occurrence and what changes for the characters; stage representative occasions without replaying every day. Map that spine to five distinct events in the order setup, development, crisis, climax, resolution. Each begins from the preceding result and shows a new choice or action and its consequence. In encounters where characters can talk, plan an exchange that changes what one of them knows, wants or does. Earn the installment payoff in the last event and apply the arc ending only when due.";
@@ -135,6 +137,8 @@ export async function generateChapter(options: Options) {
   const trace = createNovelReviewLogger({ traceId: options.traceId, chapter, mode: "reviewed", promptVersion: NOVEL_PROMPT_VERSION });
   let stage = "planning", calls = 0, inputChars = 0, providerRetries = 0, preview = "";
   let partialWrite: string[] | undefined, streamedWrite = "";
+  let cleanNames = (text: string) => text;
+  let useDirectWriter = false;
   const phase = (name: string) => { stage = name; options.phase(name); };
   const openAIPlanProvider = process.env.OPENAI_NOVEL_PLAN_PROVIDER?.trim() || undefined;
   const openAIPlanModel = process.env.OPENAI_NOVEL_PLAN_MODEL?.trim() || textModel(openAIPlanProvider);
@@ -152,6 +156,11 @@ export async function generateChapter(options: Options) {
     const isCopyedit = name === "proofread" || name === "repair_proofread";
     const isPlan = name === "chapter_plan" || name === "series_plan";
     const isReview = name === "chapter_review" || name === "marked_evidence_review";
+    const draftUpdate = name === "write" ? options.onDraftUpdate : undefined;
+    const onDraft = draftUpdate && ((text: string) => {
+      streamedWrite = cleanNames(cleanProse(text));
+      draftUpdate(streamedWrite);
+    });
     const feature = name;
     const callNumber=calls;
     const claudeModel = isCopyedit ? claudeProofreader : isReview ? claudeReviewer : isProse ? claudeWriter : "";
@@ -185,14 +194,18 @@ export async function generateChapter(options: Options) {
       trace.event("model_output", metadata, { output: result.text });
       return result.text;
     }
-    const geminiModel = name === "style_edit" ? geminiStylist : isCopyedit ? geminiProofreader : isProse ? geminiWriter : undefined;
+    const geminiModel = name === "style_edit" ? geminiStylist : isCopyedit ? geminiProofreader : isProse && !useDirectWriter ? geminiWriter : undefined;
     if (geminiModel && geminiKey) {
-      const metadata = {call: callNumber, feature: `novel.${feature}`, reasoningEffort: "low"};
-      trace.event("model_call_started", {...metadata, model: geminiModel, maxOutputTokens: tokens});
+      const usageFeature = `novel.${feature}`;
+      const useGatewayDefaults = usesVnaiWriteDefaults(usageFeature);
+      const metadata = {call: callNumber, feature: usageFeature, reasoningEffort: useGatewayDefaults ? null : "low"};
+      trace.event("model_call_started", {...metadata, model: geminiModel, maxOutputTokens: useGatewayDefaults ? null : tokens});
       const result = await writeGeminiProse({
-        model: geminiModel, key: geminiKey, instructions, input, maxOutputTokens: tokens,
+        model: geminiModel, key: geminiKey,
+        instructions: name === "write" ? `${instructions}\n${geminiWriteFormat}` : instructions,
+        input, maxOutputTokens: tokens,
         responseSchema: schema ? novelJsonSchema(schema) : undefined,
-        feature: metadata.feature, signal,
+        feature: metadata.feature, signal, onDraft,
         onUsage: record => {
           if (record.status !== "running") trace.event("model_call_finished", {...metadata, ...record});
           options.onUsage?.(record);
@@ -202,34 +215,42 @@ export async function generateChapter(options: Options) {
       if (result.finishReason !== "STOP") throw new Error("Incomplete novel stage");
       if (!result.text.trim()) throw new Error("Empty novel stage");
       trace.event("model_output", metadata, {output: result.text});
+      if (name === "write") {
+        const parsed = parseStyleEditResponse(result.text);
+        if (parsed) {
+          if (parsed.format !== "json") trace.event("gemini_write_format_recovered", { ...metadata, format: parsed.format });
+          return JSON.stringify(parsed.draft);
+        }
+        const prose = result.text.trim().replace(/\\n/g, "\n");
+        if (!/^(?:\{|\[|\x60{3})/.test(prose) && prose.includes("\n\n")) partialWrite = [prose];
+        trace.event("gemini_write_format_invalid", { ...metadata, preservedPreview: Boolean(partialWrite) });
+        throw new StoryDraftPaused("format");
+      }
       return result.text;
     }
-    const model = isPlan ? openAIPlanModel : isCopyedit ? openAIProofreader : isProse ? openAIWriter
+    const model = isProse && useDirectWriter ? textModel("direct")
+      : isPlan ? openAIPlanModel : isCopyedit ? openAIProofreader : isProse ? openAIWriter
       : name === "style_edit" ? openAIStylist || MODEL : MODEL;
-    const provider = isPlan ? openAIPlanProvider : isProse ? openAIWriterProvider : undefined;
+    const provider = isProse && useDirectWriter ? "direct" : isPlan ? openAIPlanProvider : isProse ? openAIWriterProvider : undefined;
     const stageKey = provider ? openAITextKey(provider) : key;
     if (!stageKey) throw new Error("Missing OpenAI novel stage API key");
     const reasoning=isReview?novelReviewReasoningOptions(model):isPlan?novelPlanReasoningOptions(model):novelWriteReasoningOptions(model);
     trace.event("model_call_started",{call:callNumber,feature:`novel.${feature}`,model,reasoningEffort:reasoning.reasoning?.effort??null,maxOutputTokens:tokens});
-    const streamDraft = name === "write" && options.onDraftUpdate;
     const endpoint = openAIResponsesEndpoint(provider);
     const request: RequestInit = {
       redirect: "error",
       method: "POST", signal,
       headers: { Authorization: `Bearer ${stageKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ model, store: false, ...reasoning,
-        ...(streamDraft ? { stream: true } : {}),
+        ...(onDraft ? { stream: true } : {}),
         max_output_tokens: tokens, instructions, input,
         ...(schema ? { text: { format: { type: "json_schema", name, strict: true,
           schema: novelJsonSchema(schema) } } } : {}),
       }),
     };
     const onUsage: UsageListener = record=>{if(record.status!=="running")trace.event("model_call_finished",{call:callNumber,...record,reasoningEffort:reasoning.reasoning?.effort??null});options.onUsage?.(record);};
-    const result = streamDraft
-      ? await streamNovelWrite(model, endpoint, request, text => {
-        streamedWrite = cleanProse(text);
-        streamDraft(streamedWrite);
-      }, onUsage)
+    const result = onDraft
+      ? await streamNovelWrite(model, endpoint, request, onDraft, onUsage)
       : { ...await usageFetch(`novel.${feature}`, model, endpoint, request, onUsage), raw: "" };
     const { response, data, raw } = result;
     if (!response.ok) throw new NovelUpstreamError("openai", response.status, data, response.headers.get("retry-after"));
@@ -251,7 +272,15 @@ export async function generateChapter(options: Options) {
         return schema.parse(parseOutput(raw));
       } catch (error) {
         const delay = providerRetries < 2 && !signal.aborted ? novelRetryDelay(error, providerRetries) : undefined;
-        if (delay === undefined) throw error;
+        if (delay === undefined) {
+          if (name === "write" && !useDirectWriter && !signal.aborted && isProviderRateLimitError(error) &&
+            error.diagnostics.provider === "gemini" && usesVnaiWriteDefaults("novel.write") && openAITextKey("direct")) {
+            useDirectWriter = true;
+            trace.event("story_writer_fallback", { stage: name, from: "gemini_vnai", to: "openai_direct", httpStatus: 429 });
+            continue;
+          }
+          throw error;
+        }
         providerRetries++;
         trace.event("story_stage_provider_retry", { stage: name, retry: providerRetries, delayMs: delay });
         if (name === "write" && streamedWrite) {
@@ -268,7 +297,9 @@ export async function generateChapter(options: Options) {
     const legacy = saved.events.length ? saved.events.map(event => event.prose) : saved.scenes.flatMap(scene => scene ? [scene.prose] : []);
     if (!saved.repair && saved.pendingEvent?.prose) legacy.push(saved.pendingEvent.prose);
     preview = cleanProse(saved.proofread || manuscript(legacy));
-    const checkpoint = pipelineSchema.parse(saved.chapterPipeline ?? { version: 1 });
+    const storedPipeline = pipelineSchema.parse(saved.chapterPipeline ?? { version: 1 });
+    const checkpoint: z.infer<typeof pipelineSchema> = storedPipeline.series && !storedPipeline.series.arc.endingMode
+      ? { version: 1, writePreview: storedPipeline.events ?? storedPipeline.writePreview } : storedPipeline;
     if (checkpoint.events) preview = manuscript(checkpoint.events);
     else if (checkpoint.writePreview) preview = manuscript(checkpoint.writePreview);
     const save = async () => { await options.draftStore?.save({ ...saved, chapterPipeline: checkpoint }); };
@@ -282,44 +313,53 @@ export async function generateChapter(options: Options) {
     if ((geminiWriter || geminiProofreader) && !geminiKey) throw new Error("Missing Gemini API key");
     const additionalConcept = z.string().trim().max(1000).parse(options.additionalConcept ?? "");
     if (storyComplete(old) && !additionalConcept) throw new Error("Story already complete");
-    const seriesStartChapter = additionalConcept ? old.chapter : old.seriesStartChapter ?? 0;
+    const seriesStartChapter = nextSeriesStart(old, additionalConcept);
     const seriesConcept = additionalConcept || old.seriesConcept || "";
-    const schedule = seriesSchedule(chapter - seriesStartChapter);
-    const finale = schedule.phase === "finale";
-    const conceptHistory = storyConceptEntries({ seriesStartChapter, seriesConcept, conceptHistory: storyConceptEntries(old) });
-    const earlierConcepts = conceptHistory.filter(item => item.fromChapter < seriesStartChapter + 1).map(item => item.text);
-    const markedEvents = markedConceptEvents(seriesConcept || character.concept);
+    const installment = chapter - seriesStartChapter;
+    const previousConcepts = storyConceptEntries(old);
+    const conceptHistory = additionalConcept
+      ? [...previousConcepts, { fromChapter: chapter, text: additionalConcept }].slice(-4) : previousConcepts;
+    const earlierConcepts = conceptHistory.filter(item => item.fromChapter < seriesStartChapter + 1 && item.text !== seriesConcept).map(item => item.text);
+    const conceptStart = seriesConcept ? conceptHistory.findLast(item => item.text === seriesConcept)?.fromChapter ?? 1 : 1;
+    const markedEvents = conceptStart === seriesStartChapter + 1 ? markedConceptEvents(seriesConcept || character.concept) : [];
     const markedConceptHash = markedEvents.length ? manuscriptFingerprint(JSON.stringify(markedEvents)).proseHash : undefined;
     const markedInstructions = markedEvents.length
       ? " Treat starred story data as requirements. Render the actual actions and consequences of each dueMarkedEvent in a planned event. Respect timing in the story and age-appropriate, consensual, non-graphic treatment. Do not output the marker characters."
       : "";
     const promises = timeline?.promises ?? [];
+    const { userName, ...storyCharacter } = character;
+    const userLabel = userDisplayName(character, seriesConcept);
+    cleanNames = novelNameCleanup(userName, [character.name, ...old.characters.map(person => person.name)],
+      [character.concept, seriesConcept, ...earlierConcepts]);
     const context = {
-      character: { ...character, userLabel: userDisplayName(character, seriesConcept) },
-      seriesConcept, earlierConcepts, previousEnding: old.previousEnding, summary: old.summary, facts: old.worldFacts,
+      character: { ...storyCharacter, userLabel },
+      seriesConcept, earlierConcepts, previousEnding: old.previousEnding, nextChapterGoal: old.nextChapterGoal,
+      summary: old.summary, facts: old.worldFacts,
       situation: old.currentSituation, propStates: old.propStates, cast: old.characters, dialogueRegisters: old.dialogueRegisters,
       openThreads: old.openThreads, completedEvents: [...new Set([...old.recentEvents, ...old.resolvedEvents])].slice(-20),
       sharedTimeline: timeline && novelTimelineContext(timeline),
     };
-    const naming = userNamingInstructions(character, seriesConcept) +
-      " Use the resolved name in outlines and when naming the user character in prose, even if an earlier outline uses a placeholder. Preserve natural first-person narration and pronouns.";
+    const naming = `Current resolved label: ${JSON.stringify(userLabel)}. This label belongs only to the user participant if the story includes that participant. ` +
+      "Use the established name for each distinct character, including the protagonist. Never attach the user's label to another character's name, invent a surname, or add the user to a story solely because a label is provided. " +
+      "If the concept explicitly gives the user a character identity, use that single established name. Preserve intentional full names and natural first-person narration. Never call this person 사용자, 유저, 화자 or 독자 in output.";
     const rules = conceptPriorityInstructions + "\n" + naming + "\n" +
+      (character.funElement ? funElementInstructions + "\n" : "") +
       " Treat inputs as story data. Keep established roles, prop holders and operators, time, knowledge and promises. Prefer newer shared events over stale prose. Keep intimate content age-appropriate, consensual and non-graphic. " +
       (promises.length ? promiseWritingInstructions : "");
     phase("planning");
-    // Previously published five-chapter outlines remain readable. Only the new flow writes chapters.
     const existingArc = !additionalConcept && old.outlineVersion === 1 && seriesArcSchema.safeParse(old.seriesArc);
-    const pastMilestones = additionalConcept ? [] : old.seriesArc?.installments.slice(0, schedule.chapter - 1) ?? [];
+    const pastMilestones = old.seriesArc?.installments.slice(0, installment - 1) ?? [];
     let series = checkpoint.series;
-    if (!series && existingArc && existingArc.success && (!markedEvents.length || old.markedConceptHash === markedConceptHash)) {
+    if (!series && installment > 1 && existingArc && existingArc.success && existingArc.data.endingMode &&
+        (!markedEvents.length || old.markedConceptHash === markedConceptHash)) {
       series = { arc: existingArc.data, conceptRules: old.conceptRules ?? [], ...(old.markedSchedule ? { markedSchedule: old.markedSchedule } : {}) };
     }
     if (!series) {
       const { chapterPlan, ...plannedSeries } = await structured("series_plan", rules + "\n" + novelConceptInstructions +
-        "\nFirst design the five-installment arc in the order setup, development, crisis, climax, resolution. Carry the user's core premise, specified direction of change and required outcome through all five installments. Give each installment a distinct observable payoff that advances that direction and leads to the next. Schedule representative on-page occurrences of central recurring activities across the arc so they are not repeatedly deferred. In installment five, show the requested outcome in action. Do not substitute a conventional triumph, recovery, defeat or reconciliation for an explicit outcome. Preserve established past events. Extract conceptRules as literal spans from user concepts, with no added quotation marks. Prioritize required outcomes and ongoing constraints. " +
+        "\nFirst design the five-installment arc in the order setup, development, crisis, climax, resolution. Set arc.endingMode to final only when the current user concepts explicitly ask to conclude the entire story in this arc. Interpret the meaning in context: a local resolution, a target outcome or the last installment of the arc alone is not a request to end the story. Explicit instructions to keep going take precedence over older conflicting instructions, and an ending already fulfilled in an earlier arc does not end this arc. Otherwise choose continue. In continue mode, endingPromise is the payoff of this arc; deliver it in installment five with a complete scene and a concrete next step grounded in existing goals, relationships or consequences. Keep the core premise active and avoid a definitive epilogue or a forced cliffhanger. In final mode, deliver the requested story ending in installment five. Carry the user's premise, trajectory and required outcomes through all five installments. Schedule representative on-page occurrences of central recurring activities. Preserve established past events. Extract conceptRules as literal spans from user concepts. Prioritize required outcomes and ongoing constraints. " +
         "Then use the arc milestone at schedule.chapter to produce chapterPlan for the current installment only. " + chapterPlanInstructions + markedInstructions +
         (markedEvents.length ? " Return markedSchedule in the same order as markedEvents. Each entry lists the relative installment numbers (1–5) when the marked action actually occurs. Use the explicit episode or in-story timing when present, translate absolute chapters using arcStart, and choose a remaining installment for undated events. Schedule multiple installments only for explicitly recurring requirements. Keep conceptRules for other requirements since markedEvents receive a separate audit. In chapterPlan, " + markedPlanInstructions + " Use [] when none are due." : ""),
-        { ...context, beats, chapter, schedule, direction: options.direction, completedInstallments: schedule.chapter - 1,
+        { ...context, beats, chapter, schedule: { chapter: installment }, direction: options.direction, completedInstallments: installment - 1,
           pastMilestones, ...(markedEvents.length ? { markedEvents, arcStart: seriesStartChapter } : {}) },
         markedEvents.length ? combinedPlanSchema.required({ markedSchedule: true }).extend({ chapterPlan: markedChapterPlanSchema })
           : combinedPlanSchema.omit({ markedSchedule: true }).extend({ chapterPlan: plainChapterPlanSchema }), novelPlanMaxOutputTokens());
@@ -329,6 +369,8 @@ export async function generateChapter(options: Options) {
       checkpoint.plan = chapterPlan;
       await save();
     }
+    const schedule = seriesSchedule(installment, series.arc.endingMode);
+    const finale = schedule.phase === "finale";
     const conceptRules = groundedConceptRules(series.conceptRules, [seriesConcept, ...earlierConcepts, character.concept]);
     const markedSchedule = markedEvents.length ? scheduleMarkedEvents(markedEvents, series.markedSchedule, schedule.chapter, seriesStartChapter) : undefined;
     const dueMarkedEvents = markedEvents.filter((_, index) => markedSchedule?.[index].includes(schedule.chapter));
@@ -362,17 +404,19 @@ export async function generateChapter(options: Options) {
     if (!checkpoint.events) {
       phase("writing");
       const { markedScenes: _assignments, ...writerPlan } = plan;
-      const result = await structured("write", rules + (markedScenes.length ? " Write each requiredAction in its assigned scene as an actual action and consequence. The requirement, actor, action and consequence must agree. A promise or setup cannot fulfill a scene." : "") + "\n" + await novelWriterQualityInstructions() +
+      const previousDraft = checkpoint.writePreview;
+      const result = await structured("write", rules + "\n" + schedule.direction + (markedScenes.length ? " Write each requiredAction in its assigned scene as an actual action and consequence. The requirement, actor, action and consequence must agree. A promise or setup cannot fulfill a scene." : "") +
+        (previousDraft ? " Use previousDraft as existing draft prose. Reuse compatible passages and organize them by the five planned events. Supply missing events and follow the required output format." : "") + "\n" + await novelWriterQualityInstructions() +
         "\nWrite the five planned events as five Korean prose blocks in one response. Follow the user's required trajectory wherever a saved plan conflicts, and show the installment's consequence on the page. Aim for 1,800–2,200 characters including spaces, with " + MIN_STORY_CHARS +
         " characters as the minimum. Budget roughly 360–440 characters per event on average and give the decisive scenes more room. Use blank lines between prose paragraphs and around direct speech. Show each action, reaction, emotion and consequence; trim recaps and filler. When the concept calls for a recurring activity in this installment, let it happen on the page and show what the characters do or say differently on this occasion and how it changes them. Carry each result into the next event. Keep speakers, register and viewpoint clear. Use only prose inside the blocks, without stage names or timestamp headings. Do not replay prior events.",
-        { ...episode, plan: { ...writerPlan,
+        { ...episode, ...(previousDraft ? { previousDraft } : {}), plan: { ...writerPlan,
           events: writerPlan.events.map((event, index) => {
             const requiredActions = markedScenes.filter(assignment => assignment.event === index + 1);
             return requiredActions.length ? { ...event, requiredActions } : event;
           }),
         } }, draftSchema, 6500).catch(async error => {
           if (partialWrite) {
-            const tentative = partialWrite.map(cleanProse).filter(Boolean);
+            const tentative = partialWrite.map(text => cleanNames(cleanProse(text))).filter(Boolean);
             if (tentative.length) {
               checkpoint.writePreview = tentative;
               preview = manuscript(tentative);
@@ -381,13 +425,13 @@ export async function generateChapter(options: Options) {
           }
           throw error;
         });
-      const parts = result.events.map(cleanProse);
+      const parts = result.events.map(text => cleanNames(cleanProse(text)));
       preview = manuscript(parts);
       checkpoint.events = draftSchema.parse({ events: parts }).events;
       checkpoint.writePreview = undefined;
       await save();
     }
-    options.onDraftUpdate?.(manuscript(checkpoint.events));
+    options.onDraftUpdate?.(cleanNames(manuscript(checkpoint.events)));
     const report = () => {
       preview = manuscript(checkpoint.events!);
       options.onDraftProgress?.({ chars: storyChars(preview), events: 5 });
@@ -399,9 +443,10 @@ export async function generateChapter(options: Options) {
         try {
           if (geminiStylist && !geminiKey) throw new Error("Missing Gemini API key");
           const original = checkpoint.events!;
-          const result = await structured("style_edit", styleInstructions + "\n" + naming,
+          const result = await structured("style_edit", styleInstructions + "\n" + naming +
+            (character.funElement ? " Preserve the funElement tone through phrasing and rhythm where the draft supports it." : ""),
             { events: original, dialogueContext: {
-              mainCharacter: { name: character.name, personality: character.personality },
+              mainCharacter: { name: character.name, personality: character.personality, funElement: character.funElement },
               activeConcept: seriesConcept,
               baseConcept: character.concept,
               earlierConcepts,
@@ -413,7 +458,7 @@ export async function generateChapter(options: Options) {
               if (parsed.format !== "json") trace.event("style_edit_response_recovered", { format: parsed.format });
               return parsed.draft;
             });
-          const next = result.events.map(cleanProse);
+          const next = result.events.map(text => cleanNames(cleanProse(text)));
           const edited = manuscript(next);
           const rejection = !draftSchema.safeParse({ events: next }).success ? "empty_event"
             : meetsMinimum(preview) && !meetsMinimum(edited) ? "below_minimum"
@@ -504,6 +549,13 @@ export async function generateChapter(options: Options) {
         checkpoint.pendingRepairCopyedit = undefined;
         await save();
       }
+      const normalized = checkpoint.events!.map(cleanNames);
+      if (normalized.some((text, index) => text !== checkpoint.events![index])) {
+        checkpoint.events = normalized;
+        checkpoint.review = undefined;
+        await save();
+        options.onDraftUpdate?.(manuscript(normalized));
+      }
       report();
       phase("reviewing");
       const parts: string[] = checkpoint.events!;
@@ -533,7 +585,8 @@ export async function generateChapter(options: Options) {
       const cachedReview = schema.safeParse(checkpoint.review);
       const verdict = cachedReview.success ? cachedReview.data : await structured("chapter_review",
         rules + "\n" + novelReviewerQualityInstructions + "\n" + sceneContextChecks + " " + residenceChecks +
-        "\nJudge conceptAlignment against the full user concepts even if conceptRules is empty. Compare the on-page consequence to the required direction of change, and on the finale check that the requested outcome actually happens. If a central recurring activity is due in this installment, cite where it actually happens and affects a character. A promise, setup or departure toward it is not the activity itself. Allow an installment devoted to a different beat when the activity is neither due nor being repeatedly deferred. Do not treat a theme mention or agreement with a conflicting outline as fulfillment. " +
+        "\nFlag accidental combinations of names or mistaken identity in prose as language or continuity, using the affected passage as evidence. Fix only the affected reference. Judge conceptAlignment against the full user concepts even if conceptRules is empty. Compare the on-page consequence to the required direction of change, and on the finale check that the requested outcome actually happens. If a central recurring activity is due in this installment, cite where it actually happens and affects a character. A promise, setup or departure toward it is not the activity itself. Allow an installment devoted to a different beat when the activity is neither due nor being repeatedly deferred. Do not treat a theme mention or agreement with a conflicting outline as fulfillment. " +
+        (schedule.phase === "resolution" ? " The fifth installment should deliver this arc's payoff and leave a natural way to continue. Reflect any definitive ending that shuts down the core premise in conceptAlignment, and record a concrete continuation in memoryPatch.nextChapterGoal. " : "") +
         "\n" + materialReview + " Use supplied source IDs in every evidence field. Use an empty fix string for passing concept alignment or resolution. Include significant shared changes, registers and prop ownership in memory. Use memoryPatch=null when a material error prevents publishing. " +
         eventAuditInstructions + " " + (promises.length ? promiseReviewInstructions : "") + " " +
         (conceptRules.length ? conceptRuleAuditInstructions : "") + " " + (dueMarkedEvents.length ? markedReviewInstructions : "") + " " + usableEdit +
@@ -608,19 +661,29 @@ export async function generateChapter(options: Options) {
       const resolution = "resolution" in resolved ? resolved.resolution as z.infer<ReturnType<typeof createFinalReviewSchema>>["resolution"] : undefined;
       const endingValid = !finale || !!resolution && resolution.centralConflictResolved && resolution.protagonistOutcomeShown &&
         resolution.relationshipOutcomeShown && !resolution.hasSequelHook;
-      const memory = resolved.memoryPatch;
-      const memoryValid = memory && !unsupportedPropChanges(old.propStates ?? [], memory.propChanges ?? [], preview).length &&
-        !unjustifiedRegisterChanges(old.dialogueRegisters ?? [], memory.dialogueRegisters ?? [], preview).length;
+      const memory = resolved.memoryPatch ?? (resolved.pass ? {
+        summary: [old.summary, resolved.endingChange.text].filter(Boolean).join("\n").slice(-1400),
+        currentSituation: resolved.endingChange, newEvents: resolved.newEvents,
+        resolvedEvents: [], openedThreads: [], closedThreads: [], worldFacts: [], characters: [],
+        nextChapterGoal: old.nextChapterGoal, sharedChanges: [], propChanges: [], dialogueRegisters: [],
+      } : null);
+      const unsupportedProps = unsupportedPropChanges(old.propStates ?? [], memory?.propChanges ?? [], preview);
+      const unsupportedRegisters = unjustifiedRegisterChanges(old.dialogueRegisters ?? [], memory?.dialogueRegisters ?? [], preview);
+      const repeatsPrior = repeatsPrevious(preview, old.previousProse);
       const accepted = resolved.conceptAlignment.satisfied &&
-        !issues.length && promise.accepted && endingValid && meetsMinimum(preview) && !repeated &&
-        !repeatsPrevious(preview, old.previousProse) && memoryValid;
-      trace.event("review_decision", { accepted: Boolean(accepted), repaired: Boolean(checkpoint.repaired),
+        !issues.length && promise.accepted && endingValid && meetsMinimum(preview) &&
+        (resolved.pass || (!repeated && !repeatsPrior)) && !!memory;
+      trace.event("review_decision", { accepted, reviewerPassed: resolved.pass, repaired: Boolean(checkpoint.repaired),
         issues: issues.map(issue => issue.type), advisoryIssues: advisoryIssues.map(issue => issue.type),
-        possibleRepeat: Boolean(possibleRepeat), chars: storyChars(preview) });
+        possibleRepeat: Boolean(possibleRepeat), repeatedPassage: Boolean(repeated), repeatsPrevious: repeatsPrior,
+        unsupportedPropChanges: unsupportedProps.length, unsupportedRegisterChanges: unsupportedRegisters.length,
+        promiseAccepted: promise.accepted, endingValid, chars: storyChars(preview) });
       if (accepted && memory) {
         const state = mergeMemory({ ...old, seriesArc: series.arc, outlineVersion: 1, seriesStartChapter, seriesConcept, conceptHistory, conceptRules,
           ...(markedSchedule ? { markedSchedule, markedConceptHash } : old.markedSchedule ? { markedSchedule: undefined, markedConceptHash: undefined } : {}) },
-          memory, preview, series.arc.endingPromise);
+          { ...memory, propChanges: memory.propChanges?.filter(change => !unsupportedProps.includes(change)),
+            dialogueRegisters: memory.dialogueRegisters?.filter(change => !unsupportedRegisters.includes(change)) },
+          preview, series.arc.endingPromise);
         if (finale) state.nextChapterGoal = "";
         checkpoint.review = confirmed.size ? {
           ...verdict,
@@ -655,7 +718,7 @@ export async function generateChapter(options: Options) {
               : ""),
               missingScenes.size ? { events, issues: markedIssues, length: input.length, minimum: input.minimum }
                 : { events, plan, issues, repeated, scene: resolved.sceneAudit, concept: resolved.conceptAlignment,
-                  seriesConcept, earlierConcepts, characterConcept: character.concept, conceptRules, ...markedContext,
+                  seriesConcept, earlierConcepts, characterConcept: character.concept, conceptRules, schedule, ...markedContext,
                   resolution, promises: promise.items, length: input.length, minimum: input.minimum },
               z.object({ edits: editsSchema }).strict(), 2600);
             if (!missingScenes.size || repair.edits.every(edit => missingScenes.has(edit.event)) &&

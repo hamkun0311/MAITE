@@ -26,7 +26,7 @@ test("settled chapters replay only within the same story branch and short output
    const fingerprint = new URL(url).searchParams.get("fingerprint")?.slice(3) ?? "";
    return Response.json(stored.has(fingerprint) ? [stored.get(fingerprint)] : []);
   }
-  if (url.includes("/rpc/reserve_generation_v2")) {
+  if (url.includes("/rpc/reserve_story_generation")) {
    reservations++;
    const payload = JSON.parse(String(init?.body));
    fingerprints.set(payload.p_id, payload.p_fingerprint);
@@ -87,7 +87,7 @@ test("novel persistence traces confirm storage only after settlement succeeds an
  t.mock.method(globalThis,"fetch",async(input:unknown,init?:RequestInit)=>{
   const url=String(input);
   if(url.includes("/auth/v1/user"))return Response.json({id:A,role:"authenticated",aud:"authenticated"});
-  if(url.includes("/rpc/reserve_generation_v2"))return Response.json({id:randomUUID(),status:"reserved",result:null,storage_path:null});
+  if(url.includes("/rpc/reserve_story_generation"))return Response.json({id:randomUUID(),status:"reserved",result:null,storage_path:null});
   if(url.includes("/generation_jobs"))return Response.json([{id:randomUUID()}]);
   if(url.includes("/rpc/finish_generation"))return failWrite&&JSON.parse(String(init?.body)).p_success?Response.json({message:"fixture failure"},{status:503}):Response.json(null);
   throw new Error("Unexpected request");

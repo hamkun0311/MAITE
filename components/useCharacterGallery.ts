@@ -3,6 +3,7 @@ import type { ImageSceneSelection } from "@/lib/characters/visual";
 import { useEffect, useRef, useState } from "react";
 import type { CharacterProfile } from "@/lib/chat/character";
 import { MAX_CHARACTER_IMAGE } from "@/lib/characters/schema";
+import type { CharacterRenderStyle } from "@/lib/characters/render-style";
 import { MAX_GALLERY_IMAGES, NO_BACKGROUND, type CharacterGalleryImage, type CharacterImageJob, type IllustrationScene, type VisualKind } from "@/lib/characters/gallery";
 import { compositionSchema } from "@/lib/characters/visual";
 import { imageAssetKey } from "@/lib/platform/image-cache";
@@ -14,7 +15,7 @@ import { visualKeywords } from "@/lib/chat/presentation";
 import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
 import { useGenerationPolicyNotice } from "./ActionConfirm";
 
-type Reference = { blob: Blob; profile: CharacterProfile; style: string; description: string; documentId: string };
+type Reference = { blob: Blob; profile: CharacterProfile; renderStyle?: CharacterRenderStyle; documentId: string };
 export default function useCharacterGallery(reference?: Reference) {
   const showPolicyNotice = useGenerationPolicyNotice();
   const { user } = useAccount(); const scope = user?.id || "demo";
@@ -137,7 +138,7 @@ export default function useCharacterGallery(reference?: Reference) {
     try {
       const body = new FormData();
       body.set("profile", JSON.stringify(reference.profile));
-      body.set("previousStyle", reference.style);
+      if (reference.renderStyle) body.set("renderStyle", reference.renderStyle);
       body.set("image", reference.blob, "original-character.jpg");
       body.set("scene", JSON.stringify({ kind, ...(selection ? { selection } : {}), context: context.slice(-12000), previousCompositions: imageRef.current.filter(image => image.composition).slice(-3).map(image => image.composition) }));
       body.set("messages", JSON.stringify([{ role: "user", content: kind === "illustration"

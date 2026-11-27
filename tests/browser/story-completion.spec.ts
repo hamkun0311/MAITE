@@ -14,7 +14,7 @@ test("five chapters complete the story; failed finale does not advance; reset st
       failedFinale = true;
       return route.fulfill({ contentType: "text/event-stream", body: 'data: {"type":"error","message":"마지막 회차를 다시 작성해주세요."}\n\n' });
     }
-    return route.fulfill({ contentType: "text/event-stream", body: storyWire(body, `${chapter}편. ${chapter === 5 ? "갈등이 끝나고 두 사람은 함께 서점을 열었다." : "새로운 선택으로 사건이 진전됐다."}`) });
+    return route.fulfill({ contentType: "text/event-stream", body: storyWire(body, `${chapter}편. ${chapter === 5 ? "갈등이 끝나고 두 사람은 함께 서점을 열었다." : "새로운 선택으로 사건이 진전됐다."}`, chapter <= 5 ? "final" : "continue") });
   });
   await enterCharacterMode(page, "이야기 만들기");
   const story = page.getByRole("region", { name: "이야기 만들기", exact: true });
@@ -179,7 +179,7 @@ test("a story completes after server-side recovery within the original request",
   expect(attempts).toBe(2);
 });
 
-test("a concept after episode three extends through episode eight without resetting labels", async ({ page }) => {
+test("a concept after episode three starts a new arc that rolls over after episode eight", async ({ page }) => {
   await page.goto("/ideal"); await generateCharacter(page);
   const bodies: { storyState?: StoryState; additionalConcept?: string }[] = [];
   await page.route("**/api/chat", route => {
@@ -195,21 +195,23 @@ test("a concept after episode three extends through episode eight without resett
     await next.click(); await expect(progress).toContainText(`이야기 #${episode}`);
   }
   await story.getByRole("textbox", { name: "다음 이야기 컨셉" }).fill("오해가 풀리고 두 사람은 화해한다");
-  for (let episode = 4; episode <= 8; episode++) {
+  for (let episode = 4; episode <= 9; episode++) {
     await next.click();
     await expect(progress).toHaveText(`이야기 #${episode}`);
     await expect(story.getByRole("log").locator(".assistant > span").last()).toHaveText(`이야기 #${episode}`);
   }
-  await expect(story.getByRole("button", { name: "이야기 완결", exact: true })).toBeDisabled();
-  expect(bodies).toHaveLength(8);
+  await expect(next).toBeEnabled();
+  expect(bodies[8].storyState?.chapter).toBe(8);
+  expect(bodies[8].additionalConcept).toBeUndefined();
+  expect(bodies).toHaveLength(9);
   expect(bodies[3].storyState?.chapter).toBe(3);
   expect(bodies[4].storyState?.seriesStartChapter).toBe(3);
   expect(bodies[7].storyState?.chapter).toBe(7);
-  await expect(story.getByRole("log").locator(".assistant > span")).toHaveText(["이야기 #8"]);
-  for (let episode = 7; episode >= 1; episode--) {
+  await expect(story.getByRole("log").locator(".assistant > span")).toHaveText(["이야기 #9"]);
+  for (let episode = 8; episode >= 1; episode--) {
     await story.getByRole("button", { name: "이전 이야기 보기", exact: true }).click();
     await expect(progress).toHaveText(`이야기 #${episode}`);
   }
-  expect(bodies).toHaveLength(8);
+  expect(bodies).toHaveLength(9);
   await expect(story.locator(".live-chat-status")).toHaveCount(0);
 });

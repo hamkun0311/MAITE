@@ -128,7 +128,9 @@ export function withGeneration(handler: (request: Request, draftStore?: StoryDra
           });
         }
       }
-      const job = resumeReservedImage ? undefined : await rpc<Job>("reserve_generation_v2", { p_user: user.id, p_id: id, p_kind: kind, p_fingerprint: fingerprint });
+      const reservation = { p_user: user.id, p_id: id, p_fingerprint: fingerprint };
+      const job = resumeReservedImage ? undefined : kind === "story" ? await rpc<Job>("reserve_story_generation", reservation)
+        : await rpc<Job>("reserve_generation_v2", { ...reservation, p_kind: kind });
       if (job?.status === "completed") {
         await draft?.release();
         if (job.storage_path) {

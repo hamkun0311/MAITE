@@ -1,16 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { fillCharacterProfile, generateCharacter, enterCharacterMode } from "./character-helpers";
 
-test("the compact header restores the token usage dialog for generation tests", async ({ page }) => {
+test("the compact header hides the token usage button", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 }); await page.goto("/ideal");
   const header = page.locator(".chat-header");
   await expect(header.getByRole("link", { name: "내 프로필" })).toBeVisible();
   await expect(header.getByRole("link", { name: "하트 스토어" })).toBeVisible();
-  await expect(header.getByRole("button", { name: "토큰 사용량",exact:true })).toBeVisible();
-  await header.getByRole("button", { name: "토큰 사용량",exact:true }).click();
-  const usage=page.getByRole("dialog",{name:"토큰 사용량",exact:true});
-  await expect(usage).toBeVisible();await expect(usage).toContainText("확인된 합계");
-  await page.getByRole("button",{name:"토큰 사용량 닫기",exact:true}).click();await expect(usage).not.toBeVisible();
+  await expect(header.getByRole("button", { name: "토큰 사용량",exact:true })).toHaveCount(0);
   await expect(header.getByRole("link")).toHaveCount(2);
   await expect(header.getByRole("link", { name: "갤러리", exact: true })).toHaveCount(0);
 });
@@ -26,7 +22,7 @@ test("failed novel reviews still show consumed tokens and never publish an unche
  await enterCharacterMode(page,"이야기 만들기");
  await expect(page.locator(".chat-error")).toContainText("출력 토큰 한도");
  await expect(page.locator(".story-page")).toHaveCount(0);expect(calls).toBe(1);
- await page.locator(".chat-header").getByRole("button",{name:"토큰 사용량",exact:true}).click();
+ await page.evaluate(() => window.dispatchEvent(new Event("maite-open-token-usage")));
  const dialog=page.getByRole("dialog",{name:"토큰 사용량",exact:true});
  await expect(dialog).toContainText("확인된 합계 18,101 토큰");
  await dialog.locator(".token-usage-task").filter({hasText:"이야기 1회차"}).locator("summary").click();

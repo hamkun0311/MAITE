@@ -7,6 +7,13 @@ const versionFingerprint = (fingerprint: string) => createHash("sha256").update(
 
 export async function imageFingerprint(form: FormData) {
   const hash = createHash("sha256");
+  if (!form.has("scene")) {
+    const messages: unknown = JSON.parse(String(form.get("messages") ?? "null"));
+    if (form.has("image") || (Array.isArray(messages) && messages.length > 1)) {
+      // Legacy clients can still send old references; their stored briefs describe the old image.
+      hash.update("fresh-character-input\0");
+    }
+  }
   for (const [key, value] of [...form.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const bytes = typeof value === "string" ? Buffer.from(value) : Buffer.from(await value.arrayBuffer());
     hash.update(JSON.stringify([key, typeof value === "string" ? "text" : value.type, bytes.length]));

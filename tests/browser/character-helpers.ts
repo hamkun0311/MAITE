@@ -2,14 +2,17 @@ import { expect, type Page } from "@playwright/test";
 import sharp from "sharp";
 import { emptyStoryState, type StoryState } from "../../lib/novel/state";
 
-export function chapterEvent(body: { storyState?: StoryState; additionalConcept?: string }, text: string) {
+export function chapterEvent(body: { storyState?: StoryState; additionalConcept?: string }, text: string, endingMode: "continue" | "final" = "continue") {
   const state = body.storyState ?? emptyStoryState();
+  const arcStart = body.additionalConcept || state.chapter - (state.seriesStartChapter ?? 0) >= 5 ? state.chapter : state.seriesStartChapter ?? 0;
+  const seriesArc = { endingMode, endingPromise: "함께 서점을 정리한다", installments: Array.from({ length: 5 }, (_, index) => ({ chapter: index + 1, goal: "목표", payoff: "결과" })) };
   return { type: "chapter", text, expectedChapter: state.chapter,
-    state: { ...state, ...(body.additionalConcept ? { seriesStartChapter: state.chapter, seriesConcept: body.additionalConcept } : {}), chapter: state.chapter + 1, previousProse: text, previousEnding: text.slice(-700),
-      recentEvents: ["서하가 친구와 재회했다."], resolvedEvents: ["서점에서의 재회"], nextChapterGoal: "함께 서점을 정리한다." } };
+    state: { ...state, seriesArc, ...(arcStart || state.seriesStartChapter !== undefined ? { seriesStartChapter: arcStart } : {}),
+      ...(body.additionalConcept ? { seriesConcept: body.additionalConcept } : {}), chapter: state.chapter + 1, previousProse: text, previousEnding: text.slice(-700),
+      recentEvents: ["서하가 친구와 재회했다."], resolvedEvents: ["서점에서의 재회"], nextChapterGoal: endingMode === "final" && state.chapter + 1 - arcStart === 5 ? "" : "함께 서점을 정리한다." } };
 }
-export function storyWire(body: { storyState?: StoryState; additionalConcept?: string }, text: string) {
-  return `data: ${JSON.stringify(chapterEvent(body, text))}\n\ndata: {"type":"done"}\n\n`;
+export function storyWire(body: { storyState?: StoryState; additionalConcept?: string }, text: string, endingMode?: "continue" | "final") {
+  return `data: ${JSON.stringify(chapterEvent(body, text, endingMode))}\n\ndata: {"type":"done"}\n\n`;
 }
 
 export async function fillCharacterProfile(page: Page) {

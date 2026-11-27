@@ -163,6 +163,8 @@ async function handle(request: Request, draftStore?: StoryDraftStore) {
                 ? "AI 제공자의 사용 한도가 부족해 멈췄어요. 한도가 복구되면 저장된 지점에서 이어갈 수 있어요."
                 : error instanceof NovelUpstreamError && error.diagnostics.httpStatus === 401
                   ? "AI 제공자 인증을 확인해야 해요. 설정이 복구되면 저장된 지점에서 이어갈 수 있어요."
+                  : error instanceof NovelUpstreamError && error.diagnostics.httpStatus === 429
+                    ? "AI 제공자의 요청 한도에 도달했어요. 잠시 뒤 다시 시도하면 저장된 지점에서 이어갈 수 있어요."
                   : "AI 제공자가 요청을 처리하지 못했어요. 저장된 진행 상황은 유지되며 하트는 차감하지 않았어요." });
             } else if (error instanceof Error && error.message === "Novel chapter too short") {
               send({ type: "error", message: `${minimumStoryLength}자 이상인 원고를 완성하지 못했습니다. 이전 회차는 유지됩니다.` });

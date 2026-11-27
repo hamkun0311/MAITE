@@ -172,3 +172,16 @@ SDK의 사용자 동의 절차를 거쳐 광고를 표시하며 앱 완료 콜�
 공식 참고: [Capacitor App](https://capacitorjs.com/docs/apis/app), [Supabase Google 로그인](https://supabase.com/docs/guides/auth/social-sign-in/auth-google), [Google 구매 검증 API](https://developers.google.com/android-publisher/api-ref/rest/v3/purchases.products), [AdMob SSV 서명 검증](https://developers.google.com/admob/android/ssv).
 
 추가 참고: [Gradle Java 호환성](https://docs.gradle.org/current/userguide/compatibility.html), [Play 일회성 제품 설정](https://support.google.com/googleplay/android-developer/answer/16430488), [서비스 계정의 Play 권한](https://developers.google.com/android-publisher/getting_started).
+## 문의하기
+
+Supabase에 [문의 마이그레이션](../supabase/migrations/202611260002_support_inquiries.sql)을 적용한 뒤 서버를 배포한다. 내 정보의 출석보상 아래에서 문의를 등록하고 내역과 답글을 확인한다. 문의 작성자는 본인의 문의를 수정하고 삭제할 수 있다. 이메일 인증이 완료된 지정 운영자 계정은 전체 문의를 조회하고 답글을 등록할 수 있다. Android 앱에 화면을 포함하려면 모바일 번들을 갱신해 앱을 빌드한다.
+
+## 하트와 정산 요청
+
+Supabase에 [정산 마이그레이션](../supabase/migrations/202611260003_heart_settlements.sql)을 적용한 뒤 서버를 배포한다. 빨간 하트는 정산할 수 있는 잔액이며 광고·가입·출석의 보상 잔액은 파란 하트로 표시한다. 두 잔액을 합쳐 쓸 수 있고 파란 하트부터 차감한다. 판매 대금에 포함된 파란 하트도 파란색으로 지급된다. 새 소설 생성에는 10하트가 필요하다.
+
+내 정보의 정산 요청에서 500하트 단위로 신청한다. 접수 시 빨간 잔액을 차감하고 원장에 기록한다. 정산 예정일은 한국 시간 기준 신청 월 10일이며 당월 10일이 지났으면 이후 월을 선택한다. 인증된 운영자 계정은 요청과 계좌 정보를 조회할 수 있고 송금은 운영자가 직접 처리한다.
+
+[취소·공지 마이그레이션](../supabase/migrations/202611260004_settlement_cancellation_and_notices.sql)은 정산 마이그레이션 다음에 적용한다. 신청자는 한국 시간 기준 정산 예정일 전날까지 본인 요청을 취소할 수 있다. 취소한 요청은 이력에 남으며 빨간 하트는 한 번만 반환된다. 내 정보의 공지사항은 로그인 회원이 읽을 수 있고, 이메일 인증을 완료한 운영자가 새 공지를 등록한다.
+
+[정산 완료 마이그레이션](../supabase/migrations/202611270001_settlement_completion.sql)은 취소·공지 마이그레이션 다음에 적용한다. 운영자는 송금 후 정산 요청 상세에서 완료 처리한다. 고객은 자신의 요청 내역에서 완료 상태와 처리 시간을 확인할 수 있다. 완료된 요청은 취소할 수 없다.

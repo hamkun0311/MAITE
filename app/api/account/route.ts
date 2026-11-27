@@ -59,7 +59,7 @@ export async function GET(request: Request) {
     const results = await measure("account_db", () => Promise.all([
       db.from("wallets").select("transferable,bonus,free_chats").eq("user_id", user.id).single(),
       db.from("profiles").select("display_name").eq("id", user.id).single(),
-      db.from("documents").select("id,title,kind,updated_at,character_name:payload->art->profile->>name,job_id:payload->art->>jobId,source_id:payload->>id,chapter:payload->story->storyState->>chapter,novel_id:payload->story->>documentId,next_goal:payload->story->storyState->>nextChapterGoal,series_start:payload->story->storyState->>seriesStartChapter").eq("user_id", user.id).is("deleted_at", null).order("updated_at", { ascending: false }).limit(200),
+      db.from("documents").select("id,title,kind,updated_at,character_name:payload->art->profile->>name,job_id:payload->art->>jobId,source_id:payload->>id,chapter:payload->story->storyState->>chapter,novel_id:payload->story->>documentId,next_goal:payload->story->storyState->>nextChapterGoal,series_start:payload->story->storyState->>seriesStartChapter,series_ending:payload->story->storyState->seriesArc->>endingMode").eq("user_id", user.id).is("deleted_at", null).order("updated_at", { ascending: false }).limit(200),
     ]));
     if (results.some(result => result.error)) throw new AccountError("계정 정보를 불러오지 못했습니다. DB 마이그레이션을 확인해주세요.", 503);
     const savedProfile = userProfileSchema.safeParse(user.user_metadata?.maite_profile);

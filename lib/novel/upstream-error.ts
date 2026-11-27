@@ -7,11 +7,14 @@ function diagnosticCode(value: unknown) {
 export class NovelUpstreamError extends Error {
   readonly diagnostics;
   readonly retryAfter: string | null;
+  readonly retryableRateLimitHint: boolean;
 
   constructor(provider: "gemini" | "openai" | "claude", httpStatus: number, body: unknown, retryAfter: string | null = null) {
     super("Novel upstream failed");
     this.retryAfter = retryAfter;
-    const error = (body as { error?: { code?: unknown; status?: unknown; type?: unknown } } | null)?.error;
+    const error = (body as { error?: { code?: unknown; status?: unknown; type?: unknown; message?: unknown } } | null)?.error;
+    this.retryableRateLimitHint = provider === "gemini" && httpStatus === 429 && typeof error?.message === "string" &&
+      /\brate limit\b/i.test(error.message) && /\bretry with backoff\b/i.test(error.message);
     this.diagnostics = {
       provider,
       httpStatus,
@@ -27,16 +30,22 @@ export function isProviderQuotaError(error: NovelUpstreamError): boolean {
     typeof code === "string" && ["insufficient_user_quota", "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached"].includes(code.toLowerCase()));
 }
 
+export function isProviderRateLimitError(error: unknown): error is NovelUpstreamError {
+  if (!(error instanceof NovelUpstreamError) || error.diagnostics.httpStatus !== 429 || isProviderQuotaError(error)) return false;
+  const { providerErrorCode, providerErrorStatus } = error.diagnostics;
+  return error.retryableRateLimitHint || !!error.retryAfter?.trim() || [providerErrorCode, providerErrorStatus].some(code =>
+    typeof code === "string" && ["rate_limit_exceeded", "rate_limit_error", "resource_exhausted"].includes(code.toLowerCase()));
+}
+
 export function novelRetryDelay(error: unknown, retries: number): number | undefined {
   const backoff = 1000 * 2 ** retries;
   if (error instanceof NovelUpstreamError) {
     const { httpStatus, providerErrorCode } = error.diagnostics;
     if (isProviderQuotaError(error) || providerErrorCode === "model_not_found") return;
-    if (![408, 500, 502, 503, 504, 529].includes(httpStatus) &&
-      !(httpStatus === 429 && (error.retryAfter || providerErrorCode === "rate_limit_exceeded" || providerErrorCode === "rate_limit_error"))) return;
+    if (![408, 500, 502, 503, 504, 529].includes(httpStatus) && !isProviderRateLimitError(error)) return;
     const retryAfter = error.retryAfter?.trim();
     const hintedDelay = retryAfter ? (/^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
-    const delay = Math.max(backoff, Number.isNaN(hintedDelay) ? 0 : hintedDelay);
+    const delay = Math.max(error.retryableRateLimitHint ? backoff * 3 : backoff, Number.isNaN(hintedDelay) ? 0 : hintedDelay);
     return delay <= 15000 ? delay : undefined;
   }
   if (error instanceof TypeError && error.cause instanceof Error && "code" in error.cause &&

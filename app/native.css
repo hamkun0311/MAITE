@@ -67,7 +67,8 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .character-app .token-usage-trigger span { display:none; }
 .character-app .account-trigger { display:flex; gap:5px; align-items:center; background:#fff0f3; color:#392c54; padding:7px 10px; border:0; border-radius:30px; min-height:34px; font-size:14px; font-weight:700; white-space:nowrap; }
 .character-app .account-trigger svg { color:#ef7589; fill:#ef7589; }
-.character-app .account-trigger span { display:inline; }
+.character-app .account-trigger span { display:inline-flex; align-items:center; gap:3px; }
+.character-app .account-trigger .blue-heart svg { color:#3f83df; fill:currentColor; }
 .character-app .character-next button { min-width:58px; flex:0 0 58px; }
 .character-app .character-image-panel .composer-area { position:sticky; bottom:calc(56px + env(safe-area-inset-bottom)); z-index:10; background:linear-gradient(#f7f7fb00,#f7f7fb 18%); padding-bottom:8px; }
 .character-app .character-screen-heading .character-reader-settings { display:grid; place-items:center; flex:0 0 26px; width:26px; min-width:26px; padding:0; border:0; background:transparent; color:#ab94be; }.character-app .character-reader-settings span { display:none; }
@@ -218,6 +219,31 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .character-app .story-generation-status { display:flex; justify-content:space-between; align-items:center; gap:10px; font-size:11px; color:#9392a5; margin-top:6px; }
 .character-app .story-generation-status button { padding:5px 10px; border:1px solid #ded4f7; border-radius:10px; background:#f1ebff; color:#795bee; font-size:11px; }
 .native-reward-entry { display:flex; justify-content:space-between; align-items:center; padding:16px 18px; margin:14px 0; background:#fff; border:1px solid #e8e2fa; border-radius:18px; color:#795bee; font-weight:700; text-decoration:none; }
+.inline-heart { display:inline-block; width:1em; height:1em; vertical-align:-.12em; margin-inline:.15em; }
+.character-app .account-page .native-account-primary { display:flex; align-items:center; justify-content:center; gap:6px; width:100%; min-height:40px; padding:11px; margin:0; background:#795bee; color:#fff; border:0; border-radius:12px; text-decoration:none; font-size:13px; }
+.character-app .account-page .native-wallet .native-account-primary { margin-top:18px; }
+.support-page .native-back { display:inline-flex; align-items:center; gap:4px; }
+.support-form { display:grid; gap:12px; }
+.support-form h2, .support-inquiry h3 { margin:0; color:#514164; }
+.support-form label { display:grid; gap:6px; color:#63516e; font-size:13px; }
+.support-form :is(input,textarea) { width:100%; min-width:0; border:1px solid #e6ddef; border-radius:10px; padding:10px 12px; background:#fcfaff; color:#514164; font-size:16px; }
+.support-form textarea { min-height:106px; resize:vertical; }
+.support-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.support-actions:empty { display:none; }
+.character-app .support-actions button { width:auto; min-height:40px; margin:0; }
+.support-inquiry :is(h3,.support-body) { overflow-wrap:anywhere; }
+.support-inquiry .support-body { color:#514164; white-space:pre-wrap; }
+.support-inquiry :is(small,time) { color:#78668a; font-size:12px; }
+.support-reply { padding:12px; margin:12px 0; border-radius:12px; background:#f4effb; }
+.support-reply time { margin-left:8px; }
+.support-inquiry .support-form { margin-top:12px; }
+.settlement-form .settlement-consent { display:flex; align-items:flex-start; gap:8px; }
+.settlement-form .settlement-consent input { flex:none; width:16px; height:16px; padding:0; margin:2px 0 0; }
+.settlement-details dt { font-weight:700; }
+.settlement-details dd { margin:0 0 8px; overflow-wrap:anywhere; }
+.notice-item summary { cursor:pointer; overflow-wrap:anywhere; }
+.notice-item time { display:block; margin:6px 0 0 14px; color:#78668a; font-size:12px; }
+.notice-item p { white-space:pre-wrap; overflow-wrap:anywhere; color:#514164; }
 .reward-calendar,.reward-claims { background:#fff; border:1px solid #e8e2fa; border-radius:22px; padding:16px; margin:16px 0; }
 .reward-month { display:flex; align-items:center; justify-content:space-between; }
 .reward-month h2 { font-size:18px; }
@@ -241,6 +267,8 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .reward-claims>p { color:#9990ab; font-size:12px; line-height:1.7; }
 .character-app .novel-detail-page { height:calc(100dvh - 108px - env(safe-area-inset-bottom)); min-height:0; display:flex; flex-direction:column; gap:10px; padding:12px 12px 10px; overflow:hidden; }
 .library-detail-toolbar { display:flex; flex:none; align-items:center; justify-content:space-between; gap:12px; }
+.library-sale-actions { display:flex; justify-content:flex-end; align-items:center; flex-wrap:wrap; gap:6px; }
+.character-app .library-sale-actions button { margin:0; }
 .character-app .library-detail-toolbar .native-library-back { margin-bottom:0; }
 .character-app .novel-sale-trigger { min-height:36px; padding:8px 14px; border:1px solid #ded4f7; border-radius:12px; background:#795bee; color:white; font-size:12px; font-weight:700; }
 .character-app .novel-reading-panel { flex:1; min-height:0; display:flex; flex-direction:column; margin:0; padding:0; border:0; background:transparent; box-shadow:none; }
@@ -250,11 +278,12 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .character-app .purchased-novel-page>h1 { flex:none; margin:0; font-size:18px; }
 .purchased-reader-actions { flex:none; }
 .purchased-reader-actions .native-primary { min-height:44px; padding:9px 12px; }
+.purchase-heart-amount { display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
 .purchased-reader-actions p { margin:0 0 6px; font-size:12px; color:#9a4770; }
-.character-app .purchased-novel-page .novel-sale-trigger { display:inline-flex; align-items:center; gap:5px; }
-.purchased-illustrations { display:flex; flex:none; gap:8px; overflow-x:auto; padding:2px; }
-.character-app .purchased-illustrations button { flex:0 0 60px; height:60px; overflow:hidden; padding:0; border:1px solid #e5ddf6; border-radius:9px; background:#f1ecfa; }
-.purchased-illustrations img { display:block; width:100%; height:100%; object-fit:cover; object-position:center top; }
+.character-app .purchased-novel-page .novel-sale-trigger { display:inline-flex; align-items:center; gap:5px; text-decoration:none; }
+.purchased-gallery-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+.character-app .purchased-gallery-grid button { min-width:0; aspect-ratio:3/4; overflow:hidden; padding:0; border:1px solid #e5ddf6; border-radius:12px; background:#f1ecfa; }
+.purchased-gallery-grid img { display:block; width:100%; height:100%; object-fit:cover; object-position:center top; }
 .character-app .novel-reader-shell .saved-novel-reader { width:100%; height:100%; margin:0; padding:0; border:1px solid #e8e0f4; border-radius:18px; background:#ffffff42; overflow:hidden; }
 .character-app .saved-novel-reader>.novel-text-scroll { height:100%; overflow-y:auto; overscroll-behavior:contain; padding:20px 38px 30px; margin:0; background:transparent; touch-action:pan-y; scrollbar-width:thin; box-sizing:border-box; }
 .character-app .saved-novel-reader .novel-text-scroll p { font-size:16px; line-height:1.95; color:#61536f; white-space:pre-wrap; }
@@ -262,10 +291,11 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .character-app .story-page-navigation.novel-side-navigation button { pointer-events:auto; width:30px; height:44px; min-height:44px; padding:0; border:1px solid #e3d8f4; border-radius:14px; background:#ffffffe0; color:#795bee; box-shadow:0 3px 14px #6b4d8c12; }
 .character-app .character-story-experience .story-page-navigation { position:fixed; top:50dvh; left:50%; width:min(calc(100vw - 12px),468px); height:0; transform:translateX(-50%); z-index:10; pointer-events:none; display:flex; justify-content:space-between; align-items:center; }
 .character-app .character-story-experience .story-page-navigation button { pointer-events:auto; width:30px; height:44px; border-radius:14px; background:#ffffffe0; }
-.novel-sale-dialog { width:calc(100% - 28px); max-width:440px; max-height:calc(100dvh - 44px); overflow-y:auto; border:1px solid #e5ddf6; border-radius:24px; padding:28px 22px 22px; color:#514164; background:#fff; box-shadow:0 20px 70px #34244933; }
-.novel-sale-dialog::backdrop { background:#21163066; backdrop-filter:blur(3px); }
-.novel-sale-dialog h2 { margin:0 30px 10px 0; font-size:20px; }
-.novel-sale-dialog>p { color:#9585a4; font-size:12px; line-height:1.7; }
+.bookshop-dialog { position:fixed; inset:0; margin:auto; box-sizing:border-box; width:min(440px, calc(100% - 28px)); max-height:calc(100dvh - 44px); overflow-y:auto; border:1px solid #e5ddf6; border-radius:24px; padding:28px 22px 22px; color:#514164; background:#fff; box-shadow:0 20px 70px #34244933; }
+.bookshop-dialog::backdrop { background:#21163066; backdrop-filter:blur(3px); }
+.character-app .bookshop-dialog h2 { margin:0 30px 10px 0; font-size:20px; color:#514164; }
+.character-app .bookshop-dialog>p { color:#78668a; font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
+.character-app .bookshop-dialog .sheet-close { margin:0; padding:6px; color:#78668a; background:transparent; border:0; }
 .novel-sale-dialog .publish-form { display:grid; gap:14px; }
 .novel-sale-dialog .publish-form label { display:grid; gap:7px; font-size:12px; }
 .novel-sale-dialog .publish-form textarea { min-height:100px; resize:vertical; }
@@ -282,13 +312,36 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .bookshop-copy { display:block; flex:1; min-width:0; text-align:left; }
 .character-app .bookshop-copy h3, .bookshop-copy strong { display:block; margin:0; color:#514164; font-size:14px; line-height:1.25; font-weight:700; overflow-wrap:anywhere; }
 .character-app .bookshop-copy p, .bookshop-copy .store-byline { margin:2px 0 0; font-size:11px; line-height:1.35; }
-.bookshop-description { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.bookshop-description { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; overflow-wrap:anywhere; }
 .character-app .bookshop-list button { flex-shrink:0; margin:0; min-height:34px; padding:5px 7px; white-space:nowrap; }
 .character-app .bookshop-read-link { display:inline-flex; flex-shrink:0; align-items:center; min-height:34px; padding:5px 9px; border-radius:10px; color:#694db6; background:#f1ecfa; font-size:12px; text-decoration:none; white-space:nowrap; }
 .character-app .bookshop-list .bookshop-novel-trigger { flex:1; min-width:0; display:flex; align-items:center; gap:9px; border:0; padding:0; background:transparent; white-space:normal; }
 .bookshop-novel-trigger > svg { flex:none; }
 .bookshop-novel-trigger[aria-expanded="true"] > svg { transform:rotate(180deg); }
-.bookshop-chapters { padding-left:12px; border-top:1px solid #f0eaf7; }
+.bookshop-chapters { padding-inline-start:8px; border-top:1px solid #f0eaf7; }
+.character-app .bookshop-chapters .bookshop-row { display:grid; grid-template-columns:minmax(0,1fr) auto; }
+.character-app .bookshop-chapters .bookshop-row:not(:last-child) { border-bottom:1px solid #f0eaf7; }
+.character-app .bookshop-chapters .bookshop-purchase { width:auto; gap:4px; }
+.bookshop-purchase svg, .purchase-heart-amount svg { flex:none; }
+.character-app .account-panel.bookshop-character-panel { container-type:inline-size; margin:12px 0; padding:10px; }
+.bookshop-character-grid {
+  --tile-size:min(calc((100cqi - 16px) / 3), max(48px, calc((100dvh - 327px) / 5)));
+  display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px;
+  max-height:calc(5 * (var(--tile-size) + 22px) + 32px); overflow-y:auto; scroll-snap-type:y proximity;
+}
+.character-app .bookshop-character-grid .bookshop-character-tile { display:grid; align-content:start; justify-self:center; width:min(100%,var(--tile-size)); gap:4px; min-width:0; padding:0; margin:0; border:0; border-radius:9px; background:transparent; color:#514164; scroll-snap-align:start; }
+.bookshop-character-tile:focus-visible { outline:2px solid #795bee; outline-offset:-2px; }
+.bookshop-character-tile .store-cover { position:relative; width:100%; border-radius:9px; }
+.bookshop-character-name { display:block; min-width:0; text-align:center; font-size:11px; font-weight:700; line-height:18px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.bookshop-badges { display:inline-flex; flex-wrap:wrap; gap:2px; }
+.bookshop-badges:empty { display:none; }
+.bookshop-character-tile .bookshop-badges { position:absolute; inset:3px 3px auto; }
+.bookshop-chapter-count { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+.bookshop-badge { padding:1px 4px; border-radius:4px; font-size:9px; font-weight:750; line-height:13px; }
+.bookshop-badge-hot { color:#861b3e; background:#ffe0e9; }
+.bookshop-badge-new { color:#4b358b; background:#eee4ff; }
+.bookshop-character-dialog .store-cover { width:min(160px, 45vw); margin:12px 0; }
+.character-app .bookshop-character-dialog .native-primary { width:100%; margin:12px 0 0; }
 .character-app .sale-panel { padding:14px; margin:14px 0; }
 .sale-panel h2 { margin-bottom:10px; }
 .character-app .sale-form { gap:9px; }

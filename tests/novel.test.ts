@@ -19,6 +19,7 @@ import {createNovelReviewLogger,novelReviewLogLevel,manuscriptFingerprint,logNov
 import { conceptRuleViolations, markedConceptEvents, novelConceptInstructions, scheduleMarkedEvents } from "../lib/novel/concept.ts";
 import { parseStyleEditResponse } from "../lib/novel/style-edit.ts";
 import { streamedDraftParagraphs } from "../lib/novel/draft-stream.ts";
+import { novelNameCleanup } from "../lib/novel/naming.ts";
 import { novelRetryDelay, NovelUpstreamError } from "../lib/novel/upstream-error.ts";
 import {openAIImageEndpoint, openAIImageKey, openAIResponsesEndpoint, openAITextKey} from "../lib/openai-endpoint.ts";
 import { textModel } from "../lib/ai-model.ts";
@@ -67,7 +68,7 @@ test("switching the OpenAI text provider selects its configured model", t => {
 const character = { mode: "story" as const, name: "서하", age: 25, personality: "다정함", concept: "친구와 서점 복구", genre: "막장드라마" as const, imageDescription: "서점의 탐정" };
 const prose = "서하는 서랍에서 계약서를 찾았다. 그가 약속한 수리 날짜가 문서에 적혀 있었다. " + "그녀는 친구에게 전화를 걸어 내일 함께 서점을 정리하자고 말했다. 망설이던 친구가 수화기 너머에서 웃었다. " + "둘은 닫힌 서점 문을 열고 먼지 쌓인 책을 창가로 옮겼다. 새로 비워진 진열대 사이로 햇빛이 들어왔다. 오래 미뤄 두었던 일이 드디어 시작되었다. " + "친구가 가져온 달력에 수리 날짜를 표시했다. 내일 아침에는 창문을 닦기로 했다.";
 const fact = { text: "계약서를 찾았다", evidence: "서하는 서랍에서 계약서를 찾았다." };
-const seriesArc = { endingPromise: "서점을 다시 열고 친구와 함께 운영한다", installments: Array.from({ length: 5 }, (_, index) => ({ chapter: index + 1, goal: `${index + 1}편 목표`, payoff: `${index + 1}편 결과` })) };
+const seriesArc = { endingMode: "continue" as const, endingPromise: "서점을 다시 열고 친구와 함께 운영한다", installments: Array.from({ length: 5 }, (_, index) => ({ chapter: index + 1, goal: `${index + 1}편 목표`, payoff: `${index + 1}편 결과` })) };
 const review = { pass: true, sceneAudit:{rolesStable:true,speechIntentClear:true,movementsConsistent:true,actionsCoherent:true}, conceptAlignment: { satisfied: true, evidence: fact.evidence, fix: "설정 준수" }, blockingIssues: [], completedBeats: [1, 2, 3], newEvents: [fact], endingChange: { text: "정리가 시작됨", evidence: "오래 미뤄 두었던 일이 드디어 시작되었다." } };
 const patch = { summary: "서하가 계약서를 찾아 친구와 서점 정리를 시작했다.", currentSituation: fact,
   newEvents: [fact], resolvedEvents: [fact], openedThreads: [], closedThreads: [], worldFacts: [fact],
@@ -305,6 +306,15 @@ test("series and chapter planning use direct Mini while writing, style editing a
   const body = JSON.parse(String(init.body)), stage = body.text.format.name;
   const planning = stage === "chapter_plan" || stage === "series_plan";
   calls.push(stage);
+  const input = JSON.parse(body.input);
+  if (planning || stage === "write") {
+   assert.equal(input.character.funElement, "서로 놀리면서도 결정적일 때 편들어 주기");
+   assert.match(body.instructions, /recurring tone or interaction dynamic/);
+  }
+  if (stage === "style_edit") {
+   assert.equal(input.dialogueContext.mainCharacter.funElement, "서로 놀리면서도 결정적일 때 편들어 주기");
+   assert.match(body.instructions, /Preserve the funElement tone/);
+  }
   assert.equal(url, planning ? "https://api.openai.com/v1/responses" : "https://apikey.vnaipro.app/v1/responses");
   assert.equal(new Headers(init.headers).get("Authorization"), planning ? "Bearer plan-fixture" : "Bearer fixture");
   assert.equal(body.model, planning ? "gpt-5.4-mini" : "gpt-5.6-terra");
@@ -314,8 +324,9 @@ test("series and chapter planning use direct Mini while writing, style editing a
   assert.equal(stage, "chapter_review");
   return response(acceptedReview, init);
  });
- const first = await generateChapter(options());
- await generateChapter({ ...options(), state: { ...first.state, previousProse: "이전 회차의 별도 원고." } });
+ const settingsWithTone = { ...options(), character: { ...character, funElement: "서로 놀리면서도 결정적일 때 편들어 주기" } };
+ const first = await generateChapter(settingsWithTone);
+ await generateChapter({ ...settingsWithTone, state: { ...first.state, previousProse: "이전 회차의 별도 원고." } });
  assert.deepEqual(calls, ["series_plan", "write", "style_edit", "chapter_review",
   "chapter_plan", "write", "style_edit", "chapter_review"]);
  assert.equal(first.text, eventDraft.join("\n\n"));
@@ -343,8 +354,8 @@ test("the five-beat pipeline plans a series, writes five events once, and only r
   if (stage === "series_plan") {
    assert.deepEqual(input.beats, expectedBeats);
    assert.equal(input.schedule.chapter, 1);
-   assert.match(body.instructions, /required outcome through all five installments/);
-   assert.match(body.instructions, /show the requested outcome in action/);
+   assert.match(body.instructions, /required outcomes through all five installments/);
+   assert.match(body.instructions, /deliver the requested story ending in installment five/);
    assert.match(body.instructions, /Schedule representative on-page occurrences/);
    assert.match(body.instructions, /promises and travel to it can set it up, but do not fulfill it/);
    return response({ arc: seriesArc, conceptRules: [`“${character.concept}”`], chapterPlan: episodePlan }, init);
@@ -388,6 +399,12 @@ test("a gateway 503 for an unavailable model does not retry the same route", () 
  const error = (code: string) => new NovelUpstreamError("openai", 503, { error: { code } });
  assert.equal(novelRetryDelay(error("model_not_found"), 0), undefined);
  assert.equal(novelRetryDelay(error("system_cpu_overloaded"), 0), 1000);
+ const limited = { error: { code: "upstream_error", message: "The request rate limit has been reached. Retry with backoff." } };
+ assert.equal(novelRetryDelay(new NovelUpstreamError("gemini", 429, limited), 0), 3000);
+ assert.equal(novelRetryDelay(new NovelUpstreamError("gemini", 429, limited), 1), 6000);
+ assert.equal(novelRetryDelay(new NovelUpstreamError("gemini", 429, limited, "8"), 0), 8000);
+ assert.equal(novelRetryDelay(new NovelUpstreamError("gemini", 429, { error: { code: "upstream_error" } }), 0), undefined);
+ assert.equal(novelRetryDelay(new NovelUpstreamError("gemini", 429, { error: { ...limited.error, code: "insufficient_quota" } }), 0), undefined);
 });
 
 test("style response recovery requires five identifiable events and keeps quoted text intact", () => {
@@ -402,6 +419,161 @@ test("style response recovery requires five identifiable events and keeps quoted
   marked + "\n[END EVENTS]\n설명", json + "\n" + json, JSON.stringify({ events: events.slice(0, 4) })]) {
   assert.equal(parseStyleEditResponse(invalid), undefined);
  }
+});
+
+test("Gemini writing requests five JSON events, recovers known formats and saves unmarked prose", async t => {
+ const settings = {
+  CLAUDE_API_KEY: "", OPENAI_NOVEL_WRITE_MODEL: "", GEMINI_NOVEL_WRITE_MODEL: "gemini-3.5-flash-lite",
+  OPENAI_NOVEL_STYLE_MODEL: "", GEMINI_NOVEL_STYLE_MODEL: "", OPENAI_NOVEL_PROOFREAD_MODEL: "", GEMINI_NOVEL_PROOFREAD_MODEL: "",
+  GEMINI_API_KEY: "fixture-key", GEMINI_DIRECT_API_KEY: "fixture-key", GEMINI_PROVIDER: "vnai", GEMINI_BASE_URL: "https://gemini-gateway.example/v1",
+ };
+ for (const [key, value] of Object.entries(settings)) {
+  const old = process.env[key];
+  process.env[key] = value;
+  t.after(() => { if (old === undefined) delete process.env[key]; else process.env[key] = old; });
+ }
+ let output = eventDraft.slice(0, 2).join("\n\n"), calls: string[] = [];
+ let previousDraft: string[] | undefined;
+ let streaming = false;
+ let endWrite: (() => void) | undefined;
+ t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body));
+  if (url.includes("gemini-gateway.example") || url.includes("generativelanguage.googleapis.com")) {
+   calls.push("write");
+   const direct = url.includes("generativelanguage.googleapis.com");
+   if (direct) {
+    assert.equal(body.generationConfig.responseMimeType, "application/json");
+    assert.equal(body.generationConfig.responseJsonSchema.properties.events.minItems, 5);
+    assert.equal(body.generationConfig.responseJsonSchema.properties.events.maxItems, 5);
+    assert.equal(body.generationConfig.maxOutputTokens, 6500);
+    assert.equal(body.generationConfig.thinkingConfig.thinkingLevel, "LOW");
+   } else if (process.env.GEMINI_PROVIDER === "vnai") {
+    assert.deepEqual(Object.keys(body).sort(), streaming ? ["messages", "model", "stream"] : ["messages", "model"]);
+   } else {
+    assert.deepEqual(body.response_format, { type: "json_object" });
+    assert.equal(body.max_tokens, 6500);
+    assert.equal(body.reasoning_effort, "low");
+   }
+   const instructions = direct ? body.systemInstruction.parts[0].text : body.messages[0].content;
+   assert.match(instructions, /key "events" and exactly five non-empty string values/);
+   const input = JSON.parse(direct ? body.contents[0].parts[0].text : body.messages[1].content);
+   previousDraft = input.previousDraft;
+   if (streaming) {
+    if (direct) assert.match(url, /:streamGenerateContent\?alt=sse$/);
+    else assert.equal(body.stream, true);
+    const split = output.indexOf('","') + 2;
+    const encoder = new TextEncoder();
+    const payload = (text: string) => direct ? { candidates: [{ content: { parts: [{ text }] } }] }
+     : { choices: [{ delta: { content: text } }] };
+    return new Response(new ReadableStream({
+     start(controller) {
+      const send = (data: object) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      if (direct) send({ candidates: [{ content: { parts: [{ text: "생각 내용", thought: true }] } }] });
+      send(payload(output.slice(0, split)));
+      endWrite = () => {
+       send(payload(output.slice(split)));
+       send(direct ? { candidates: [{ finishReason: "STOP" }], usageMetadata: { candidatesTokenCount: 200 } }
+        : { choices: [{ finish_reason: "stop" }] });
+       if (!direct) send({ choices: [], usage: { completion_tokens: 200 } });
+       controller.close();
+      };
+     },
+    }), { headers: { "Content-Type": "text/event-stream" } });
+   }
+   return Response.json(direct
+    ? { candidates: [{ finishReason: "STOP", content: { parts: [{ text: output }] } }] }
+    : { choices: [{ finish_reason: "stop", message: { content: output } }] });
+  }
+  const stage = body.text.format.name;
+  calls.push(stage);
+  if (stage === "chapter_plan") return response(episodePlan, init);
+  assert.equal(stage, "chapter_review");
+  return response(acceptedReview, init);
+ });
+ const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const };
+ let saved: StoryCheckpoint | object = {}, preview: string | undefined;
+ const request = () => generateChapter({ ...options(), state, onDraftPreview: text => { preview = text; },
+  draftStore: { load: saved, async save(value) { saved = structuredClone(value); } } });
+ const plainProse = output;
+ await assert.rejects(request(), error => error instanceof StoryDraftPaused && error.reason === "format");
+ assert.deepEqual(calls.splice(0), ["chapter_plan", "write"]);
+ assert.equal(preview, plainProse);
+
+ output = "```json\n" + JSON.stringify({ events: eventDraft }) + "\n```";
+ assert.equal((await request()).text, eventDraft.join("\n\n"));
+ assert.deepEqual(previousDraft, [plainProse]);
+ assert.deepEqual(calls.splice(0), ["write", "chapter_review"]);
+
+ process.env.GEMINI_PROVIDER = "direct";
+ output = JSON.stringify({ events: eventDraft });
+ assert.equal((await generateChapter({ ...options(), state })).text, eventDraft.join("\n\n"));
+ assert.deepEqual(calls.splice(0), ["chapter_plan", "write", "chapter_review"]);
+
+ process.env.GEMINI_PROVIDER = "auto";
+ assert.equal((await generateChapter({ ...options(), state })).text, eventDraft.join("\n\n"));
+ assert.deepEqual(calls.splice(0), ["chapter_plan", "write", "chapter_review"]);
+
+ streaming = true;
+ for (const provider of ["direct", "auto", "vnai"]) {
+  process.env.GEMINI_PROVIDER = provider;
+  const firstDraft = Promise.withResolvers<string>();
+  const updates: string[] = [];
+  const usage: { feature: string; status: string; outputTokens: number | null }[] = [];
+  const generation = generateChapter({ ...options(), state, onUsage: record => usage.push(record),
+   onDraftUpdate: text => { updates.push(text); firstDraft.resolve(text); } });
+  const draft = await Promise.race([firstDraft.promise, generation.then(() => assert.fail("Draft should arrive during Gemini writing"))]);
+  try {
+   assert.equal(draft, eventDraft[0]);
+   assert.deepEqual(calls, ["chapter_plan", "write"]);
+  } finally { endWrite?.(); }
+  assert.equal((await generation).text, eventDraft.join("\n\n"));
+  assert.equal(updates.at(-1), eventDraft.join("\n\n"));
+  assert.deepEqual(calls.splice(0), ["chapter_plan", "write", "chapter_review"]);
+  assert.equal(usage.find(record => record.feature === "novel.write" && record.status === "completed")?.outputTokens, 200);
+ }
+});
+
+test("VNAI rate limits reuse the saved chapter plan and fall back to direct OpenAI writing", async t => {
+ const settings = {
+  CLAUDE_API_KEY: "", OPENAI_API_KEY: "direct-fixture", OPENAI_TEXT_PROVIDER: "direct", OPENAI_MODEL: "gpt-5.4-mini",
+  OPENAI_NOVEL_WRITE_PROVIDER: "direct", OPENAI_NOVEL_WRITE_MODEL: "", GEMINI_NOVEL_WRITE_MODEL: "gemini-3.6-flash",
+  GEMINI_PROVIDER: "vnai", GEMINI_BASE_URL: "https://gemini-gateway.example/v1", GEMINI_API_KEY: "gateway-fixture",
+  OPENAI_NOVEL_STYLE_MODEL: "", GEMINI_NOVEL_STYLE_MODEL: "", OPENAI_NOVEL_PROOFREAD_MODEL: "", GEMINI_NOVEL_PROOFREAD_MODEL: "",
+ };
+ for (const [key, value] of Object.entries(settings)) {
+  const previous = process.env[key];
+  process.env[key] = value;
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+ }
+ let gatewayCalls = 0, writerInput: string | undefined;
+ const calls: string[] = [];
+ t.mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body));
+  if (url === "https://gemini-gateway.example/v1/chat/completions") {
+   calls.push("gemini.write");
+   writerInput = body.messages[1].content;
+   // Retry once, then respect the gateway's longer delay by switching providers.
+   if (++gatewayCalls === 1) return Response.json({ error: { code: "rate_limit_error" } }, { status: 429 });
+   return Response.json({ error: { code: "upstream_error", message: "The request rate limit has been reached. Retry with backoff." } },
+    { status: 429, headers: { "Retry-After": "60" } });
+  }
+  const stage = body.text.format.name;
+  calls.push(stage);
+  if (stage === "chapter_plan") return response(episodePlan, init);
+  if (stage === "write") {
+   assert.equal(url, "https://api.openai.com/v1/responses");
+   assert.equal(new Headers(init.headers).get("Authorization"), "Bearer direct-fixture");
+   assert.equal(body.model, "gpt-5.4-mini");
+   assert.equal(body.input, writerInput);
+   return response({ events: eventDraft }, init);
+  }
+  assert.equal(stage, "chapter_review");
+  return response(acceptedReview, init);
+ });
+ const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const };
+ const result = await generateChapter({ ...options(), state });
+ assert.deepEqual(calls, ["chapter_plan", "gemini.write", "gemini.write", "write", "chapter_review"]);
+ assert.equal(result.text, eventDraft.join("\n\n"));
 });
 
 test("Gemini style editing replaces copyediting and restores an event that changed meaning", async t => {
@@ -607,6 +779,29 @@ test("advisory wording and a missing outline detail do not spend a repair or sec
  assert.deepEqual(calls, ["chapter_plan", "write", "chapter_review"]);
 });
 
+test("novel writing keeps the reader label separate from character names before preview and review", async t => {
+ const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const };
+ const drafts: string[] = [];
+ const draft = ["별.빛 서하는 친구와 인사했다. 별.빛과 서하가 다시 만났다. " + eventDraft[0], ...eventDraft.slice(1)];
+ t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body)), stage = body.text.format.name, input = JSON.parse(body.input);
+  assert.equal(input.character.userName, undefined);
+  assert.equal(input.character.userLabel, "별.빛");
+  assert.match(body.instructions, /Never attach the user's label to another character's name/);
+  if (stage === "chapter_plan") return response(episodePlan, init);
+  if (stage === "write") return response({ events: draft }, init);
+  assert.equal(stage, "chapter_review");
+  assert.ok(unpack(input.sourceUnits).some(unit => unit.text === "서하는 친구와 인사했다."));
+  return response(acceptedReview, init);
+ });
+ const result = await generateChapter({ ...options(), state, character: { ...character, userName: "별.빛" },
+  onDraftUpdate: text => drafts.push(text) });
+ assert.ok(result.text.startsWith("서하는 친구와 인사했다. 별.빛과 서하가 다시 만났다."));
+ assert.ok(drafts.every(text => !text.includes("별.빛 서하")));
+ const clean = novelNameCleanup("별.빛", ["서하", "유리"], ["유리의 본명은 별.빛 유리다."]);
+ assert.equal(clean("별.빛 서하가, 별.빛 서하에게, 별.빛 유리는, 밤별.빛 서하는"), "서하가, 서하에게, 별.빛 유리는, 밤별.빛 서하는");
+});
+
 test("the review policy rechecks a stopped draft and accepts multiple sources for one occurrence", async t => {
  const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const };
  const handoff = "토모가 영수증을 건넸다.";
@@ -631,6 +826,34 @@ test("the review policy rechecks a stopped draft and accepts multiple sources fo
  assert.equal(result.state.chapter, 2);
  assert.equal(result.text, events.join("\n\n"));
  assert.deepEqual(calls, ["chapter_review"]);
+});
+
+test("a passing review finalizes a stopped draft and preserves unsupported memory changes", async t => {
+ const previousRegister = { speaker: "서하", addressee: "친구", style: "polite" as const, evidence: fact.evidence };
+ const previousProp = { item: "계약서", holder: "서하", operator: null };
+ const state = { ...emptyStoryState(), chapter: 1, seriesArc, outlineVersion: 1 as const,
+  previousProse: eventDraft.join("\n\n"), propStates: [previousProp], dialogueRegisters: [previousRegister] };
+ const saved = { chapterPipeline: { version: 1, series: { arc: seriesArc, conceptRules: [] }, plan: episodePlan,
+  events: eventDraft, copyedited: true, repaired: true, blocked: true, blockedByPolicy: "material-v6-marked-evidence" } };
+ let calls = 0;
+ let memoryPatch: object | null = { ...patch,
+  propChanges: [{ ...previousProp, holder: "친구", evidence: fact.evidence, changeEvidence: null }],
+  dialogueRegisters: [{ ...previousRegister, style: "casual", changeEvidence: null }],
+ };
+ t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+  calls++;
+  assert.equal(JSON.parse(String(init.body)).text.format.name, "chapter_review");
+  return response({ ...acceptedReview, memoryPatch }, init);
+ });
+ for (let attempt = 1; attempt <= 2; attempt++) {
+  const result = await generateChapter({ ...options(), state, draftStore: { load: saved, async save() {} } });
+  assert.equal(result.state.chapter, 2);
+  assert.equal(result.text, state.previousProse);
+  assert.deepEqual(result.state.propStates, [previousProp]);
+  assert.deepEqual(result.state.dialogueRegisters, [previousRegister]);
+  assert.equal(calls, attempt);
+  memoryPatch = null;
+ }
 });
 
 test("following chapters reuse the arc, while added concepts replan five with continuous numbering", async t => {
@@ -694,16 +917,18 @@ test("a failed review keeps a readable draft and never replaces a whole event or
  assert.equal(calls.length, 4);
 });
 
-test("a legacy arc replans only the unwritten milestones and the fifth chapter closes the series", async t => {
+test("an explicit ending replans the unwritten legacy milestone and closes the series", async t => {
  const calls: string[] = [];
- const previous = { ...emptyStoryState(), chapter: 4, seriesArc };
- const replanned = { ...seriesArc, installments: seriesArc.installments.map(part => ({ ...part, goal: "새 목표 " + part.chapter })) };
+ const { endingMode: _legacy, ...legacyArc } = seriesArc;
+ const previous = { ...emptyStoryState(), chapter: 4, seriesArc: legacyArc };
+ const replanned = { ...seriesArc, endingMode: "final", installments: seriesArc.installments.map(part => ({ ...part, goal: "새 목표 " + part.chapter })) };
  t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
   const body = JSON.parse(String(init.body)), stage = body.text.format.name, input = JSON.parse(body.input);
   calls.push(stage);
   if (stage === "series_plan") {
    assert.deepEqual(input.pastMilestones, seriesArc.installments.slice(0, 4));
-   assert.equal(input.schedule.phase, "finale");
+   assert.equal(input.schedule.chapter, 5);
+   assert.match(body.instructions, /explicitly ask to conclude the entire story/);
    return response({ arc: replanned, conceptRules: [], chapterPlan: episodePlan }, init);
   }
   if (stage === "write") return response({ events: eventDraft }, init);
@@ -711,13 +936,51 @@ test("a legacy arc replans only the unwritten milestones and the fifth chapter c
   return response({ ...acceptedReview, resolution: { centralConflictResolved: true, protagonistOutcomeShown: true,
    relationshipOutcomeShown: true, hasSequelHook: false, evidence: fact.evidence, fix: "마무리됨" } }, init);
  });
- const final = await generateChapter({ ...options(), state: previous });
+ const final = await generateChapter({ ...options(), character: { ...character, concept: "서점을 다시 열고 이 이야기 전체를 완결한다." }, state: previous });
  assert.equal(final.state.chapter, 5);
  assert.equal(final.state.nextChapterGoal, "");
  assert.deepEqual(final.state.seriesArc?.installments.slice(0, 4), seriesArc.installments.slice(0, 4));
  assert.deepEqual(final.state.seriesArc?.installments[4], replanned.installments[4]);
  await assert.rejects(generateChapter({ ...options(), state: final.state }), /already complete/);
  assert.deepEqual(calls, ["series_plan", "write", "chapter_review"]);
+});
+
+test("an ongoing fifth chapter resolves its arc and the sixth starts a new arc with the saved concept", async t => {
+ const concept = "친구와 서점을 운영한다. *첫날 열쇠를 건넨다.*";
+ const calls: string[] = [];
+ t.mock.method(globalThis, "fetch", async (_url: string, init: RequestInit) => {
+  const body = JSON.parse(String(init.body)), stage = body.text.format.name, input = JSON.parse(body.input);
+  calls.push(stage);
+  assert.equal(input.seriesConcept, concept);
+  if (stage === "series_plan") {
+   assert.equal(input.chapter, 6);
+   assert.equal(input.schedule.chapter, 1);
+   assert.deepEqual(input.pastMilestones, []);
+   assert.equal(input.markedEvents, undefined);
+   return response({ arc: seriesArc, conceptRules: [], chapterPlan: episodePlan }, init);
+  }
+  if (stage === "chapter_plan") {
+   assert.equal(input.schedule.phase, "resolution");
+   return response(episodePlan, init);
+  }
+  if (stage === "write") return response({ events: input.chapter === 5 ? eventDraft : [
+   fact.evidence + " " + acceptedReview.endingChange.evidence + " " + "가게문을".repeat(64),
+   ...["새손님이", "푸른간판", "이층창가", "오래된책"].map(text => text.repeat(122)),
+  ] }, init);
+  assert.equal(stage, "chapter_review");
+  assert.doesNotMatch(JSON.stringify(body.text.format.schema), /hasSequelHook/);
+  return response(acceptedReview, init);
+ });
+ const previous = { ...emptyStoryState(), chapter: 4, seriesArc, outlineVersion: 1 as const, seriesConcept: concept, markedSchedule: [[1]],
+  markedConceptHash: manuscriptFingerprint(JSON.stringify(["첫날 열쇠를 건넨다."])).proseHash };
+ const fifth = await generateChapter({ ...options(), state: previous });
+ assert.equal(fifth.state.chapter, 5);
+ assert.notEqual(fifth.state.nextChapterGoal, "");
+ const sixth = await generateChapter({ ...options(), state: fifth.state });
+ assert.equal(sixth.state.chapter, 6);
+ assert.equal(sixth.state.seriesStartChapter, 5);
+ assert.deepEqual(sixth.state.conceptHistory, [{ fromChapter: 1, text: concept }]);
+ assert.deepEqual(calls, ["chapter_plan", "write", "chapter_review", "series_plan", "write", "chapter_review"]);
 });
 
 test("Claude recovers complete text drafts and resumes partial drafts from the existing plan", async t => {
@@ -1078,11 +1341,11 @@ test("source references select real manuscript passages instead of generated quo
   assert.throws(() => resolveSources({ evidence: "서하는 달아났다" }, sources), /Invalid manuscript source/);
 });
 
-test("the API rejects requests beyond chapter five before any model call", async t => {
+test("the API rejects continuing an explicitly completed story without a new concept", async t => {
   const old = process.env.OPENAI_API_KEY; process.env.OPENAI_API_KEY = "test-key";
   t.after(() => { if (old === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = old; });
   t.mock.method(globalThis, "fetch", async () => { throw new Error("Should not call the model"); });
-  const result = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character, storyState: { ...emptyStoryState(), chapter: 5, seriesArc }, messages: [{ role: "user", content: "계속 써줘" }] }) }));
+  const result = await POST(new Request("http://localhost/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character, storyState: { ...emptyStoryState(), chapter: 5, seriesArc: { ...seriesArc, endingMode: "final" } }, messages: [{ role: "user", content: "계속 써줘" }] }) }));
   assert.equal(result.status, 409);
   assert.match((await result.json()).error, /완결/);
 });

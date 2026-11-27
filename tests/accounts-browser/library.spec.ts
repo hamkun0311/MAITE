@@ -4,6 +4,7 @@ import { fillCharacterProfile } from "../browser/character-helpers";
 import { snapshotSchema } from "../../lib/platform/snapshot";
 import { createStudioSessions } from "../../lib/chat/session";
 import { emptyStoryState } from "../../lib/novel/state";
+import { koreaDay } from "../../lib/account/policy";
 
 const userId = "11111111-1111-4111-8111-111111111111";
 const characterId = "22222222-2222-4222-8222-222222222222";
@@ -13,7 +14,8 @@ const archive = Array.from({ length: 5 }, (_, index) => [{ role: "user" as const
 const sessions = createStudioSessions();
 const snapshot = snapshotSchema.parse({ version: 1, id: characterId,
   art: { title: "희진", summary: "서점에서 시작된 이야기", prompt: "private", style: "neutral", description: "서점", profile: { name: "희진", age: 25, personality: "다정함", concept: "서점의 친구" }, width: 72, height: 128, jobId },
-  chat: sessions.chat, story: { ...sessions.story, documentId: novelId, lastJobId: jobId, archive, storyState: { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content } }, timeline: sessions.chat.timeline.state });
+  chat: sessions.chat, story: { ...sessions.story, documentId: novelId, lastJobId: jobId, archive, storyState: { ...emptyStoryState(), chapter: 5, previousProse: archive.at(-1)!.content,
+    seriesArc: { endingMode: "final", endingPromise: "약속을 지킨다", installments: Array.from({ length: 5 }, (_, index) => ({ chapter: index + 1, goal: "목표", payoff: "결과" })) } } }, timeline: sessions.chat.timeline.state });
 
 test("deleting later episodes from the story header preserves the selected episode", async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
@@ -159,25 +161,35 @@ test("character creation uses automatic framing without camera detail inputs",as
  const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#b9a6dc"}}).jpeg().toBuffer();
  await page.route("**/api/characters",async route=>{
   calls++;const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();submittedFraming=form.has("framing");
-  return route.fulfill({contentType:"image/jpeg",body:jpeg});
+  expect(form.get("renderStyle")).toBe("modern-cel-anime");
+  return route.fulfill({headers:{"Content-Type":"image/jpeg","X-Job-Id":jobId,"X-Character-Render-Style":"modern-cel-anime"},body:jpeg});
  });
  await page.goto("/ideal/new");await fillCharacterProfile(page);
+ const styles = page.getByRole("combobox", { name: "화풍", exact: true });
+ await expect(styles).toHaveValue("");
+ await expect(styles.locator("option")).toHaveText(["무작위", "부드러운", "화려한", "또렷한", "귀여운"]);
+ await styles.selectOption({ label: "또렷한" });
  await expect(page.locator(".image-framing-fields")).toHaveCount(0);
  await expect(page.getByLabel("촬영 범위",{exact:true})).toHaveCount(0);
+ const saved = page.waitForRequest(request => request.url().endsWith("/api/account") && request.method() === "POST" && request.postDataJSON().action === "save");
  await page.getByRole("button",{name:"캐릭터 생성",exact:true}).click();
- await page.getByRole("dialog",{name:"새로운 캐릭터를 만날까요?"}).getByRole("button",{name:"캐릭터 생성",exact:true}).click();
+ const confirm = page.getByRole("dialog",{name:"새로운 캐릭터를 만날까요?"});
+ await confirm.getByRole("button",{name:"캐릭터 생성",exact:true}).click();
  await expect(page.getByRole("dialog",{name:"캐릭터 이미지 전체화면",exact:true})).toBeVisible();
+ expect((await saved).postDataJSON().payload.art.renderStyle).toBe("modern-cel-anime");
  expect(submittedFraming).toBe(false);expect(calls).toBe(1);
 });
 
 test("camera controls are exclusive to story illustrations while chat keeps scene keywords",async({page})=>{
  await signIn(page);await accountRoutes(page);
- const saved=structuredClone(snapshot);saved.story.started=true;saved.story.committed=archive;
+ const saved=structuredClone(snapshot);saved.art.renderStyle="detailed-game-anime";saved.story.started=true;saved.story.committed=archive;
  await page.route(`**/api/account?document=${characterId}*`,route=>route.fulfill({json:{id:characterId,title:"희진",payload:saved,media:{original:"https://example.test/image.jpg",gallery:{}}}}));
  const jpeg=await sharp({create:{width:72,height:128,channels:3,background:"#bea7df"}}).jpeg().toBuffer();
  const scenes:any[]=[];
  await page.route("**/api/characters",async route=>{
-  const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();scenes.push(JSON.parse(String(form.get("scene"))));return route.fulfill({contentType:"image/jpeg",body:jpeg});
+  const form=await new Request("http://test/image",{method:"POST",headers:route.request().headers(),body:new Uint8Array(route.request().postDataBuffer()!)}).formData();
+  expect(form.get("renderStyle")).toBe("detailed-game-anime");
+  scenes.push(JSON.parse(String(form.get("scene"))));return route.fulfill({contentType:"image/jpeg",body:jpeg});
  });
  for(const mode of ["chat","story"]){
   await page.goto(`/ideal/characters/${characterId}`);
@@ -256,7 +268,7 @@ test("bookshelf replaces newface and remembers a separate last-read chapter",asy
  await signIn(page);await accountRoutes(page);
  await page.route("**/api/store",route=>route.fulfill({json:{listings:[],owned:[]}}));
  await page.goto("/ideal/library");
- const footer=page.getByRole("navigation",{name:"하단 메뉴"});await expect(footer.getByRole("link")).toHaveText(["캐릭터","서고","서점","스토어","마이페이지"]);
+ const footer=page.getByRole("navigation",{name:"하단 메뉴"});await expect(footer.getByRole("link")).toHaveText(["캐릭터","서고","서점","스토어","내 정보"]);
  await page.getByRole("link",{name:/희진의 이야기/}).click();await expect(page.locator(".novel-reader")).toContainText("1번째 회차");
  await page.getByRole("button",{name:"다음 이야기 보기",exact:true}).click();await page.getByRole("button",{name:"다음 이야기 보기",exact:true}).click();await expect(page.locator(".novel-reader")).toContainText("3번째 회차");
  await footer.getByRole("link",{name:"서고",exact:true}).click();await page.getByRole("link",{name:/희진의 이야기/}).click();await expect(page.locator(".novel-reader")).toContainText("3번째 회차");
@@ -275,8 +287,8 @@ test("calendar claims today's attendance and missed pass days only on explicit a
  await expect(page.getByRole("heading",{name:"출석·패스 보상"})).toBeVisible();expect(calls).toHaveLength(0);
  await page.getByRole("button",{name:"2026-11-17",exact:true}).click();
  await expect(page.getByRole("button",{name:"수령 불가",exact:true})).toBeDisabled();
- await page.getByRole("button",{name:"패스 보상 받기",exact:true}).click();await expect(page.getByRole("status")).toContainText("20하트");expect(calls).toEqual([{kind:"pass",day:"2026-11-17"}]);
- await page.getByRole("button",{name:"2026-11-18 오늘",exact:true}).click();await page.getByRole("button",{name:"보상 받기",exact:true}).click();await expect(page.getByRole("status")).toContainText("5하트");
+ await page.getByRole("button",{name:"패스 보상 받기",exact:true}).click();await expect(page.getByRole("status")).toContainText("20");expect(calls).toEqual([{kind:"pass",day:"2026-11-17"}]);
+ await page.getByRole("button",{name:"2026-11-18 오늘",exact:true}).click();await page.getByRole("button",{name:"보상 받기",exact:true}).click();await expect(page.getByRole("status")).toContainText("5");
  await page.getByRole("button",{name:"2026-11-19",exact:true}).click();await expect(page.getByRole("button",{name:"아직 받을 수 없어요",exact:true})).toHaveCount(2);
  await page.getByRole("button",{name:"2026-11-18 오늘",exact:true}).click();
  const rewardRow=page.locator(".reward-claim-row").first();
@@ -325,17 +337,19 @@ test("reader confirms and opens the next purchased chapter", async ({ page }) =>
   });
   await page.goto(`/ideal/library/${novelId}`);
   await expect(page.getByText("첫 회차 원고")).toBeVisible();
-  const buy = page.getByRole("button", { name: "다음화 구매 · 12하트" });
+  const buy = page.getByRole("button", { name: "다음화 구매 · 10하트" });
+  await expect(buy.locator("svg.lucide-heart")).toBeVisible();
   const dialog = page.getByRole("dialog", { name: "다음화를 구매할까요?" });
   await buy.click();
   await expect(dialog).toContainText("연재 작품 #2");
-  await expect(dialog).toContainText("12하트");
+  await expect(dialog).toContainText("10");
+  await expect(dialog).not.toContainText("구매 수수료");
   await dialog.getByRole("button", { name: "취소" }).click();
   await expect(buy).toBeEnabled();
   expect(attempts).toBe(0);
   await buy.click();
   await dialog.getByRole("button", { name: "구매하기" }).click();
-  await expect(page.getByText("하트가 부족합니다.", { exact: true })).toBeVisible();
+  await expect(page.getByText("가 부족합니다.", { exact: true })).toBeVisible();
   await expect(page.getByText("첫 회차 원고")).toBeVisible();
   await buy.click();
   await dialog.getByRole("button", { name: "구매하기" }).click();
@@ -344,14 +358,203 @@ test("reader confirms and opens the next purchased chapter", async ({ page }) =>
   expect(attempts).toBe(2);
 });
 
-async function signIn(page: Page) {
-  await page.addInitScript(({ userId }) => {
+test("support opens from 내 정보 and lets the author manage inquiries and staff reply", async ({ page }) => {
+  await signIn(page); await accountRoutes(page);
+  const created = new Date().toISOString();
+  const inquiry = { id: novelId, title: "", body: "", author_name: "테스트", created_at: created, isOwn: true, replies: [] as { id: string; body: string; created_at: string }[] };
+  let exists = false, admin = false;
+  await page.route("**/api/support**", route => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { inquiries: exists ? [{ ...inquiry, isOwn: !admin }] : [], isAdmin: admin, hasMore: false } });
+    const input = route.request().postDataJSON();
+    if (input.action === "delete") exists = false;
+    else if (input.action === "reply") inquiry.replies.push({ id: jobId, body: input.body, created_at: created });
+    else { exists = true; inquiry.title = input.title; inquiry.body = input.body; }
+    return route.fulfill({ json: { ok: true } });
+  });
+  await page.goto("/ideal/mypage");
+  await expect(page.getByRole("heading", { name: "내 정보", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "계정 새로고침" })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "문의하기" })).toBeVisible();
+  await page.getByRole("link", { name: "문의하기" }).click();
+  await page.getByLabel("제목", { exact: true }).fill("서비스 문의");
+  await page.getByLabel("문의 내용", { exact: true }).fill("읽던 페이지를 다시 찾는 방법이 있나요?");
+  await page.getByRole("button", { name: "문의 등록" }).click();
+  await expect(page.getByRole("heading", { name: "서비스 문의" })).toBeVisible();
+  await page.getByRole("button", { name: "수정", exact: true }).click();
+  await page.getByLabel("제목", { exact: true }).fill("서고 페이지 문의");
+  await page.getByRole("button", { name: "수정 저장" }).click();
+  await expect(page.getByRole("heading", { name: "서고 페이지 문의" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "답글 쓰기" })).toHaveCount(0);
+  admin = true;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "전체 문의 내역" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "삭제", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "답글 쓰기" }).click();
+  await page.getByLabel("답글 내용").fill("서고를 다시 열면 마지막 회차로 이동해요.");
+  await page.getByRole("button", { name: "답글 등록" }).click();
+  admin = false;
+  await page.reload();
+  await expect(page.getByText("서고를 다시 열면 마지막 회차로 이동해요.")).toBeVisible();
+  await page.getByRole("button", { name: "삭제", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "삭제", exact: true }).click();
+  await expect(page.getByText("등록된 문의가 없어요.")).toBeVisible();
+});
+
+test("settlement records consent, protects account details and lets the owner cancel", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await signIn(page);
+  await accountRoutes(page);
+  const created = new Date().toISOString();
+  const entry = { id: novelId, payout_on: "2099-01-10", hearts: 500, amount_won: 1000, bank: "테스트 은행", account_holder: "테스트 예금주", created_at: created };
+  let requested = false, operator = false, cancelled = false;
+  await page.route("**/api/settlements**", route => {
+    if (route.request().method() === "POST") {
+      if (route.request().postDataJSON().action === "cancel") {
+        expect(operator).toBe(false);
+        expect(route.request().postDataJSON()).toEqual({ action: "cancel", id: entry.id });
+        cancelled = true;
+        return route.fulfill({ json: { ok: true } });
+      }
+      expect(route.request().postDataJSON()).toEqual({
+        id: expect.any(String), month: "2099-01", hearts: 500, bank: entry.bank, accountNumber: "0123-456789", accountHolder: entry.account_holder, consent: true,
+      });
+      requested = true;
+      return route.fulfill({ json: { ok: true } });
+    }
+    const item = { ...entry, ...(operator && !cancelled ? { account_number: "0123456789", consented_at: created } : {}), canCancel: !operator && !cancelled, cancelled_at: cancelled ? created : undefined };
+    return route.fulfill({ json: { requests: requested ? [item] : [], isAdmin: operator, hasMore: false } });
+  });
+  await page.goto("/ideal/mypage");
+  const balance = page.getByRole("link", { name: "하트 스토어" });
+  await expect(balance.locator("span").first()).toHaveText("1,000");
+  await expect(balance.locator(".blue-heart")).toHaveText("5");
+  await page.getByRole("link", { name: "정산 요청", exact: true }).click();
+  await page.getByLabel("정산 월", { exact: true }).fill("2099-01");
+  await page.getByRole("spinbutton").fill("500");
+  await page.getByLabel("은행명", { exact: true }).fill(entry.bank);
+  await page.getByLabel("계좌번호", { exact: true }).fill("0123-456789");
+  await page.getByLabel("예금주", { exact: true }).fill(entry.account_holder);
+  const submit = page.getByRole("button", { name: "정산 요청하기" });
+  await expect(submit).toBeDisabled();
+  await page.getByRole("checkbox").check();
+  await submit.click();
+  await page.getByRole("dialog").getByRole("button", { name: "정산 요청", exact: true }).click();
+  await expect(page.getByText("정산 요청을 접수했습니다.")).toBeVisible();
+  await page.locator(".settlement-details summary").click();
+  await expect(page.getByText(entry.bank, { exact: true })).toBeVisible();
+  await expect(page.getByText("0123456789")).toHaveCount(0);
+  operator = true;
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "전체 정산 요청" })).toBeVisible();
+  await page.locator(".settlement-details summary").click();
+  await expect(page.getByText("0123456789", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "정산 취소", exact: true })).toHaveCount(0);
+  operator = false;
+  await page.reload();
+  await page.locator(".settlement-details summary").click();
+  await page.getByRole("button", { name: "정산 취소", exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "정산 취소", exact: true }).click();
+  await expect(page.locator(".settlement-details summary")).toContainText("취소됨");
+  await expect(page.getByRole("button", { name: "정산 취소", exact: true })).toHaveCount(0);
+});
+
+test("the operator records settlement completion and the customer can refresh to see it", async ({ page, context }) => {
+  const customer = await context.newPage();
+  const createdAt = "2026-11-10T00:00:00Z", paidAt = "2026-11-27T01:00:00Z";
+  const entry = { id: novelId, payout_on: "2099-01-10", hearts: 500, amount_won: 1000, bank: "테스트 은행", account_holder: "테스트 예금주", created_at: createdAt };
+  let completed = false;
+  for (const [view, isAdmin] of [[page, true], [customer, false]] as const) {
+    await signIn(view);
+    await accountRoutes(view);
+    await view.route("**/api/settlements**", route => {
+      if (route.request().method() === "POST") {
+        expect(isAdmin).toBe(true);
+        expect(route.request().postDataJSON()).toEqual({ action: "complete", id: entry.id });
+        completed = true;
+        return route.fulfill({ json: { ok: true, completedAt: paidAt } });
+      }
+      return route.fulfill({ json: { isAdmin, hasMore: false, requests: [{ ...entry, canCancel: !isAdmin && !completed, completed_at: completed ? paidAt : null }] } });
+    });
+  }
+  await customer.goto("/ideal/settlements");
+  const customerSummary = customer.locator(".settlement-details summary");
+  await customerSummary.click();
+  await expect(customer.getByRole("button", { name: "정산 취소", exact: true })).toBeVisible();
+  await expect(customer.getByRole("button", { name: "정산 완료 처리", exact: true })).toHaveCount(0);
+
+  await page.goto("/ideal/settlements");
+  const operatorSummary = page.locator(".settlement-details summary");
+  await operatorSummary.click();
+  await page.getByRole("button", { name: "정산 완료 처리", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "정산을 완료할까요?" });
+  await expect(dialog).toContainText("1,000원");
+  await dialog.getByRole("button", { name: "정산 완료 처리", exact: true }).click();
+  await expect(operatorSummary).toContainText("정산 완료");
+  await expect(page.getByRole("button", { name: "정산 완료 처리", exact: true })).toHaveCount(0);
+
+  await customer.getByRole("button", { name: "내역 새로고침", exact: true }).click();
+  await expect(customerSummary).toContainText("정산 완료");
+  await expect(customer.getByText("정산 완료 일시", { exact: true })).toBeVisible();
+  await expect(customer.locator(`time[datetime="${paidAt}"]`)).toBeVisible();
+  await expect(customer.getByRole("button", { name: "정산 취소", exact: true })).toHaveCount(0);
+});
+
+test("notices sit above attendance and can only be posted from the operator view", async ({ page }) => {
+  await signIn(page); await accountRoutes(page);
+  let admin = false;
+  const initial = { id: novelId, title: "점검 안내", body: "다음 주에 점검이 진행됩니다.", created_at: new Date().toISOString() };
+  const notices = [initial];
+  await page.route("**/api/notices**", route => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { notices, isAdmin: admin, hasMore: false } });
+    expect(admin).toBe(true);
+    notices.unshift({ ...initial, ...route.request().postDataJSON(), id: jobId });
+    return route.fulfill({ status: 201, json: { ok: true } });
+  });
+  await page.goto("/ideal/mypage");
+  await expect(page.locator('.native-reward-entry').first()).toHaveText("공지사항");
+  await page.getByRole("link", { name: "공지사항", exact: true }).click();
+  await page.getByText(initial.title, { exact: true }).click();
+  await expect(page.getByText(initial.body)).toBeVisible();
+  await expect(page.getByRole("button", { name: "공지 등록" })).toHaveCount(0);
+  admin = true;
+  await page.reload();
+  await page.getByLabel("제목", { exact: true }).fill("서비스 공지");
+  await page.getByLabel("공지 내용").fill("새 갤러리를 열 수 있어요.");
+  await page.getByRole("button", { name: "공지 등록" }).click();
+  await expect(page.getByText("서비스 공지", { exact: true })).toBeVisible();
+});
+
+test("purchased character galleries open separately from the bookshelf", async ({ page }) => {
+  await signIn(page); await accountRoutes(page);
+  await page.route("**/api/store**", route => {
+    const params = new URL(route.request().url()).searchParams;
+    if (params.get("id") === characterId && params.get("gallery") === "1") return route.fulfill({ json: {
+      kind: "character", title: "구매한 희진", imageUrl: "https://example.test/image.jpg",
+      images: [{ id: jobId, title: "대화 이미지", url: "https://example.test/scene.jpg" }],
+    } });
+    return route.fulfill({ json: { listings: [{ id: characterId, kind: "character", title: "구매한 희진" }], owned: [characterId] } });
+  });
+  await page.goto("/ideal/library");
+  await page.getByRole("link", { name: /구매한 희진.*갤러리/ }).click();
+  await expect(page).toHaveURL(new RegExp(`/ideal/library/gallery/${characterId}$`));
+  await expect(page.getByRole("group", { name: "캐릭터 갤러리" }).getByRole("button")).toHaveCount(2);
+  await page.getByRole("button", { name: "이미지 1 전체화면" }).click();
+  await expect(page.getByRole("dialog", { name: "캐릭터 이미지 전체화면" })).toBeVisible();
+});
+
+async function signIn(page: Page, rewardLandingChecked = true) {
+  await page.addInitScript(({ userId, rewardLandingChecked }) => {
     const session = { access_token: "test-access-token", refresh_token: "test-refresh-token", token_type: "bearer", expires_at: Math.floor(Date.now() / 1000) + 86400, expires_in: 86400, user: { id: userId, aud: "authenticated", role: "authenticated", email: "test@example.com", app_metadata: {}, user_metadata: { full_name: "테스트" }, created_at: new Date().toISOString() } };
     localStorage.setItem("sb-127-auth-token", JSON.stringify(session));
-  }, { userId });
+    if (rewardLandingChecked) {
+      const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+      sessionStorage.setItem(`maite-reward-landing:${userId}`, today);
+    }
+  }, { userId, rewardLandingChecked });
 }
 async function accountRoutes(page: Page, complete = true, deleted: string[] = []) {
   const saved = structuredClone(snapshot);
+  await page.route("**/api/store?saleDocument=**", route => route.fulfill({ json: { sale: null } }));
   if (!complete) { saved.story.storyState!.chapter = 3; saved.story.storyState!.nextChapterGoal = "다음 사건"; const partial = archive.slice(0, 6); saved.story.archive = partial; saved.story.storyState!.previousProse = partial.at(-1)!.content; }
   await page.route("**/api/account**", async route => {
     const url = new URL(route.request().url());
@@ -365,7 +568,7 @@ async function accountRoutes(page: Page, complete = true, deleted: string[] = []
     if (url.searchParams.has("job")) return route.fulfill({ json: { imageUrl: "https://example.test/image.jpg" } });
     return route.fulfill({ json: { userId, email: "test@example.com", profile: { display_name: "테스트" }, wallet: { transferable: 1000, bonus: 5, free_chats: 5 }, documents: deleted.length ? [] : [
       { id: characterId, title: "희진", kind: "studio", character_name: "희진", chapter: String(saved.story.storyState!.chapter), novel_id: novelId },
-      { id: novelId, title: "희진의 이야기", kind: "chapter", chapter: String(saved.story.storyState!.chapter), next_goal: complete ? "" : "다음 사건" },
+      { id: novelId, title: "희진의 이야기", kind: "chapter", chapter: String(saved.story.storyState!.chapter), next_goal: complete ? "" : "다음 사건", series_ending: complete ? "final" : "continue" },
     ], jobs: [], billingEnabled: false, adsEnabled: false } });
   });
   await page.route("https://example.test/**", route => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="72" height="128"/>' }));
@@ -392,7 +595,7 @@ test("character thumbnails reuse display URLs after six minutes and restore from
   const source=await image.getAttribute("src");expect(source).toMatch(/^blob:/);expect(downloads).toBe(1);
   await expect.poll(()=>page.evaluate(async()=>{const cache=await caches.open("maite-private-images-v1");return(await cache.keys()).length;})).toBeGreaterThan(0);
   const footer=page.getByRole("navigation",{name:"하단 메뉴"});
-  await footer.getByRole("link",{name:"마이페이지",exact:true}).click();
+  await footer.getByRole("link",{name:"내 정보",exact:true}).click();
   await page.clock.setFixedTime(new Date(Date.now()+6*60*1000));hold=true;
   await footer.getByRole("link",{name:"캐릭터",exact:true}).click();
   await expect(image).toBeVisible();await expect(image).toHaveAttribute("src",source!);
@@ -403,6 +606,30 @@ test("character thumbnails reuse display URLs after six minutes and restore from
   await expect(image).toBeVisible();await expect(image).toHaveAttribute("aria-busy","false");
   await expect(image).toHaveJSProperty("naturalWidth",72);expect(downloads).toBe(1);
  }finally{release();}
+});
+
+test("character thumbnails find a lower anime face and reuse the crop after a reload", async ({ page }) => {
+  await signIn(page);
+  await accountRoutes(page);
+  const portrait = await sharp("public/references/female-nurse-style.jpg").resize(216, 384, { fit: "fill" })
+    .extract({ left: 0, top: 0, width: 216, height: 264 }).jpeg().toBuffer();
+  const thumbnail = await sharp(portrait).extend({ top: 120, right: 0, left: 0, bottom: 0, background: "#777777" }).png().toBuffer();
+  await page.route("**/api/account", route => route.fulfill({ json: {
+    userId, email: "test@example.com", profile: { display_name: "테스트" }, wallet: { transferable: 100, bonus: 0, free_chats: 5 },
+    documents: [{ id: characterId, title: "희진", kind: "studio", character_name: "희진", job_id: jobId }], jobs: [],
+  } }));
+  await page.route("**/api/account?previews=1", route => route.fulfill({ json: { images: { [jobId]: "https://example.test/low-face.png" } } }));
+  await page.route("https://example.test/low-face.png", route => route.fulfill({ contentType: "image/png", body: thumbnail }));
+  const workerUrls: string[] = [];
+  page.on("worker", worker => workerUrls.push(worker.url()));
+  await page.goto("/ideal/characters");
+  const image = page.getByAltText("희진", { exact: true });
+  await expect(image).toHaveCSS("object-position", /50% [6-8]\d%/);
+  const workerCount = workerUrls.length;
+  expect(workerCount).toBeGreaterThan(0);
+  await page.reload();
+  await expect(image).toHaveCSS("object-position", /50% [6-8]\d%/);
+  expect(workerUrls.length).toBe(workerCount);
 });
 
 test("initial anonymous launch requires Google login before showing the creation screen", async ({ page }) => {
@@ -418,6 +645,102 @@ test("initial anonymous launch requires Google login before showing the creation
   await page.getByRole("button", { name: "Google로 로그인", exact: true }).click();
   await expect(page).toHaveURL(/auth\/v1\/authorize/);
 });
+
+test("a restored login opens unclaimed rewards once per day, including after the date changes", async ({ page }) => {
+  await signIn(page, false);
+  await accountRoutes(page);
+  await page.clock.setFixedTime(new Date("2026-11-27T01:00:00+09:00"));
+  let today = "2026-11-27", calls = 0;
+  await page.route("**/api/rewards?month=*", route => {
+    calls++;
+    return route.fulfill({ json: { today, month: "2026-11-01", claims: [], passes: [] } });
+  });
+  await page.goto("/ideal");
+  const heading = page.getByRole("heading", { name: "출석·패스 보상" });
+  await expect(heading).toBeVisible();
+  await expect(page.getByRole("button", { name: "보상 받기", exact: true })).toBeEnabled();
+  expect(calls).toBe(1);
+
+  await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "서고" }).click();
+  const shelf = page.getByRole("heading", { name: "서고", exact: true });
+  await expect(shelf).toBeVisible();
+  await page.reload();
+  await expect(shelf).toBeVisible();
+  expect(calls).toBe(1);
+
+  today = "2026-11-28";
+  await page.clock.setFixedTime(new Date("2026-11-28T01:00:00+09:00"));
+  await page.reload();
+  await expect(heading).toBeVisible();
+  await expect(page.getByRole("button", { name: `${today} 오늘` })).toHaveAttribute("aria-pressed", "true");
+  expect(calls).toBe(2);
+});
+
+for (const scenario of [
+  { name: "attendance is unclaimed", attendance: false, pass: false, passClaimed: false, expected: "/ideal/rewards" },
+  { name: "today's active pass is unclaimed", attendance: true, pass: true, passClaimed: false, expected: "/ideal/rewards" },
+  { name: "today's eligible rewards are already claimed", attendance: true, pass: true, passClaimed: true, expected: "/ideal" },
+  { name: "only a past pass reward is unclaimed", attendance: true, pass: false, passClaimed: false, expected: "/ideal" },
+  { name: "a new account has completed profile setup", attendance: false, pass: false, passClaimed: false, setup: true, expected: "/ideal/rewards" },
+]) {
+  test(`Google login opens the right first page when ${scenario.name}`, async ({ page }) => {
+    await accountRoutes(page);
+    if (scenario.setup) {
+      let onboarded = false;
+      await page.route("**/api/account", route => {
+        if (route.request().method() === "POST") {
+          expect(route.request().postDataJSON().action).toBe("profile");
+          onboarded = true;
+          return route.fulfill({ json: { ok: true } });
+        }
+        return route.fulfill({ json: { userId, profile: { display_name: "", onboarded }, wallet: { transferable: 0, bonus: 100, free_chats: 5 }, documents: [], jobs: [] } });
+      });
+    }
+    await page.route("http://127.0.0.1:54321/auth/v1/authorize**", route => route.fulfill({
+      status: 302, headers: { Location: "http://127.0.0.1:3101/ideal?code=test-login" },
+    }));
+    await page.route("http://127.0.0.1:54321/auth/v1/token**", route => route.fulfill({ json: {
+      access_token: "test-access-token", refresh_token: "test-refresh-token", token_type: "bearer", expires_in: 86400,
+      user: { id: userId, aud: "authenticated", role: "authenticated", email: "test@example.com", app_metadata: {}, user_metadata: {}, created_at: new Date().toISOString() },
+    } }));
+    const today = koreaDay();
+    const month = today.slice(0, 7) + "-01";
+    let requests = 0;
+    await page.route("**/api/rewards**", route => {
+      expect(route.request().method()).toBe("GET");
+      requests++;
+      return route.fulfill({ json: {
+        today, month,
+        claims: [
+          ...(scenario.attendance ? [{ day: today, kind: "attendance", amount: 5 }] : []),
+          ...(scenario.passClaimed ? [{ day: today, kind: "pass", amount: 20 }] : []),
+        ],
+        passes: [{ starts_on: "2020-01-01", ends_on: scenario.pass ? "2099-01-01" : today, daily_hearts: 20 }],
+      } });
+    });
+    await page.goto("/ideal");
+    await page.getByRole("button", { name: "Google로 로그인", exact: true }).click();
+    if (scenario.setup) {
+      const nickname = page.getByLabel("사용자 닉네임", { exact: true });
+      await nickname.fill("새로운 별빛");
+      expect(requests).toBe(0);
+      await page.getByRole("button", { name: "시작하기", exact: true }).click();
+    }
+    if (scenario.expected === "/ideal/rewards") {
+      await expect(page.getByRole("heading", { name: "출석·패스 보상" })).toBeVisible();
+      await expect(page.getByRole("button", { name: scenario.pass ? "패스 보상 받기" : "보상 받기", exact: true })).toBeEnabled();
+    } else {
+      await expect(page.getByRole("navigation", { name: "하단 메뉴" })).toBeVisible();
+    }
+    expect(new URL(page.url()).pathname).toBe(scenario.expected);
+    expect(requests).toBe(1);
+    await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "서고" }).click();
+    await expect(page.getByRole("heading", { name: "서고", exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "서고", exact: true })).toBeVisible();
+    expect(requests).toBe(1);
+  });
+}
 
 test("bookshop character and novel cards show their main character covers",async({page})=>{
  await signIn(page);await accountRoutes(page);
@@ -493,8 +816,8 @@ test("signed-in launch shows creation, footer navigation, account details and ch
   await page.goto("/ideal");
   await expect(page.getByRole("heading", { name: "나의 캐릭터", exact: true })).toBeVisible();
   const footer = page.getByRole("navigation", { name: "하단 메뉴" });
-  await expect(footer.getByRole("link")).toHaveText(["캐릭터", "서고", "서점", "스토어", "마이페이지"]);
-  await footer.getByRole("link", { name: "마이페이지", exact: true }).click();
+  await expect(footer.getByRole("link")).toHaveText(["캐릭터", "서고", "서점", "스토어", "내 정보"]);
+  await footer.getByRole("link", { name: "내 정보", exact: true }).click();
   await expect(page.getByText("test@example.com", { exact: true })).toBeVisible();await expect(page.locator(".native-settings-list dt").filter({hasText:/^나이$/})).toHaveCount(0);
   await expect(page.locator(".heart-total")).toContainText("1,005");
   await page.screenshot({ path: ".verification/account-mypage.png", fullPage: true });
@@ -524,6 +847,11 @@ test("complete novel detail reads individual chapters and publishes a chosen wor
   await expect(page.locator(".novel-reader")).not.toContainText("비공개 지시");
   await page.getByRole("button", { name: "서점에 판매 등록", exact: true }).click();
   const sale=page.getByRole("dialog",{name:"소설 판매 등록",exact:true});await expect(sale).toBeVisible();
+  const centered = await sale.evaluate(dialog => {
+    const { left, right } = dialog.getBoundingClientRect();
+    return Math.abs(left - (document.documentElement.clientWidth - right));
+  });
+  expect(centered).toBeLessThan(2);
   await page.getByLabel("소설 제목", { exact: true }).fill("서점에서의 마지막 약속");
   await sale.getByRole("button", { name: "판매 등록하기", exact: true }).click();
   await expect(page.getByText("서점에 판매 등록했습니다.", { exact: true })).toBeVisible();
@@ -733,34 +1061,64 @@ test("character and novel sales use a square cover chosen from the gallery", asy
   }
 });
 
-test("store shows sale metadata and the seller can pause and resume characters and whole novels", async ({page}) => {
+test("the bookshop hides owned sales, and private details can pause or resume them", async ({page}) => {
   await signIn(page); await accountRoutes(page);
-  const character = {id:characterId, seller_id:userId, kind:"character", title:"새로운 동료", description:"조용한 서점의 주인", characterName:"희진", characterAge:25, active:true};
-  const chapters = [1,2].map(chapter => ({id:`chapter-${chapter}`, seller_id:userId, kind:"chapter", title:`창가 이야기 #${chapter}`, description:"", authorNickname:"햄군", active:true, chapter, novel:{id:novelId,title:"창가 이야기",chapters:2}}));
+  const character = {id:characterId, seller_id:novelId, kind:"character", title:"새로운 동료", description:"조용한 서점의 주인", characterName:"희진", characterAge:25, authorNickname:"테스트", active:true, purchaseCount:10, created_at:new Date().toISOString()};
+  const ownCharacter = {...character,id:jobId,seller_id:userId,characterName:"내 판매 캐릭터"};
+  const others = Array.from({length:16}, (_, index) => ({...character,id:`character-${index}`,characterName:`친구 ${index + 1}`,purchaseCount:0,created_at:"2020-01-01"}));
+  const chapters = [1,2].map(chapter => ({id:`chapter-${chapter}`, seller_id:characterId, kind:"chapter", title:`창가 이야기 #${chapter}`, description:"", authorNickname:"햄군", active:true, chapter, purchaseCount:5, created_at:character.created_at, novel:{id:novelId,title:"창가 이야기",chapters:2}}));
+  const ownNovel = {...chapters[0],id:"own-chapter",seller_id:userId,novel:{id:jobId,title:"내 판매 소설",chapters:1}};
   const actions: {listingId:string;active:boolean}[] = [];
+  await page.route("**/api/store?saleDocument=**", route => {
+    const novel = new URL(route.request().url()).searchParams.get("kind") === "novel";
+    const listing = novel ? ownNovel : ownCharacter;
+    return route.fulfill({json:{sale:{listingId:listing.id,active:listing.active,count:novel ? 4 : 1}}});
+  });
   await page.route("**/api/store", route => {
     if (route.request().method() === "POST") {
       const request=route.request().postDataJSON();
       expect(request.action).toBe("setSaleStatus"); actions.push(request);
-      for (const row of request.listingId === character.id ? [character] : chapters) row.active=request.active;
+      (request.listingId === ownCharacter.id ? ownCharacter : ownNovel).active=request.active;
       return route.fulfill({json:{ok:true}});
     }
-    return route.fulfill({json:{listings:[character,...chapters],owned:[]}});
+    return route.fulfill({json:{listings:[ownCharacter,ownNovel,character,...others,...chapters],owned:[]}});
   });
   await page.goto("/ideal/bookshop");
-  await expect(page.getByRole("heading",{name:"희진",exact:true})).toBeVisible();
+  const grid = page.locator(".bookshop-character-grid");
+  const tile = grid.getByRole("button",{name:/희진/});
+  await expect(grid.getByText("내 판매 캐릭터")).toHaveCount(0);
+  await expect(tile.getByText("Hot")).toBeVisible();
+  await expect(tile.getByText("New")).toBeVisible();
+  const layout = await grid.evaluate(element => {
+    const cover = element.querySelector(".store-cover")!.getBoundingClientRect();
+    const bottom = element.getBoundingClientRect().bottom;
+    return { columns: getComputedStyle(element).gridTemplateColumns.split(" ").length,
+      difference: Math.abs(cover.width - cover.height), scrolls: element.scrollHeight > element.clientHeight,
+      fullTiles: Array.from(element.children).filter(tile => tile.getBoundingClientRect().bottom <= bottom + 1).length };
+  });
+  expect(layout).toEqual({columns:3,difference:0,scrolls:true,fullTiles:15});
+  await expect(grid.getByRole("button",{name:"친구 16",exact:true})).not.toBeInViewport();
+  await grid.evaluate(element => {element.scrollTop = element.scrollHeight;});
+  await expect(grid.getByRole("button",{name:"친구 16",exact:true})).toBeInViewport();
+  await grid.evaluate(element => {element.scrollTop = 0;});
+  await tile.click();
+  await expect(page.getByRole("dialog",{name:"희진",exact:true})).toBeVisible();
   await expect(page.getByText("25세 · 작가 테스트")).toBeVisible();
   await expect(page.getByText(character.description)).toBeVisible();
-  expect(await page.locator(".bookshop-list").evaluate(el=>el.clientHeight)).toBeLessThan(100);
-  for (const [title, listingId] of [[character.title,character.id], ["창가 이야기",chapters[1].id]]) {
-    if (title === "창가 이야기") {
-      await page.getByRole("tab",{name:"소설"}).click();
-      await expect(page.getByText("창가 이야기",{exact:true})).toBeVisible();
-      await expect(page.getByText("작가 햄군 · 2편",{exact:true})).toBeVisible();
-      await expect(page.getByRole("switch")).toHaveCount(1);
-      expect(await page.locator(".bookshop-list").evaluate(el=>el.clientHeight)).toBeLessThan(100);
-    }
-    const toggle=page.getByRole("switch",{name:`${title} 판매 상태`});
+  await page.getByRole("button",{name:"캐릭터 상세 닫기",exact:true}).click();
+  await page.getByRole("tab",{name:"소설"}).click();
+  await expect(page.getByText("내 판매 소설",{exact:true})).toHaveCount(0);
+  const byline = page.locator(".store-novel-group .store-byline");
+  await expect(byline).toContainText("작가 햄군 ·");
+  const count = byline.locator(".bookshop-chapter-count");
+  await expect(count.getByText("2편",{exact:true})).toBeVisible();
+  await expect(count.getByText("Hot",{exact:true})).toBeVisible();
+  await expect(count.getByText("New",{exact:true})).toBeVisible();
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  for (const [path, listingId] of [[`/ideal/characters/${characterId}`,ownCharacter.id], [`/ideal/novels/${novelId}`,ownNovel.id]]) {
+    await page.goto(path);
+    if (listingId === ownNovel.id) await expect(page.getByRole("button", {name:"서점에 판매 등록"})).toHaveText("새 회차 등록");
+    const toggle=page.getByRole("switch",{name:"판매 상태"});
     await expect(toggle).toBeChecked(); await toggle.click(); await expect(toggle).not.toBeChecked();
     await toggle.click(); await expect(toggle).toBeChecked();
     expect(actions.slice(-2)).toMatchObject([{listingId,active:false},{listingId,active:true}]);
@@ -773,7 +1131,7 @@ test("logging out hides private library data and returns to the login screen", a
   await page.goto(`/ideal/characters/${characterId}`);
   const image=page.locator(".character-detail img");await expect(image).toBeVisible();
   const privateUrl=await image.getAttribute("src");expect(privateUrl).toMatch(/^blob:/);
-  await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"마이페이지",exact:true}).click();
+  await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"내 정보",exact:true}).click();
   await expect(page.getByText("test@example.com", { exact: true })).toBeVisible();
   await page.evaluate(async () => { const cache = await caches.open("maite-private-images-v1"); await cache.put("/logout-cache-check", new Response("private")); });
   await page.getByRole("button", { name: "로그아웃", exact: true }).click();
@@ -785,6 +1143,7 @@ test("logging out hides private library data and returns to the login screen", a
 });
 
 test("store groups a complete work, charges per chapter, and opens purchased prose", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
   await signIn(page); await accountRoutes(page);
   const listingId = "55555555-5555-4555-8555-555555555555";
   const firstListing = "66666666-6666-4666-8666-666666666666";
@@ -799,7 +1158,7 @@ test("store groups a complete work, charges per chapter, and opens purchased pro
     if (route.request().method() === "POST") { const body = route.request().postDataJSON(); expect(body.action).toBe("buy"); expect(body.listingId).toBe(listingId); purchased = true; return route.fulfill({ json: { ok: true } }); }
     const id = new URL(route.request().url()).searchParams.get("id");
     if (id === listingId) return route.fulfill({ json: {
-      kind: "chapter", content: { text: "구매한 두 번째 회차 원고" },
+      kind: "chapter", title: novel.title, novelId, content: { text: "구매한 두 번째 회차 원고" },
       images, imageUrl: "https://example.test/image.jpg",
     } });
     if (id === firstListing) return route.fulfill({ json: { kind: "chapter", content: { text: "구매한 첫 회차 원고" }, images, imageUrl: "https://example.test/image.jpg" } });
@@ -810,17 +1169,33 @@ test("store groups a complete work, charges per chapter, and opens purchased pro
   await page.getByRole("navigation", { name: "하단 메뉴" }).getByRole("link", { name: "서점", exact: true }).click();
   await page.getByRole("tab", { name: "소설", exact: true }).click();
   await page.getByRole("button",{name:/마지막 약속.*5편/}).click();
-  await page.getByRole("button", { name: "총 12하트로 구매", exact: true }).click();
+  const purchase = page.getByRole("button", { name: "10하트 구매", exact: true });
+  await expect(purchase.locator("svg.lucide-heart")).toBeVisible();
+  await expect(purchase).not.toContainText("하트");
+  const row = page.getByRole("article").filter({ hasText: "마지막 약속 #2" });
+  const layout = await row.evaluate(element => {
+    const button = element.querySelector("button")!.getBoundingClientRect();
+    const title = element.querySelector("h3")!.getBoundingClientRect();
+    const bounds = element.getBoundingClientRect();
+    return title.width > 80 && title.right <= button.left && button.right <= bounds.right + 1 &&
+      document.documentElement.scrollWidth <= document.documentElement.clientWidth;
+  });
+  expect(layout).toBe(true);
+  await purchase.click();
   await page.getByRole("dialog").getByRole("button", { name: "구매하기", exact: true }).click();
   await page.getByRole("article").filter({ hasText: "마지막 약속 #2" }).getByRole("link", { name: "회차 읽기", exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/ideal/library/${novelId}\\?listing=${listingId}`));
   await expect(page.getByText("구매한 두 번째 회차 원고", { exact: true })).toBeVisible();
   await expect(page.locator(".saved-novel-background")).toBeVisible();
-  await page.getByRole("button", { name: "갤러리", exact: true }).click();
+  await page.getByRole("link", { name: "갤러리", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/ideal/library/gallery/${listingId}$`));
+  await expect(page.getByText("구매한 두 번째 회차 원고", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("group", { name: "소설 갤러리" }).getByRole("button")).toHaveCount(3);
   await page.getByRole("button", { name: "삽화 2 전체화면" }).click();
   await expect(page.getByRole("dialog", { name: "캐릭터 이미지 전체화면" }).getByRole("img")).toBeVisible();
   await page.getByRole("button", { name: "전체화면 닫기" }).click();
+  await page.getByRole("link", { name: "소설로 돌아가기" }).click();
+  await expect(page.getByText("구매한 두 번째 회차 원고", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "이전 이야기 보기" }).click();
   await expect(page.getByText("구매한 첫 회차 원고", { exact: true })).toBeVisible();
   await expect(page.locator(".saved-novel-background")).toBeVisible();
@@ -833,15 +1208,18 @@ test("a purchased character imports its related images into the character galler
   const illustration = "77777777-7777-4777-8777-777777777777";
   const result = { id: listing, kind: "character", seller_id: characterId, title: "희진", active: true, description: "", characterName: "희진" };
   await page.route("**/api/store**", route => new URL(route.request().url()).searchParams.has("id")
-    ? route.fulfill({ json: { ...result, content: { profile: snapshot.art.profile }, imageUrl: "https://example.test/image.jpg",
+    ? route.fulfill({ json: { ...result, content: { profile: snapshot.art.profile, renderStyle: "storybook-gouache" }, imageUrl: "https://example.test/image.jpg",
       images: [
         { id: "purchased-" + outfit, jobId: outfit, kind: "outfit", title: "대화 장면", url: "https://example.test/outfit.jpg" },
         { id: "purchased-" + illustration, jobId: illustration, kind: "illustration", title: "이야기 삽화", url: "https://example.test/illustration.jpg" },
       ] } })
     : route.fulfill({ json: { listings: [result], owned: [listing] } }));
   await page.goto("/ideal/bookshop");
+  await page.locator(".bookshop-character-grid").getByRole("button",{name:"희진",exact:true}).click();
+  const saved = page.waitForRequest(request => request.url().endsWith("/api/account") && request.method() === "POST" && request.postDataJSON().action === "save");
   await page.getByRole("button", { name: "내 캐릭터로 사용" }).click();
   await expect(page).toHaveURL(/\/ideal\/new$/);
+  expect((await saved).postDataJSON().payload.art.renderStyle).toBe("storybook-gouache");
   await page.getByRole("button", { name: "대화하기", exact: true }).click();
   await page.getByRole("link", { name: "장면 갤러리" }).click();
   await expect(page.locator(".gallery-image-trigger")).toHaveCount(3);
@@ -886,7 +1264,7 @@ test("character generation confirmation does not call the API until accepted", a
   await page.screenshot({ path: ".verification/native-newface-account.png", caret: "initial" });
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
   const confirmation = page.getByRole("dialog", { name: "새로운 캐릭터를 만날까요?" });
-  await expect(confirmation).toContainText("50하트"); await expect(confirmation).toContainText("955하트");
+  await expect(confirmation).toContainText("50"); await expect(confirmation).toContainText("955");
   await page.screenshot({ path: ".verification/native-confirm-character.png", caret: "initial" });
   await confirmation.getByRole("button", { name: "취소", exact: true }).click(); expect(requests).toBe(0);
   await page.getByRole("button", { name: "캐릭터 생성", exact: true }).click();
@@ -998,7 +1376,7 @@ test("an open local web chat receives its 24-hour greeting once without an AI ca
  await page.clock.fastForward(40000);await expect(page.getByRole("log").getByText("나 안 보고 싶어?",{exact:true})).toBeVisible();
  expect(receipts).toHaveLength(1);expect(aiCalls).toBe(0);
  await page.clock.fastForward(240000);expect(receipts).toHaveLength(1);
- await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"마이페이지",exact:true}).click();
+ await page.getByRole("navigation",{name:"하단 메뉴"}).getByRole("link",{name:"내 정보",exact:true}).click();
  await expect(page.locator(".checkin-reservation-status")).toContainText("지난 안부에 답장");
  await expect(page.locator(".notification-settings")).toContainText("웹에서는 화면을 열어 둔 동안");
 });
@@ -1006,7 +1384,7 @@ test("an open local web chat receives its 24-hour greeting once without an AI ca
 test("five tabs separate the heart store from the bookshop and preserve profile editing", async ({ page }) => {
   await signIn(page); await accountRoutes(page); await page.goto("/ideal/characters");
   const footer = page.getByRole("navigation", { name: "하단 메뉴" });
-  await expect(footer.getByRole("link")).toHaveText(["캐릭터", "서고", "서점", "스토어", "마이페이지"]);
+  await expect(footer.getByRole("link")).toHaveText(["캐릭터", "서고", "서점", "스토어", "내 정보"]);
   await page.screenshot({ path: ".verification/native-characters.png", caret: "initial" });
   await footer.getByRole("link", { name: "스토어", exact: true }).click();
   await expect(page.getByRole("heading", { name: "하트 스토어" })).toBeVisible();
@@ -1018,7 +1396,7 @@ test("five tabs separate the heart store from the bookshop and preserve profile 
   await page.screenshot({ path: ".verification/native-hearts.png", caret: "initial" });
   await footer.getByRole("link", { name: "서점", exact: true }).click();
   await expect(page.getByRole("tablist", { name: "서점 분류" })).toBeVisible();
-  await footer.getByRole("link", { name: "마이페이지", exact: true }).click();
+  await footer.getByRole("link", { name: "내 정보", exact: true }).click();
   await expect(page.getByRole("heading", { name: "캐릭터 목록", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "프로필 수정", exact: true }).click();
   const editor = page.getByRole("dialog", { name: "프로필 수정" }); await expect(editor).toBeVisible();
@@ -1067,11 +1445,11 @@ test("restored duplicate image IDs stay selectable, naming uses the profile, and
   await expect(page.getByText("테스트, 반가워.", { exact: true })).toBeVisible();
   expect(named).toBe(true);
   const footer = page.getByRole("navigation", { name: "하단 메뉴" });
-  await footer.getByRole("link", { name: "마이페이지", exact: true }).click();
+  await footer.getByRole("link", { name: "내 정보", exact: true }).click();
   await page.waitForTimeout(700); // Let completion refresh and the coalesced save settle.
   const previous = { saves, queries };
   await footer.getByRole("link", { name: "캐릭터", exact: true }).click();
-  await footer.getByRole("link", { name: "마이페이지", exact: true }).click();
+  await footer.getByRole("link", { name: "내 정보", exact: true }).click();
   await page.waitForTimeout(700);
   expect({ saves, queries }).toEqual(previous);
   expect(errors.filter(message => /same key/.test(message))).toEqual([]);

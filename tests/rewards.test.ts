@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {readFile} from "node:fs/promises";
 import {PGlite} from "@electric-sql/pglite";
 import {randomUUID} from "node:crypto";
-import {HEART_COST} from "../lib/account/policy.ts";
 import {GET,POST} from "../app/api/rewards/route.ts";
 const A="11111111-1111-4111-8111-111111111111",B="22222222-2222-4222-8222-222222222222";
 test("reward endpoints use authenticated ownership and reject client-supplied amounts or owners",async t=>{
@@ -55,7 +54,7 @@ test("manual attendance, catch-up expired pass rewards and story cost are enforc
   assert.equal((await wallet()).transferable,250);
   const job=randomUUID();await db.query("select reserve_generation_v2($1,$2,'story','story-cost')",[A,job]);
   const held=(await db.query<{amount:number}>("select held_bonus+held_transferable as amount from generation_jobs where id=$1",[job])).rows[0].amount;
-  assert.equal(held,HEART_COST.story);assert.equal(held,20);
+  assert.equal(held,20);
   const before=await wallet();
   await db.query("select finish_generation($1,$2,$3::jsonb,null,true)",[A,job,JSON.stringify({events:[{type:"chapter",text:"완성된 소설",state:{chapter:1}},{type:"done"}]})]);
   const after=await wallet();assert.equal(before.bonus+before.transferable-after.bonus-after.transferable,20);

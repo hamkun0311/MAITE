@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { characterProfileSchema } from "../chat/character.ts";
 import { characterStyleProfile } from "../characters/schema.ts";
+import { characterRenderStyle } from "../characters/render-style.ts";
 import { createStudioSessions, type ChatSession } from "../chat/session.ts";
 import { chatMemorySchema } from "../chat/memory.ts";
 import { visualSceneSchema } from "../chat/visual-scene.ts";
@@ -14,7 +15,7 @@ const storyMessage = message.extend({ content: z.string(), readerNickname: z.str
 const storySession = session.extend({ committed: z.array(storyMessage).max(1000), archive: z.array(storyMessage).max(1000).optional() });
 export const snapshotSchema = z.object({
   version: z.literal(1), id: z.uuid(), rewindToken: z.uuid().optional(),
-  art: z.object({ title: z.string().max(120), summary: z.string().max(2000), prompt: z.string().max(12000), style: characterStyleProfile, description: z.string().max(6000), profile: characterProfileSchema, width: z.number(), height: z.number(), jobId: z.uuid().optional(), listingId: z.uuid().optional() }),
+  art: z.object({ title: z.string().max(120), summary: z.string().max(2000), prompt: z.string().max(12000), style: characterStyleProfile, renderStyle: characterRenderStyle.optional(), description: z.string().max(6000), profile: characterProfileSchema, width: z.number(), height: z.number(), jobId: z.uuid().optional(), listingId: z.uuid().optional() }),
   chat: session, story: storySession, timeline: timelineSchema,
   gallery: z.array(z.object({ id: z.string().max(100), title: z.string().max(120), kind: z.enum(["character", "illustration", "outfit"]), jobId: z.uuid().optional(), scene: z.object({ novelId: z.uuid(), chapter: z.number().int().min(1).max(1000) }).optional(), composition: z.object({ pose: z.string().max(240), framing: z.string().max(160) }).optional() })).max(24).default([]),
   backgrounds: z.object({ chat: z.string().max(100).optional(), story: z.string().max(100).optional() }).default({}),

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { PGlite } from "@electric-sql/pglite";
+import { HEART_COST } from "../lib/account/policy.ts";
 const A="11111111-1111-4111-8111-111111111111",B="22222222-2222-4222-8222-222222222222";
 const migration=()=>readFile(new URL("../supabase/migrations/202611180001_deferred_billing_and_character_delete.sql",import.meta.url),"utf8");
 async function setup(upgrade=true) {
@@ -17,6 +18,87 @@ async function setup(upgrade=true) {
 const wallet=async(db:PGlite,id=A)=>(await db.query<{transferable:number;bonus:number;free_chats:number}>("select transferable,bonus,free_chats from wallets where user_id=$1",[id])).rows[0];
 const reserve=(db:PGlite,id:string,kind="character")=>db.query("select reserve_generation_v2($1,$2,$3,'same-input')",[A,id,kind]);
 const success=(db:PGlite,id:string)=>db.query("select finish_generation($1,$2,'{\"headers\":{}}'::jsonb,$3,true)",[A,id,`${A}/${id}.jpg`]);
+
+test("mixed hearts pay for stories and store purchases while only transferable hearts can be settled", async () => {
+ const db = await setup();
+ try {
+  for (const file of ["202611260001_remove_store_buyer_fees.sql", "202611260003_heart_settlements.sql", "202611260004_settlement_cancellation_and_notices.sql"]) {
+   await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), "utf8"));
+  }
+  await db.query("update wallets set transferable=5,bonus=5 where user_id=$1", [A]);
+  const job = randomUUID();
+  await db.query("select reserve_story_generation($1,$2,'mixed')", [A,job]);
+  const holds = (await db.query("select held_bonus,held_transferable from generation_jobs where id=$1", [job])).rows[0];
+  assert.deepEqual(holds, { held_bonus:5, held_transferable:HEART_COST.story - 5 });
+  await db.query("select finish_generation($1,$2,$3::jsonb,null,true)", [A,job,JSON.stringify({events:[{type:"chapter",text:"완성된 소설",state:{chapter:1}},{type:"done"}]})]);
+  assert.deepEqual(await wallet(db), {transferable:0,bonus:0,free_chats:5});
+
+  await db.query("update wallets set transferable=5,bonus=15 where user_id=$1", [A]);
+  const blueJob = randomUUID();
+  await db.query("select reserve_story_generation($1,$2,'blue-first')", [A,blueJob]);
+  assert.deepEqual((await db.query("select held_bonus,held_transferable from generation_jobs where id=$1", [blueJob])).rows[0],
+   {held_bonus:HEART_COST.story,held_transferable:0});
+  await db.query("select finish_generation($1,$2,null,null,false)", [A,blueJob]);
+
+  await db.query("update wallets set transferable=5,bonus=5 where user_id=$1", [A]);
+  const listing = (await db.query<{id:string}>("insert into store_listings(seller_id,kind,title,description,content) values($1,'chapter','story','','{}') returning id", [B])).rows[0].id;
+  await db.query("select buy_listing($1,$2,$3)", [A,randomUUID(),listing]);
+  assert.deepEqual(await wallet(db,B), {transferable:105,bonus:3,free_chats:5});
+
+  const requestId = randomUUID();
+  const settle = (consent = true, amount = 500, id = requestId) => db.query("select request_heart_settlement($1,$2,'2099-01-10',$3,'테스트 은행','0123456789','테스트',$4)", [A,id,amount,consent]);
+  await db.query("update wallets set bonus=1000 where user_id=$1", [A]);
+  await assert.rejects(settle(), /insufficient_settlement_hearts/);
+  await db.query("update wallets set transferable=500,bonus=5 where user_id=$1", [A]);
+  const hold = randomUUID();
+  await reserve(db,hold);
+  await assert.rejects(settle(), /hearts_in_use/);
+  await db.query("select finish_generation($1,$2,null,null,false)", [A,hold]);
+  await assert.rejects(settle(false), /settlement_consent_required/);
+  await assert.rejects(settle(true,501), /invalid_settlement_amount/);
+  await db.exec("alter role service_role bypassrls; set role service_role");
+  await settle(); await settle();
+  const rows = (await db.query("select hearts,amount_won::int,account_number from heart_settlements")).rows;
+  assert.deepEqual(rows, [{hearts:500,amount_won:1000,account_number:"0123456789"}]);
+  await db.exec("reset role");
+  assert.deepEqual(await wallet(db), {transferable:0,bonus:5,free_chats:5});
+  assert.deepEqual((await db.query("select transferable,bonus from heart_ledger where reason='settlement_request'")).rows, [{transferable:-500,bonus:0}]);
+  const cancel = (owner = A) => db.query("select cancel_heart_settlement($1,$2)", [owner,requestId]);
+  await assert.rejects(cancel(B), /settlement_not_found/);
+  await db.query("update heart_settlements set payout_on='2000-01-10' where id=$1", [requestId]);
+  await assert.rejects(cancel(), /settlement_cancel_closed/);
+  await db.query("update heart_settlements set payout_on='2099-01-10' where id=$1", [requestId]);
+  await cancel(); await cancel();
+  assert.deepEqual(await wallet(db), {transferable:500,bonus:5,free_chats:5});
+  assert.equal((await db.query("select id from heart_settlements where cancelled_at is not null")).rows.length, 1);
+  assert.deepEqual((await db.query("select transferable,bonus from heart_ledger where reason='settlement_cancelled'")).rows, [{transferable:500,bonus:0}]);
+
+  const paidId = randomUUID();
+  await settle(true, 500, paidId);
+  await db.exec(await readFile(new URL("../supabase/migrations/202611270001_settlement_completion.sql", import.meta.url), "utf8"));
+  const complete = (id: string, operator = B) => db.query<{ completed_at: Date }>("select complete_heart_settlement($1,$2) as completed_at", [id,operator]);
+  await db.exec("set role service_role");
+  await assert.rejects(complete(requestId), /settlement_already_cancelled/);
+  const paid = (await complete(paidId)).rows[0].completed_at;
+  assert.ok(paid instanceof Date);
+  assert.deepEqual((await complete(paidId, A)).rows[0].completed_at, paid);
+  assert.deepEqual((await db.query("select completed_at,completed_by,cancelled_at from heart_settlements where id=$1", [paidId])).rows,
+   [{completed_at:paid,completed_by:B,cancelled_at:null}]);
+  await assert.rejects(db.query("select cancel_heart_settlement($1,$2)", [A,paidId]), /settlement_already_completed/);
+  await db.exec("reset role");
+  assert.deepEqual(await wallet(db), {transferable:0,bonus:5,free_chats:5});
+  assert.equal((await db.query("select reference from heart_ledger where reason='settlement_cancelled'")).rows.length, 1);
+  await db.exec("set role service_role");
+  await db.query("insert into notices(title,body) values('공지','내용')");
+  assert.equal((await db.query("select id from notices")).rows.length, 1);
+  await db.exec("set role authenticated");
+  await assert.rejects(db.query("select * from heart_settlements"), /permission denied/);
+  await assert.rejects(settle(), /permission denied/);
+  await assert.rejects(cancel(), /permission denied/);
+  await assert.rejects(complete(paidId), /permission denied/);
+  await assert.rejects(db.query("insert into notices(title,body) values('공지','내용')"), /permission denied/);
+ } finally { await db.close(); }
+});
 
 test("a story checkpoint retains its payload across workers and is private and exclusively leased", async () => {
  const db = await setup();
@@ -93,14 +175,27 @@ test("free conversation quota is held without decrement and expired jobs release
 });
 test("store purchases cannot consume generation holds and commit the entitlement with the debit",async()=>{
  const db=await setup();try{
+  await db.exec(await readFile(new URL("../supabase/migrations/202611260001_remove_store_buyer_fees.sql",import.meta.url),"utf8"));
   const ids=[randomUUID(),randomUUID()];for(const id of ids)await reserve(db,id);
   const listing=(await db.query<{id:string}>("insert into store_listings(seller_id,kind,title,description,content) values($1,'character','책방 친구','','{}') returning id",[B])).rows[0].id;
-  await assert.rejects(db.query("select buy_listing($1,$2,$3)",[A,randomUUID(),listing]),/hearts_in_use/);
+  const novel=(await db.query<{id:string}>("insert into store_listings(seller_id,kind,title,description,content) values($1,'chapter','책방 이야기','','{}') returning id",[B])).rows[0].id;
+  await assert.rejects(db.query("select buy_store_listing($1,$2,$3)",[A,randomUUID(),listing]),/hearts_in_use/);
   assert.equal((await db.query("select * from store_orders")).rows.length,0);
   await db.query("select finish_generation($1,$2,null,null,false)",[A,ids[0]]);
-  await db.query("select buy_listing($1,$2,$3)",[A,randomUUID(),listing]);assert.equal((await wallet(db)).transferable,65);
-  await success(db,ids[1]);assert.equal((await wallet(db)).transferable,15);
-  assert.equal((await db.query("select * from store_orders")).rows.length,1);
+  const characterOrder=randomUUID(), chapterOrder=randomUUID();
+  await db.query("select buy_store_listing($1,$2,$3)",[A,characterOrder,listing]);
+  await db.query("select buy_listing($1,$2,$3)",[A,chapterOrder,novel]);
+  await db.query("select buy_store_listing($1,$2,$3)",[A,randomUUID(),novel]);
+  assert.equal((await wallet(db)).transferable,60);
+  assert.equal((await wallet(db,B)).transferable,133);
+  await success(db,ids[1]);assert.equal((await wallet(db)).transferable,10);
+  assert.deepEqual((await db.query("select base_price,buyer_fee,seller_fee from store_orders order by base_price desc")).rows,[
+   {base_price:30,buyer_fee:0,seller_fee:5},{base_price:10,buyer_fee:0,seller_fee:2},
+  ]);
+  assert.deepEqual((await db.query("select transferable from heart_ledger where reference=any($1) order by transferable",
+   [[`buy:${characterOrder}`,`buy:${chapterOrder}`,`sell:${characterOrder}`,`sell:${chapterOrder}`]])).rows,
+   [-30,-10,8,25].map(transferable=>({transferable})));
+  assert.equal((await db.query<{allowed:boolean}>("select has_function_privilege('authenticated','public.buy_store_listing(uuid,uuid,uuid)','execute') as allowed")).rows[0].allowed,false);
  }finally{await db.close();}
 });
 test("in-flight legacy prepaid jobs refund exactly once after migration and old reserve calls adopt version two",async()=>{

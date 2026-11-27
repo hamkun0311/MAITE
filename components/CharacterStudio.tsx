@@ -9,6 +9,7 @@ import AccountMenu from "./AccountMenu";
 import AppFooter from "./AppFooter";
 import { useActionConfirm, useGenerationPolicyNotice } from "./ActionConfirm";
 import GenerationFeedback from "./GenerationFeedback";
+import HeartText from "./HeartText";
 import { blocksImageGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
 import { HEART_COST } from "@/lib/account/policy";
 import { useAccount } from "./AccountProvider";
@@ -43,10 +44,11 @@ import {
   MAX_CHARACTER_IMAGE,
   characterStyleProfile,
 } from "@/lib/characters/schema";
+import { characterRenderStyle, characterStyleHeader, newCharacterRenderStyles, renderStyleLabels, selectableRenderStyle, type CharacterRenderStyle } from "@/lib/characters/render-style";
 
 type Message = { role: "user" | "assistant"; content: string };
 type StyleProfile = (typeof characterStyleProfile.options)[number];
-type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile; description: string; profile: CharacterProfile; width: number; height: number; jobId?: string; listingId?: string };
+type Artwork = { url: string; title: string; summary: string; prompt: string; style: StyleProfile; renderStyle?: CharacterRenderStyle; description: string; profile: CharacterProfile; width: number; height: number; jobId?: string; listingId?: string };
 type StudioSession = {
   creation: ReactNode;
   activityRestoring: boolean;
@@ -160,7 +162,8 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   }, [menu]);
   const result = useRef<HTMLElement>(null);
   const profileFields = useRef<HTMLFieldSetElement>(null);
-  const [draft, setDraft] = useState({ name: "", age: "", gender: "", appearance: "", personality: "", concept: "" });
+  const [draft, setDraft] = useState({ name: "", age: "", gender: "", appearance: "", personality: "", funElement: "", concept: "" });
+  const [selectedRenderStyle, setSelectedRenderStyle] = useState("");
   function focusCreation(target: "result" | "profile") {
     requestAnimationFrame(() => {
       if (target === "profile") {
@@ -198,13 +201,12 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     setVisitedActivities(previous => previous.art === art.url && previous.modes.includes(menu) ? previous : { art: art.url, modes: [...(previous.art === art.url ? previous.modes : []), menu] });
   }, [art?.url, menu]);
   const [status, setStatus] = useState("캐릭터 특성과 컨셉을 입력하고 생성해주세요.");
-  const previousStyle = useRef<StyleProfile | null>(null);
   const controller = useRef<AbortController | null>(null),
     generation = useRef(0),
     previous = useRef<Blob | null>(null),
     bottom = useRef<HTMLDivElement>(null);
   const pending = useRef<{ messages: Message[] } | null>(null);
-  const visuals = useCharacterGallery(art && previous.current ? { blob: previous.current, profile: art.profile, style: art.style, description: art.description, documentId: documentId.current } : undefined);
+  const visuals = useCharacterGallery(art && previous.current ? { blob: previous.current, profile: art.profile, renderStyle: art.renderStyle, documentId: documentId.current } : undefined);
   function currentSnapshot(): StudioSnapshot {
     if (!art || !previous.current) throw new Error("캐릭터를 먼저 선택해주세요.");
     if (sessions.current.story.storyState?.chapter) sessions.current.story.documentId ??= crypto.randomUUID();
@@ -214,11 +216,12 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   function restore(data: StudioSnapshot, blob: Blob, gallery: { id: string; blob: Blob }[] = [], navigate=true) {
     cancel(); visuals.clear(); documentId.current = data.id;
     setRewindToken(data.rewindToken);
-    sessions.current = restoreSessions(data); previous.current = blob; previousStyle.current = data.art.style;
+    sessions.current = restoreSessions(data); previous.current = blob;
     const url = URL.createObjectURL(blob); visuals.registerOriginal(blob, url, data.art.title, data.art);
     const metadataRows = gallery.length === data.gallery.length ? data.gallery : data.gallery.filter(image => image.id !== "original");
     visuals.restoreImages(gallery.flatMap((image, index) => { const metadata = data.gallery.find(meta => meta.id === image.id) ?? metadataRows[index]; return metadata ? [{ ...metadata, blob: image.blob }] : []; }), data.backgrounds);
-    setDraft({ ...data.art.profile, age: String(data.art.profile.age), gender: data.art.profile.gender ?? "", appearance: data.art.profile.appearance ?? "" });
+    setDraft({ ...data.art.profile, age: String(data.art.profile.age), gender: data.art.profile.gender ?? "", appearance: data.art.profile.appearance ?? "", funElement: data.art.profile.funElement ?? "" });
+    setSelectedRenderStyle(selectableRenderStyle.safeParse(data.art.renderStyle).data ?? "");
     setArt({ ...data.art, url }); setMessages([]); if(navigate)router.push(accountEnabled() ? "/ideal/new" : "/ideal");
   }
   async function persistSnapshot(snapshot: StudioSnapshot, currentOwner: string) {
@@ -313,7 +316,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     }finally{if(load===loadSequence.current)setDocumentLoad({path:loadingPath,loading:false});}
   }
   async function importCharacter(value: Record<string, unknown>) {
-    const content = value.content as { profile?: unknown; description?: string };
+    const content = value.content as { profile?: unknown; description?: string; renderStyle?: unknown };
     const profile = characterProfileSchema.parse(content?.profile);
     if (typeof value.imageUrl !== "string") throw new Error("캐릭터 이미지를 찾지 못했습니다.");
     const currentOwner = owner.current;
@@ -321,7 +324,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     if (art && previous.current) await saveCloud();
     if (currentOwner !== owner.current) return;
     cancel(); visuals.clear(); sessions.current = createStudioSessions(); documentId.current = crypto.randomUUID(); setRewindToken(undefined);
-    previous.current = blob; previousStyle.current = "neutral"; const url = URL.createObjectURL(blob);
+    previous.current = blob; const url = URL.createObjectURL(blob);
     visuals.registerOriginal(blob, url, profile.name, { listingId: String(value.id) });
     const images = Array.isArray(value.images) ? value.images : [];
     visuals.restoreRemoteImages(
@@ -330,8 +333,10 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       {},
       Object.fromEntries(images.filter(image => image.thumbnailUrl).map(image => [image.jobId, image.thumbnailUrl])),
     );
-    setArt({ url, title: profile.name, summary: "구매한 캐릭터", prompt: "", style: "neutral", description: content.description ?? profile.concept, profile, width: 0, height: 0, listingId: String(value.id) });
-    setDraft({ ...profile, age: String(profile.age), gender: profile.gender ?? "", appearance: profile.appearance ?? "" }); router.push(accountEnabled() ? "/ideal/new" : "/ideal");
+    const renderStyle = characterRenderStyle.safeParse(content.renderStyle).data;
+    setSelectedRenderStyle(selectableRenderStyle.safeParse(renderStyle).data ?? "");
+    setArt({ url, title: profile.name, summary: "구매한 캐릭터", prompt: "", style: "neutral", renderStyle, description: content.description ?? profile.concept, profile, width: 0, height: 0, listingId: String(value.id) });
+    setDraft({ ...profile, age: String(profile.age), gender: profile.gender ?? "", appearance: profile.appearance ?? "", funElement: profile.funElement ?? "" }); router.push(accountEnabled() ? "/ideal/new" : "/ideal");
   }
   const snapshotRef = useRef<() => void>(() => undefined);
   const cloudQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -426,9 +431,9 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     pendingFocus.current = "profile";
     router.replace(accountEnabled() ? "/ideal/new" : "/ideal", { scroll: false });
     if (menu === "image") focusCreation("profile");
-    setDraft({ name: "", age: "", gender: "", appearance: "", personality: "", concept: "" });
+    setDraft({ name: "", age: "", gender: "", appearance: "", personality: "", funElement: "", concept: "" });
+    setSelectedRenderStyle("");
     previous.current = null;
-    previousStyle.current = null;
     setError("");
     setStatus("새로운 캐릭터의 분위기를 설명해주세요.");
   }
@@ -441,43 +446,35 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
   }
   async function submit() {
     if (controller.current) return;
-    const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age), appearance: draft.appearance.trim() || undefined });
+    const parsedProfile = characterProfileSchema.safeParse({ ...draft, age: Number(draft.age), appearance: draft.appearance.trim() || undefined, funElement: draft.funElement.trim() || undefined });
     if (!parsedProfile.success) { setError("캐릭터 이름·나이·성별·성격·컨셉을 입력해주세요."); return; }
     if (blocksImageGeneration({profile:parsedProfile.data})) { showPolicyNotice(); return; }
     const balance = (account?.wallet.transferable ?? 0) + (account?.wallet.bonus ?? 0);
     const retrying = hasImageAttempt(owner.current, "character");
     if (accountEnabled() && balance < HEART_COST.character && !retrying) { setError("하트가 부족해요. 스토어에서 충전한 뒤 다시 시도해주세요."); return; }
-    if (accountEnabled() && !await confirm({ title: "새로운 캐릭터를 만날까요?", description: retrying ? "입력이 같으면 저장된 단계부터 이어갑니다. 이미 완료된 결과를 다시 받을 때는 하트를 차감하지 않아요." : "입력한 설정으로 캐릭터 이미지를 만들어요.", lines: balance < HEART_COST.character ? [] : [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${balance - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" })) return;
+    if (accountEnabled() && !await confirm({ title: "새로운 캐릭터를 만날까요?", description: "나만의 캐릭터를 만들어보세요!", lines: balance < HEART_COST.character ? [] : [{ label: "캐릭터 생성", value: `${HEART_COST.character}하트` }, { label: "생성 후 보유 하트", value: `${balance - HEART_COST.character}하트` }], confirmLabel: "캐릭터 생성" })) return;
     if (controller.current) return;
     const profile = parsedProfile.data;
-    const user: Message = { role: "user", content: profile.concept },
-      history = [...messages, user];
+    const user: Message = { role: "user", content: profile.concept };
     const id = ++generation.current;
     pending.current = { messages };
     const abort = new AbortController();
     controller.current = abort;
-    setMessages(history);
+    setMessages([user]);
     setError("");
     sessions.current = createStudioSessions();
     setArt(undefined);
     visuals.clear();
     setBusy(true);
-    setStatus(
-      previous.current
-        ? "이전 캐릭터를 참고해 요청한 부분을 수정하는 중…"
-        : "취향을 정리하고 2D 캐릭터를 그리는 중…",
-    );
+    setStatus("입력한 설정으로 캐릭터를 그리는 중…");
     const timeout = setTimeout(() => abort.abort(), 280000);
     try {
       const body = new FormData();
-      body.set("messages", JSON.stringify(history.slice(-13)));
+      body.set("messages", JSON.stringify([user]));
       body.set("profile", JSON.stringify(profile));
-      if (previous.current)
-        body.set("image", previous.current, "previous-character.jpg");
-      if (previous.current && previousStyle.current)
-        body.set("previousStyle", previousStyle.current);
+      if (selectedRenderStyle) body.set("renderStyle", selectedRenderStyle);
       const attempt = await beginImageAttempt(owner.current, "character", body);
-      const response = await usageImageFetch(previous.current ? "캐릭터 수정" : "캐릭터 생성", "/api/characters", {
+      const response = await usageImageFetch("캐릭터 생성", "/api/characters", {
         method: "POST",
         body,
         headers: attempt.headers,
@@ -507,13 +504,13 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       try { prompt = decodeURIComponent(prompt); } catch { /* Older stored responses may contain a raw prompt. */ }
       const parsedStyle = characterStyleProfile.safeParse(response.headers.get("X-Character-Style"));
       const style = parsedStyle.success ? parsedStyle.data : "neutral";
+      const renderStyle = characterRenderStyle.safeParse(response.headers.get(characterStyleHeader)).data;
       const url = URL.createObjectURL(blob);
       const decoded = new Image(); decoded.src = url;
       try { await decoded.decode(); } catch { URL.revokeObjectURL(url); throw new Error("생성된 이미지를 열지 못했습니다. 다시 시도해주세요."); }
       if (id !== generation.current) { URL.revokeObjectURL(url); return; }
       attempt.complete();
       previous.current = blob;
-      previousStyle.current = style;
       pending.current = null;
       visuals.registerOriginal(blob, url, title, { jobId: response.headers.get("X-Job-Id") ?? undefined });
       setArt({
@@ -523,12 +520,13 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
         summary,
         prompt,
         style,
+        renderStyle,
         profile,
         width: decoded.naturalWidth,
         height: decoded.naturalHeight,
-        description: [history.find(m => m.role === "user")?.content.slice(0, 2000), history.filter(m => m.role === "user").slice(1).map(m => m.content).join("\n").slice(-1400), summary.slice(0, 1000), prompt.slice(0, 1500)].filter(Boolean).join("\n").slice(0, 6000),
+        description: [user.content, summary.slice(0, 1000), prompt.slice(0, 1500)].filter(Boolean).join("\n"),
       });
-      setMessages([...history, { role: "assistant", content: summary }]);
+      setMessages([user, { role: "assistant", content: summary }]);
       setCreatedPreview({url,title});
     } catch (e) {
       if (id !== generation.current) return;
@@ -542,7 +540,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
             : "이미지를 생성하지 못했습니다.",
       );
       setStatus("요청을 완료하지 못했습니다.");
-      setMessages(history.slice(0, -1));
+      setMessages(messages);
     } finally {
       clearTimeout(timeout);
       if (id === generation.current) {
@@ -574,8 +572,13 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
               <option value="" disabled>선택해주세요</option>
               {CHARACTER_GENDERS.map(gender => <option key={gender} value={gender}>{gender}</option>)}
             </select></label>
-            <label>외모<textarea aria-label="외모" form="character-generation" name="appearance" maxLength={1000} value={draft.appearance} onChange={event => setDraft({ ...draft, appearance: event.target.value })} placeholder="머리색, 눈동자, 얼굴, 체형, 카메라 구도, 그림체 등 원하는 외모를 적어주세요 (선택)" /></label>
+            <label>화풍<select form="character-generation" name="renderStyle" value={selectedRenderStyle} onChange={event => setSelectedRenderStyle(event.target.value)}>
+              <option value="">무작위</option>
+              {newCharacterRenderStyles.map(style => <option key={style} value={style}>{renderStyleLabels[style]}</option>)}
+            </select></label>
+            <label>외모<textarea aria-label="외모" form="character-generation" name="appearance" maxLength={1000} value={draft.appearance} onChange={event => setDraft({ ...draft, appearance: event.target.value })} placeholder="머리색, 눈동자, 얼굴, 체형 등 원하는 외모를 적어주세요 (선택)" /></label>
             <label>성격<textarea aria-label="성격" form="character-generation" name="personality" required maxLength={1000} value={draft.personality} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, personality: event.target.value }); }} placeholder="캐릭터의 성격을 적어주세요" /></label>
+            <label>재미요소<textarea aria-label="재미요소" form="character-generation" name="funElement" maxLength={1000} value={draft.funElement} onChange={event => setDraft({ ...draft, funElement: event.target.value })} placeholder="예: 서로 지기 싫어 티격태격하지만 결정적일 때는 편들어 줌 (선택)" /></label>
             <label>컨셉<textarea aria-label="컨셉" form="character-generation" name="concept" required maxLength={1000} value={draft.concept} onChange={event => { event.target.setCustomValidity(""); setDraft({ ...draft, concept: event.target.value }); }} placeholder="관계, 세계관, 배경 등 원하는 설정을 적어주세요" /></label>
             {art && <small>수정한 특성은 이미지를 다시 생성하면 대화·이야기에 적용됩니다.</small>}
           </fieldset>
@@ -605,7 +608,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
               }}
             >
               <button type="submit" disabled={busy} aria-busy={busy} aria-label="캐릭터 생성">
-                {busy ? <><LoaderCircle className="spin" size={18} /> 그림을 그리고 있어요</> : <><Sparkles size={18} /> 캐릭터 생성 {accountEnabled() && <span className="button-heart-cost">· 50 ♥</span>}</>}
+                {busy ? <><LoaderCircle className="spin" size={18} /> 그림을 그리고 있어요</> : <><Sparkles size={18} /> 캐릭터 생성 {accountEnabled() && <span className="button-heart-cost"><HeartText text={`· ${HEART_COST.character}하트`}/></span>}</>}
               </button>
               {busy && <button type="button" className="character-generation-cancel" onClick={cancel} aria-label="이미지 생성 취소"><X size={17} /> 생성 취소</button>}
             </form>

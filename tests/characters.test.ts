@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import sharp from "sharp";
 import { POST } from "../app/api/characters/route.ts";
 import { imageRetryToken } from "../lib/server/image-retry-token.ts";
+import { characterRenderStyle, characterStyleHeader, legacyCharacterRenderStyles, newCharacterRenderStyles, renderStyleDirection } from "../lib/characters/render-style.ts";
 import {imageFramingSchema,framingDirection,defaultImageFraming} from "../lib/characters/framing.ts";
 import { visualInstructions, visualRequestSchema, compositionSchema } from "../lib/characters/visual.ts";
 import {
@@ -52,7 +53,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   );
   const form = () => {
     const f = new FormData();
-    f.set("profile", JSON.stringify({ name: "서하", age: 30, gender: profile === "female" ? "여성" : profile === "male" ? "남성" : undefined, personality: "다정한 성격", concept: "도시의 비밀", genre: "막장드라마" }));
+    f.set("profile", JSON.stringify({ name: "서하", age: 30, gender: profile === "female" ? "여성" : profile === "male" ? "남성" : undefined, personality: "다정한 성격", funElement: "서로 놀리며 티키타카", concept: "도시의 비밀", genre: "막장드라마" }));
     f.set(
       "messages",
       JSON.stringify([
@@ -85,6 +86,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   let includePrior = false;
   let sceneKind: "outfit" | "illustration" | undefined;
   let characterPresent = true;
+  let sceneStyle: ReturnType<typeof characterRenderStyle.parse> | undefined;
   t.mock.method(
     globalThis,
     "fetch",
@@ -106,6 +108,12 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         assert.equal(authorization, "Bearer text-gateway-key");
         const body = JSON.parse(String(options.body));
         assert.deepEqual(body.reasoning,{effort:"low"});
+        assert.equal(body.instructions.includes("waist-up crop in prompt"), !sceneKind);
+        if (!sceneKind) {
+          assert.match(body.instructions, /has not specified footwear/);
+          assert.match(body.instructions, /specifies footwear, choose a crop that shows it/);
+          assert.match(body.instructions, /explicitly requested crop or camera framing takes precedence/);
+        }
         if (sceneKind) {
           const scene = JSON.parse(body.input[0].content[0].text).scene;
           assert.equal(scene.kind, sceneKind);
@@ -131,8 +139,10 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         const images = body.input[0].content.filter(
           (item: { type: string }) => item.type === "input_image",
         );
-        assert.equal(images.length, includePrior && !sceneKind ? 1 : 0);
+        assert.equal(images.length, 0);
+        assert.doesNotMatch(body.input[0].content[0].text, /이전 외모와 의상/);
         assert.match(body.instructions, /explicit appearance, style and scene details/);
+        assert.match(body.instructions, /Leave written dialogue, thoughts, bubbles, captions and overlays out/);
         return Response.json({
           status: "completed",
           output: [
@@ -143,7 +153,9 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
                   text: JSON.stringify({
                     title: "캐릭터",
                     summary: "설명에 맞춰 새로 그리는 구성입니다.",
-                    prompt: profile === "female" ? "Adult woman with long hair in an elegant dress." : "A man wearing a blue coat, cheerful expression.",
+                    prompt: body.input[0].content[0].text.includes("현재 모습은 일상복")
+                      ? "A man wearing a blue coat and jeans, glancing away bashfully."
+                      : profile === "female" ? "Adult woman with long hair in an elegant dress." : "A man wearing a blue coat, cheerful expression.",
                     styleProfile: profile,
                     ...(sceneKind ? composition : {}),
                     ...(sceneKind === "illustration" ? { characterPresent, sceneLocation: "Inside a bookshop, bookshelves beside a reading table.", locationSource: "narrative" } : {}),
@@ -155,7 +167,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
           ],
         });
       }
-      assert.equal(url, `https://image-gateway.example/v1/images/${includePrior && (!sceneKind || characterPresent) ? "edits" : "generations"}`);
+      assert.equal(url, `https://image-gateway.example/v1/images/${sceneKind && includePrior && characterPresent ? "edits" : "generations"}`);
       assert.equal(authorization, "Bearer image-gateway-key");
       if (!(options.body instanceof FormData)) {
         const body = JSON.parse(String(options.body));
@@ -164,10 +176,14 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
         }
         assert.equal(body.model, "gpt-image-2.5-sunburst");
         assert.equal(body.size, "720x1280");
+        assert.match(body.prompt, /Keep the canvas vertical at 9:16/);
+        assert.match(body.prompt, /Render a text-free illustration/);
         assert.match(body.prompt, /Adult woman with long hair|A man wearing a blue coat/);
-        assert.match(body.prompt, /Default rendering style: polished hand-drawn 2D anime illustration/);
+        if (sceneStyle) assert.ok(body.prompt.includes(renderStyleDirection(sceneStyle)));
+        else assert.match(body.prompt, /Fixed rendering style:/);
         assert.doesNotMatch(body.prompt, /Rendering profile:/);
         assert.doesNotMatch(body.prompt, /B-cup|anime game key visual/);
+        assert.doesNotMatch(body.prompt, /이전 외모와 의상/);
         assert.ok(!body.prompt.includes("LAST input image is STYLE ONLY"));
         return Response.json({ data: [{ b64_json: source.toString("base64") }] });
       }
@@ -178,7 +194,9 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
       assert.equal(body.get("output_format"), "jpeg");
       assert.equal(body.has("steps"), false);
       const prompt = String(body.get("prompt"));
-      assert.match(prompt, /Default rendering style: polished hand-drawn 2D anime illustration/);
+      assert.match(prompt, /Keep the canvas vertical at 9:16/);
+      assert.match(prompt, /Omit all lettering, dialogue and thought bubbles/);
+      assert.ok(prompt.includes(renderStyleDirection(sceneStyle!)));
       assert.match(prompt, /identity reference/);
       if (sceneKind === "outfit") {
         assert.match(prompt, /Outfit: 스포츠브라와 돌핀팬츠/);
@@ -215,6 +233,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   });
   assert.equal((await POST(oversized)).status, 413);
   const invalid = form();
+  invalid.set("scene", JSON.stringify({ kind: "outfit", context: "파란 코트" }));
   invalid.set("image", new Blob(["not-jpeg"], { type: "image/jpeg" }), "x.jpg");
   assert.equal((await POST(req(invalid))).status, 400);
   assert.equal(calls, 0);
@@ -225,6 +244,10 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   const invalidProfile = form();
   invalidProfile.set("profile", JSON.stringify({ name: "서하", age: -1 }));
   assert.equal((await POST(req(invalidProfile))).status, 400);
+  assert.equal(calls, 0);
+  const invalidStyle = form();
+  invalidStyle.set("renderStyle", "watercolor");
+  assert.equal((await POST(req(invalidStyle))).status, 400);
   assert.equal(calls, 0);
   const first = await POST(req(form()));
   assert.equal(first.status, 200);
@@ -241,7 +264,9 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   sceneKind = "outfit";
   revision.set("scene", JSON.stringify({ kind: "outfit", context: "서하는 파란 코트를 입었다.", previousCompositions: [composition], selection: { confirmed:true, location:"체육관",outfit:"스포츠브라와 돌핀팬츠",characters:["서하"],target:"서하",profileName:"서하",userNames:["햄군"] } }));
   includePrior = true;
-  revision.set("previousStyle", "female");
+  sceneStyle = characterRenderStyle.parse(first.headers.get(characterStyleHeader));
+  assert.ok(newCharacterRenderStyles.some(style => style === sceneStyle));
+  revision.set("renderStyle", sceneStyle);
   revision.set(
     "image",
     new Blob([result], { type: "image/jpeg" }),
@@ -249,11 +274,13 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   );
   const revised = await POST(req(revision));
   assert.equal(revised.status, 200);
+  assert.equal(revised.headers.get(characterStyleHeader), sceneStyle);
   assert.equal(revised.headers.get("Content-Type"), "image/jpeg");
   assert.equal((await sharp(Buffer.from(await revised.arrayBuffer())).metadata()).format, "jpeg");
   assert.ok(revised.headers.get("X-Character-Prompt")!.length <= 8000);
   assert.deepEqual(JSON.parse(decodeURIComponent(revised.headers.get("X-Character-Composition")!)), composition);
   sceneKind = undefined;
+  sceneStyle = undefined;
   blocks = true;
   const before = calls;
   assert.equal((await POST(req(form()))).status, 422);
@@ -270,7 +297,8 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   sceneKind = "illustration";
   maleRevision.set("scene", JSON.stringify({ kind: "illustration", context: "서점의 창가에서 다시 만났다." }));
   maleRevision.set("image", new Blob([result], { type: "image/jpeg" }), "previous.jpg");
-  maleRevision.set("previousStyle", "male");
+  sceneStyle = characterRenderStyle.parse(male.headers.get(characterStyleHeader));
+  maleRevision.set("renderStyle", sceneStyle);
   includePrior = true;
   assert.equal((await POST(req(maleRevision))).status, 200);
   characterPresent = false;
@@ -286,8 +314,25 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
   assert.equal((await POST(req(counterpartScene))).status, 200);
   characterPresent = true;
   sceneKind = undefined;
+  sceneStyle = undefined;
   includePrior = false;
   profile = "neutral";
+  now += 61000;
+  const legacy = form();
+  legacy.set("renderStyle", "chibi-game");
+  legacy.set("image", new Blob([result], { type: "image/jpeg" }), "previous.jpg");
+  legacy.set("messages", JSON.stringify([
+    { role: "user", content: "이전 외모와 의상" },
+    { role: "assistant", content: "이전 외모와 의상" },
+    { role: "user", content: "현재 모습은 일상복. 속마음이 자막처럼 보인다. '사실 오래전부터 좋아했어'." },
+  ]));
+  const regenerated = await POST(req(legacy));
+  assert.equal(regenerated.status, 200);
+  assert.equal(regenerated.headers.get(characterStyleHeader), "chibi-game");
+  const regeneratedPrompt = decodeURIComponent(regenerated.headers.get("X-Character-Prompt")!);
+  assert.ok(regeneratedPrompt.includes(renderStyleDirection("chibi-game")));
+  assert.match(regeneratedPrompt, /blue coat and jeans, glancing away bashfully/);
+  assert.doesNotMatch(regeneratedPrompt, /속마음이 자막|사실 오래전부터 좋아했어/);
   now += 61000;
   for (const [width, height] of [[1024, 1536], [1200, 600]]) {
     source = await sharp({ create: { width, height, channels: 3, background: "#d8bd9f" } }).jpeg().toBuffer();
@@ -295,7 +340,7 @@ test("GPT Image uses separate text and image gateway keys, attaches identity and
     assert.equal(response.headers.get("X-Character-Style"), "neutral");
     const output = await sharp(Buffer.from(await response.arrayBuffer())).metadata();
     assert.equal(output.width, 720);
-    assert.equal(output.height, width === 1024 ? 1080 : 360);
+    assert.equal(output.height, 1280);
     assert.equal(response.headers.get("X-Character-Width"), String(output.width));
     assert.equal(response.headers.get("X-Character-Height"), String(output.height));
   }
@@ -405,6 +450,21 @@ test("the shared default style preserves the requested character design without 
   assert.match(prompt, /If the brief explicitly requests another art style, follow that request/);
   assert.doesNotMatch(prompt, /B-cup/);
   assert.equal(buildCharacterPrompt({ ...brief, styleProfile: "male" }), prompt);
+  const fixed = newCharacterRenderStyles.map(style => buildCharacterPrompt(brief, undefined, false, undefined, undefined, style));
+  assert.equal(new Set(fixed).size, 4);
+  assert.match(fixed[0], /luminous rim highlights/);
+  assert.match(fixed[1], /existing accessories intricate finish/);
+  assert.match(fixed[2], /one or two clean graphic shadow shapes/);
+  assert.match(fixed[3], /large head, compact rounded limbs/);
+  for (const style of legacyCharacterRenderStyles) {
+    assert.equal(characterRenderStyle.parse(style), style);
+    assert.ok(!fixed.includes(buildCharacterPrompt(brief, undefined, false, undefined, undefined, style)));
+  }
+  fixed.forEach(value => {
+    assert.match(value, /Fixed rendering style:/);
+    assert.doesNotMatch(value, /Default rendering style:/);
+    assert.ok(value.includes(brief.prompt));
+  });
   assert.throws(() => characterBrief.parse({ ...brief, prompt: "x".repeat(801) }));
 });
 
@@ -415,16 +475,30 @@ test("image retries reuse the approved brief, replace it after an input change a
  t.after(()=>keys.forEach((key,index)=>{if(previous[index]===undefined)delete process.env[key];else process.env[key]=previous[index];}));
  let now=Date.parse("2031-06-01T00:00:00Z"); t.mock.method(Date,"now",()=>now);
  let moderation=0,description=0,render=0;
- const prompts: string[] = [];
+ const sources: { traceId: string; reusedBrief: boolean; input: { messages: { content: string }[] } }[] = [];
+ const prompts: { traceId: string; prompt: string; descriptionPrompt: string }[] = [];
  t.mock.method(console, "info", (event: string, data: string) => {
-  if (event === "image-render-prompt") prompts.push(JSON.parse(data).prompt);
+  if (event === "image-description-source") sources.push(JSON.parse(data));
+  if (event === "image-render-prompt") prompts.push(JSON.parse(data));
  });
  t.mock.method(globalThis,"fetch",async(input:unknown, init: RequestInit)=>{
   const url=String(input);
   if(url.endsWith("/moderations")){moderation++;return Response.json({results:[{categories:{}}]});}
-  if(url.endsWith("/responses")){description++;return Response.json({status:"completed",output:[{content:[{type:"output_text",text:JSON.stringify({title:"캐릭터",summary:"장면",prompt:"A person sitting by a window.",styleProfile:"neutral"})}]}]});}
+  if(url.endsWith("/responses")){
+   description++;
+   const body=JSON.parse(String(init.body));
+   assert.deepEqual(sources.at(-1)?.input, JSON.parse(body.input[0].content[0].text));
+   assert.match(body.instructions, /Preserve specified visible clothing items, colors, patterns/);
+   return Response.json({status:"completed",output:[{content:[{type:"output_text",text:JSON.stringify({title:"캐릭터",summary:"장면",prompt:"A person sitting by a window.",styleProfile:"neutral"})}]}]});
+  }
   render++;
-  assert.equal(prompts[render - 1], JSON.parse(String(init.body)).prompt);
+  const source = sources.at(-1)!;
+  const logged = prompts.at(-1)!;
+  assert.equal(logged.traceId, source.traceId);
+  assert.equal(logged.prompt, JSON.parse(String(init.body)).prompt);
+  assert.equal(logged.descriptionPrompt, "A person sitting by a window.");
+  assert.doesNotMatch(logged.prompt, /창가에 앉아 있어요|딸기 무늬가 들어간 노란 코트를 입었어요/);
+  if (render === 3) assert.match(logged.prompt, /Current user appearance data: "딸기 무늬가 들어간 노란 코트"/);
   return render < 3 ? Response.json({error:{code:"overloaded"}},{status:503}) : Response.json({error:{code:"moderation_blocked"}},{status:400});
  });
  const attempt=crypto.randomUUID();
@@ -432,6 +506,7 @@ test("image retries reuse the approved brief, replace it after an input change a
  const send=async(content:string)=>{
   now+=61000;
   const form=new FormData(); form.set("messages",JSON.stringify([{role:"user",content}]));
+  if (content.includes("코트")) form.set("profile", JSON.stringify({name:"지수", age:25, personality:"다정함", concept:"친구", appearance:"딸기 무늬가 들어간 노란 코트"}));
   const response=await POST(new Request("http://localhost/api/characters",{method:"POST",headers:{"X-Image-Attempt":attempt,...(token?{"X-Image-Retry":token}:{})},body:form}));
   token=response.headers.get("X-Image-Retry");
   assert.ok(token);
@@ -440,10 +515,12 @@ test("image retries reuse the approved brief, replace it after an input change a
  assert.equal((await send("창가에 앉아 있어요")).status,502);
  assert.equal((await send("창가에 앉아 있어요")).status,502);
  assert.deepEqual([moderation,description,render],[1,1,2]);
- assert.equal((await send("책상 앞에 앉아 있어요")).status,422);
- assert.equal((await send("책상 앞에 앉아 있어요")).status,422);
+ assert.equal(prompts[0].prompt, prompts[1].prompt);
+ assert.equal((await send("딸기 무늬가 들어간 노란 코트를 입었어요")).status,422);
+ assert.equal((await send("딸기 무늬가 들어간 노란 코트를 입었어요")).status,422);
  assert.deepEqual([moderation,description,render],[2,2,3]);
  assert.equal(prompts.length, 3);
+ assert.deepEqual(sources.map(source => source.reusedBrief), [false, true, false]);
 });
 
 test("image retry tokens reject tampering, expiry and a different account or request", t => {
@@ -452,9 +529,10 @@ test("image retry tokens reject tampering, expiry and a different account or req
  t.after(()=>{if(original===undefined)delete process.env.SUPABASE_SERVICE_ROLE_KEY;else process.env.SUPABASE_SERVICE_ROLE_KEY=original;});
  let now=Date.now();t.mock.method(Date,"now",()=>now);
  const retry=imageRetryToken("owner","attempt","scope","fingerprint")!;
- const token=retry.issue({approved:true,brief:{prompt:"Private description"}})!;
+ const token=retry.issue({approved:true,brief:{prompt:"Private description"},renderStyle:"chibi-game"})!;
  assert.doesNotMatch(Buffer.from(token,"base64url").toString(),/Private description/);
  assert.deepEqual(retry.read(token)?.brief,{prompt:"Private description"});
+ assert.equal(retry.read(token)?.renderStyle,"chibi-game");
  assert.equal(retry.read(`${token[0]==="A"?"B":"A"}${token.slice(1)}`),undefined);
  for(const [owner,attempt,scope,fingerprint] of [["other","attempt","scope","fingerprint"],["owner","next","scope","fingerprint"],["owner","attempt","other","fingerprint"],["owner","attempt","scope","changed"]]) {
   assert.equal(imageRetryToken(owner,attempt,scope,fingerprint)?.read(token),undefined);

@@ -14,12 +14,13 @@ import { illustrationContext, changedCharacterLocation, mentionsClothing, plainD
 import type { CharacterImageJob, VisualKind, IllustrationScene } from "@/lib/characters/gallery";
 import { storyStateSchema, type StoryState } from "@/lib/novel/state";
 import { speechStyleSchema, type SpeechStyle } from "@/lib/chat/speech";
-import { STORY_CHAPTER_LIMIT, storyComplete } from "@/lib/novel/series";
+import { nextSeriesStart, STORY_CHAPTER_LIMIT, storyComplete } from "@/lib/novel/series";
 import { chatMemorySchema, type ChatMemory } from "@/lib/chat/memory";
 import { startUsageTask, addUsageRecord, readUsageHeaders, finishUsageTask } from "@/lib/usage-store";
 
 import { useActionConfirm, useGenerationPolicyNotice } from "./ActionConfirm";
 import GenerationFeedback from "./GenerationFeedback";
+import HeartText from "./HeartText";
 import { blocksTextGeneration, GENERATION_POLICY_MESSAGE } from "@/lib/generation-policy";
 import { accountEnabled } from "@/lib/account/client";
 import { useAccount } from "./AccountProvider";
@@ -242,7 +243,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
           const state = storyStateSchema.parse(event.state);
           if (event.expectedChapter !== (storyState?.chapter ?? 0) || state.chapter !== (storyState?.chapter ?? 0) + 1 || state.previousProse !== event.text)
             throw new Error("이야기 회차가 일치하지 않습니다. 다시 시도해주세요.");
-          if ((state.seriesStartChapter ?? 0) !== (additionalConcept ? storyState?.chapter ?? 0 : storyState?.seriesStartChapter ?? 0))
+          if ((state.seriesStartChapter ?? 0) !== nextSeriesStart(storyState, additionalConcept))
             throw new Error("이야기 계획이 일치하지 않습니다. 다시 시도해주세요.");
           const readerNickname = typeof event.readerNickname === "string" && event.readerNickname.length <= 80 ? event.readerNickname : event.readerNickname === null ? null : undefined;
           nextChapter = { text: event.text, state, readerNickname };
@@ -411,7 +412,7 @@ export default function LiveChat({ character, characterDocumentId, rewindToken, 
       {onGenerateVisual && character && (character.mode === "chat" || (!storyPreview && committed.current.some(message => message.role === "assistant" && message.content.trim()))) && <button className="character-visual-button" type="button" aria-busy={!!imageJob} aria-label={character.mode === "story" ? "삽화 생성" : "이미지 생성"} disabled={busy || !!imageJob} onClick={() => {
         if (busy || rewinding || imageJob) return;
         void onGenerateVisual(character.mode === "story" ? "illustration" : "outfit", imageContext, character.mode === "story" && saved.documentId ? { novelId: saved.documentId, chapter: firstEpisode + pageIndex + 1 } : undefined, isStory ? firstEpisode + pageIndex + 1 : undefined);
-      }}><span className="visual-button-label">{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span> · {character.mode === "story" ? 50 : 30} ♥</span>}</span></button>}
+      }}><span className="visual-button-label">{imageJob && <LoaderCircle className="spin" size={16} aria-hidden="true"/>}{imageJob ? "그림을 그리고 있어요" : character.mode === "story" ? "삽화 생성" : "이미지 생성"}{accountEnabled() && !imageJob && <span><HeartText text={` · ${character.mode === "story" ? 50 : 30}하트`}/></span>}</span></button>}
       {character?.mode === "story" ? <div className="story-composer">
       <label className="story-concept-input"><span>다음 이야기 컨셉</span><input aria-label="다음 이야기 컨셉" placeholder="필수 사건은 *별표*로 감싸세요 (선택)" maxLength={1000} value={input} disabled={busy || !!imageJob} onChange={event => setInput(event.target.value)} /><small>{input.trim() ? `추가 컨셉을 반영해 이야기 #${(saved.storyState?.chapter ?? 0) + 1}부터 ${STORY_CHAPTER_LIMIT}편으로 다시 구성합니다. 번호는 이어집니다.` : ""}</small></label>
       <button className="story-next-button" type="button" disabled={busy || rewinding || !!imageJob || (storyFinished && !input.trim())} aria-busy={busy} onClick={() => {

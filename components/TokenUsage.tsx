@@ -1,7 +1,7 @@
 "use client";
 import { saveFile } from "@/lib/platform/native";
 import { useEffect, useRef, useSyncExternalStore } from "react";
-import { Activity, Download, X } from "lucide-react";
+import { Download, X } from "lucide-react";
 import { clearUsage, loadUsage, subscribeUsage, sumUsage, usageServerSnapshot, usageSnapshot } from "@/lib/usage-store";
 
 const names: Record<string, string> = { "chat.speech": "말투 선택", "chat.reply": "대화 생성", "chat.clothing": "의상 판별",
@@ -33,9 +33,7 @@ export default function TokenUsage() {
     const csv = "\uFEFF" + rows.map(row => row.map(value => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\r\n");
     void saveFile(new Blob([csv], { type: "text/csv;charset=utf-8" }), `maite-tokens-${new Date().toISOString().replaceAll(":", "-")}.csv`).catch(() => window.alert("사용량 파일을 저장하지 못했습니다."));
   }
-  return <>
-    <button type="button" className="token-usage-trigger" aria-label="토큰 사용량" title="토큰 사용량" onClick={() => dialog.current?.showModal()}><Activity size={16} /><span>토큰 사용량</span><span>{number(total)}</span></button>
-    <dialog ref={dialog} className="token-usage-dialog" aria-labelledby="token-usage-title" onClick={event => { if (event.target === dialog.current) dialog.current.close(); }}>
+  return <dialog ref={dialog} className="token-usage-dialog" aria-labelledby="token-usage-title" onClick={event => { if (event.target === dialog.current) dialog.current.close(); }}>
       <div className="token-usage-panel">
         <header><h2 id="token-usage-title">토큰 사용량</h2><button type="button" aria-label="토큰 사용량 닫기" onClick={() => dialog.current?.close()}><X size={20} /></button></header>
         <p>이 탭에서 실행한 대화·이야기·이미지 작업의 기록입니다. 각 모델 호출 종료 후 실제 사용량이 갱신됩니다.</p>
@@ -50,6 +48,5 @@ export default function TokenUsage() {
           {!task.records.length ? <p>{task.status === "running" ? "호출 사용량을 기다리고 있습니다." : "호출 사용량을 받지 못했습니다. 호출 전 거절 또는 중단·통신 오류 등이 원인일 수 있습니다."}</p> : <div className="token-usage-table"><table><thead><tr><th>단계 / 모델</th><th>상태</th><th>입력</th><th>출력</th><th>합계</th><th>캐시 입력</th><th>추론</th><th>소요 시간</th></tr></thead><tbody>{task.records.map(record => <tr key={record.id}><td>{names[record.feature] ?? record.feature}<small>{record.model}</small></td><td>{statuses[record.status]}</td><td>{number(record.inputTokens)}</td><td>{number(record.outputTokens)}</td><td>{number(record.totalTokens)}</td><td>{number(record.cachedTokens)}</td><td>{number(record.reasoningTokens)}</td><td>{record.status === "running" ? "진행 중" : seconds(record.durationMs)}</td></tr>)}</tbody></table></div>}
         </details>)}
       </div>
-    </dialog>
-  </>;
+  </dialog>;
 }
