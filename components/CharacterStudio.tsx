@@ -124,7 +124,9 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
     const element = app.current;
     if (!element) return;
     const viewport = window.visualViewport;
+    const native = isNative();
     let height = window.innerHeight, width = window.innerWidth, frame = 0;
+    let composer: HTMLElement | null = null, composerShift = 0;
     const resize = () => {
       const visualHeight = viewport?.height ?? window.innerHeight;
       const visualBottom = visualHeight + (viewport?.offsetTop ?? 0);
@@ -132,13 +134,24 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       const editing = focused instanceof HTMLElement && element.contains(focused) &&
         focused.matches(".chat-composer textarea, .story-concept-input input");
       if (width !== window.innerWidth) { width = window.innerWidth; height = window.innerHeight; }
-      const canShowKeyboard = isNative() || navigator.maxTouchPoints > 0 || window.innerHeight - visualHeight > 100;
+      const keyboardThreshold = native ? 1 : 80;
+      const canShowKeyboard = native || navigator.maxTouchPoints > 0 || window.innerHeight - visualHeight > keyboardThreshold;
       const keyboard = canShowKeyboard && (viewport?.scale ?? 1) === 1 &&
-        (editing || element.dataset.keyboardOpen === "true") && height - visualHeight > 100;
+        (editing || element.dataset.keyboardOpen === "true") && height - visualHeight > keyboardThreshold;
       if (!keyboard) height = window.innerHeight;
+      const nextComposer = element.querySelector<HTMLElement>(".live-chat > :is(.chat-composer, .story-composer)");
+      if (nextComposer !== composer || !keyboard) {
+        composer = nextComposer;
+        composerShift = 0;
+        element.style.removeProperty("--reader-composer-shift");
+      }
       element.dataset.keyboardOpen = String(keyboard);
       element.style.setProperty("--character-viewport-height", `${height}px`);
-      element.style.setProperty("--reader-keyboard-inset", `${keyboard ? Math.max(0, height - visualBottom) : 0}px`);
+      // Footer padding and controls below the input vary by screen and composer.
+      if (keyboard && composer) {
+        composerShift += visualBottom - composer.getBoundingClientRect().bottom;
+        element.style.setProperty("--reader-composer-shift", `${composerShift}px`);
+      }
     };
     const scheduleResize = () => {
       cancelAnimationFrame(frame);
@@ -157,7 +170,7 @@ export default function CharacterStudio({ children }: { children: ReactNode }) {
       element.removeEventListener("focusin", scheduleResize);
       delete element.dataset.keyboardOpen;
       element.style.removeProperty("--character-viewport-height");
-      element.style.removeProperty("--reader-keyboard-inset");
+      element.style.removeProperty("--reader-composer-shift");
     };
   }, [menu]);
   const result = useRef<HTMLElement>(null);

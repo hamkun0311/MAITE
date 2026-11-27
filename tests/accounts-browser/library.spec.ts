@@ -135,6 +135,41 @@ test("activity restoration waits for cloud data, preserves navigation and offers
  await expect(page).toHaveURL(/\/ideal\/story$/);
 });
 
+test("reader composers meet the keyboard edge without resizing the reader", async ({ page }) => {
+ await page.setViewportSize({ width: 390, height: 820 });
+ await signIn(page);
+ await accountRoutes(page);
+ await page.route(`**/api/account?document=${characterId}*`, route => route.fulfill({
+  json: { id: characterId, payload: snapshot, media: { original: "https://example.test/image.jpg", gallery: {} } },
+ }));
+ for (const mode of ["chat", "story"] as const) {
+  await page.goto(`/ideal/${mode}`);
+  const input = page.getByRole("textbox", { name: mode === "chat" ? "AI에게 보낼 메시지" : "다음 이야기 컨셉" });
+  await input.focus();
+  const reader = page.locator(".is-character-reading");
+  const composer = reader.locator(mode === "chat" ? ".chat-composer" : ".story-composer");
+  const originalHeight = (await reader.boundingBox())!.height;
+  await page.evaluate(() => {
+   const viewport = window.visualViewport!;
+   Object.defineProperties(viewport, { height: { configurable: true, value: 460 }, offsetTop: { configurable: true, value: 24 } });
+   viewport.dispatchEvent(new Event("resize"));
+  });
+  await expect(reader).toHaveAttribute("data-keyboard-open", "true");
+  await expect.poll(async () => {
+   const bounds = (await composer.boundingBox())!;
+   return Math.abs(bounds.y + bounds.height - 484);
+  }).toBeLessThan(1);
+  expect((await reader.boundingBox())!.height).toBe(originalHeight);
+  await page.evaluate(() => {
+   const viewport = window.visualViewport!;
+   Reflect.deleteProperty(viewport, "height");
+   Reflect.deleteProperty(viewport, "offsetTop");
+   viewport.dispatchEvent(new Event("resize"));
+  });
+  await expect(reader).toHaveAttribute("data-keyboard-open", "false");
+ }
+});
+
 test("screen loading reuses the writing artwork, clears on errors and excludes background notification sync",async({page})=>{
  await signIn(page);await accountRoutes(page);let release!:()=>void;
  const held=new Promise<void>(resolve=>{release=resolve;});
@@ -142,6 +177,8 @@ test("screen loading reuses the writing artwork, clears on errors and excludes b
  await page.goto(`/ideal/characters/${characterId}`);
  const popup=page.getByRole("dialog",{name:"불러오는 중",exact:true});
  await expect(popup).toBeVisible();await expect(popup).toHaveText("불러오는 중…");
+ await expect(popup.getByRole("status")).toBeInViewport();
+ await expect(popup.locator("img")).toBeInViewport();
  await expect(page.getByText("작품을 불러오는 중…",{exact:true})).toHaveCount(0);
  await expect.poll(()=>popup.locator("img").evaluate((image:HTMLImageElement)=>image.complete&&image.naturalWidth>0)).toBe(true);
  await page.screenshot({path:".verification/screen-loading.png",fullPage:true});

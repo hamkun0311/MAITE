@@ -380,8 +380,6 @@ body:has(.character-app), body:has(.native-standalone), body:has(.login-screen) 
 .image-framing-options summary { position:absolute; top:6px; left:10px; cursor:pointer; padding:6px 0; }
 .image-framing-options[open] .image-framing-fields { position:absolute; bottom:8px; left:0; right:0; max-height:55dvh; overflow-y:auto; background:#fff; box-shadow:0 8px 28px #65547526; }
 .action-confirm { max-height:calc(100dvh - 32px); overflow-y:auto; }
-.screen-loading p { min-height:0; margin:0; color:#655475; font-size:15px; font-weight:600; }
-.screen-loading:focus { outline:none; }
 .character-app .story-rewind-button {
   display: inline-flex;
   align-items: center;

@@ -13,9 +13,11 @@ export function useScreenLoading(active:boolean){
 function LoadingPopup(){
   const dialog=useRef<HTMLDialogElement>(null);
   useEffect(()=>{const element=dialog.current;element?.showModal();return()=>element?.close();},[]);
-  return <dialog ref={dialog} className="generation-loading screen-loading" aria-label="불러오는 중" tabIndex={-1} onCancel={event=>event.preventDefault()}>
-    <div className="generation-writing" aria-hidden="true"><img src={typeof writingArtwork==="string"?writingArtwork:writingArtwork.src} alt=""/><span className="generation-writing-dots"><i/><i/><i/></span></div>
-    <p role="status" aria-live="polite">불러오는 중…</p>
+  return <dialog ref={dialog} className="screen-loading" aria-label="불러오는 중" tabIndex={-1} onCancel={event=>event.preventDefault()}>
+    <div className="screen-loading-card">
+      <div className="generation-writing" aria-hidden="true"><img src={typeof writingArtwork==="string"?writingArtwork:writingArtwork.src} alt=""/><span className="generation-writing-dots"><i/><i/><i/></span></div>
+      <p role="status" aria-live="polite">불러오는 중…</p>
+    </div>
   </dialog>;
 }
 
