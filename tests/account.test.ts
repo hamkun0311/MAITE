@@ -6,7 +6,7 @@ import { allowedOrigin, corsHeaders } from "../lib/server/http.ts";
 import { withGeneration } from "../lib/server/generation.ts";
 import { snapshotSchema, restoreSessions } from "../lib/platform/snapshot.ts";
 import { createStudioSessions } from "../lib/chat/session.ts";
-import { verifyAdmob } from "../lib/server/admob.ts";
+import { grantTestAdReward, testAdRewardStatus, verifyAdmob } from "../lib/server/admob.ts";
 import { verifyPurchase, playAccountId } from "../lib/server/play.ts";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { novelListings, unpublishedNovelRows, isPublishedNovel, listingId } from "../lib/server/publishing.ts";
@@ -502,6 +502,44 @@ test("concurrent retries claim one worker without refunding its active reservati
     release();const response=await first;assert.match(await response.text(),/"done"/);assert.equal(settlements,1);
   }finally{release();globalThis.fetch=originalFetch;for(const[key,value]of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
 });
+test("only allowed QA accounts can receive test rewards and replays use the same transaction", async () => {
+  const names = ["NEXT_PUBLIC_ADMOB_MODE", "ADMOB_TEST_REWARDS_ENABLED", "ADMOB_TEST_REWARD_USER_IDS", "NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"];
+  const env = Object.fromEntries(names.map(name => [name, process.env[name]]));
+  const originalFetch = globalThis.fetch;
+  const transactions = new Set<string>();
+  try {
+    Object.assign(process.env, { NEXT_PUBLIC_ADMOB_MODE: "test", ADMOB_TEST_REWARDS_ENABLED: "true", ADMOB_TEST_REWARD_USER_IDS: A, NEXT_PUBLIC_SUPABASE_URL: "https://database.example", SUPABASE_SERVICE_ROLE_KEY: "test-key" });
+    globalThis.fetch = async (request, options) => {
+      const url = new URL(String(request));
+      if (url.pathname.endsWith("/ad_reward_claims")) {
+        assert.equal(url.searchParams.get("user_id"), `eq.${A}`);
+        return new Response(null, { headers: { "content-range": `*/${transactions.size}` } });
+      }
+      assert.match(url.pathname, /grant_ad_reward$/);
+      const payload = JSON.parse(String(options?.body));
+      assert.equal(payload.p_user, A);
+      if (transactions.has(payload.p_transaction)) return Response.json(false);
+      transactions.add(payload.p_transaction);
+      return Response.json(true);
+    };
+    const attempt = crypto.randomUUID();
+    assert.deepEqual(await testAdRewardStatus(A), { enabled: true, remaining: 5 });
+    assert.deepEqual(await testAdRewardStatus(B), { enabled: false });
+    await assert.rejects(grantTestAdReward(B, attempt), /사용할 수 없는 계정/);
+    assert.equal(await grantTestAdReward(A, attempt), true);
+    assert.equal(await grantTestAdReward(A, attempt.toUpperCase()), false);
+    assert.deepEqual(await testAdRewardStatus(A), { enabled: true, remaining: 4 });
+    process.env.NEXT_PUBLIC_ADMOB_MODE = "production";
+    await assert.rejects(grantTestAdReward(A, crypto.randomUUID()), /사용할 수 없는 계정/);
+    assert.equal(transactions.size, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  }
+});
+
 test("AdMob verifies signed test and production rewards, with a legacy production fallback", async () => {
   const originalFetch = globalThis.fetch; const names=["ADMOB_REWARDS_ENABLED","ADMOB_REWARDED_UNIT_ID","ADMOB_REWARDED_UNIT_ID_TEST","ADMOB_REWARDED_UNIT_ID_PRODUCTION","NEXT_PUBLIC_SUPABASE_URL","SUPABASE_SERVICE_ROLE_KEY"];
   const env=Object.fromEntries(names.map(name=>[name,process.env[name]])); let grants=0;

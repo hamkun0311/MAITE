@@ -44,6 +44,9 @@ export function rewardedAdConfig() {
 }
 export async function watchReward(userId: string) {
   if (!isNative()) throw new Error("보상 광고는 Android 앱에서 사용할 수 있습니다.");
+  const auth = await accountClient()?.auth.getSession();
+  const user = auth?.data.session?.user;
+  if (!user || user.id !== userId) throw new Error("광고를 보려는 계정으로 다시 로그인해주세요.");
   const config = rewardedAdConfig();
   if (!config?.adId) throw new Error("광고 모드와 광고 단위 설정을 확인해주세요.");
   const { AdMob, AdmobConsentStatus } = await import("@capacitor-community/admob");
@@ -52,7 +55,7 @@ export async function watchReward(userId: string) {
   if (!consent.canRequestAds) throw new Error("광고 개인정보 설정을 확인해주세요.");
   const { testing, adId } = config;
   await AdMob.initialize({ initializeForTesting: testing });
-  await AdMob.prepareRewardVideoAd({ adId, isTesting: testing, ssv: { userId } });
+  await AdMob.prepareRewardVideoAd({ adId, isTesting: testing, ...(testing ? {} : { ssv: { userId } }) });
   await AdMob.showRewardVideoAd();
-  // Only the Google-signed server callback grants hearts. The SDK result never does.
+  // The SDK result is only used by the explicitly enabled QA reward flow.
 }

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AccountError, requireAccount, rpc } from "@/lib/server/account";
+import { AccountError, isAccountOperator, requireAccount, rpc } from "@/lib/server/account";
 import { allowedOrigin, corsHeaders, preflight } from "@/lib/server/http";
 import { userProfileSchema } from "@/lib/account/profile";
 import { responseTimings } from "@/lib/server/timing";
@@ -66,8 +66,9 @@ export async function GET(request: Request) {
     const avatarPath = user.user_metadata?.maite_avatar_path;
     const avatarUrl = typeof avatarPath === "string" && avatarPath.startsWith(`${user.id}/profile/`) && /^[-a-zA-Z0-9/_.]+$/.test(avatarPath)
       ? (await signedImages.get(db, user.id, [avatarPath])).get(avatarPath) : undefined;
+    const adPlaybackBlocked = isAccountOperator(user);
     return Response.json({ userId: user.id, email: user.email, wallet: results[0].data, profile: { ...results[1].data, onboarded: savedProfile.success, ...(savedProfile.success ? { display_name: savedProfile.data.nickname, gender: savedProfile.data.gender, age: savedProfile.data.age } : {}) }, documents: results[2].data, jobs: [],
-      avatarUrl, billingEnabled: process.env.GOOGLE_PLAY_BILLING_ENABLED === "true", adsEnabled: process.env.ADMOB_REWARDS_ENABLED === "true" }, { headers });
+      avatarUrl, billingEnabled: process.env.GOOGLE_PLAY_BILLING_ENABLED === "true", adsEnabled: !adPlaybackBlocked && process.env.ADMOB_REWARDS_ENABLED === "true", adPlaybackBlocked }, { headers });
   } catch (error) { return Response.json({ error: error instanceof AccountError ? error.message : "요청을 확인해주세요." }, { status: error instanceof AccountError ? error.status : 400, headers }); }
 }
 export async function POST(request: Request) {

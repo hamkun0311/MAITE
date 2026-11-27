@@ -5,7 +5,7 @@ export type LibraryDocument = { id: string; title: string; kind: string; updated
 export type AccountData = {
   avatarUrl?: string | null;
   userId: string; email: string; profile?: { display_name: string; gender?: string; age?: number; onboarded?: boolean }; wallet: { transferable: number; bonus: number; free_chats: number };
-  documents: LibraryDocument[]; jobs: { id: string; kind: string; status: string }[]; billingEnabled: boolean; adsEnabled: boolean;
+  documents: LibraryDocument[]; jobs: { id: string; kind: string; status: string }[]; billingEnabled: boolean; adsEnabled: boolean; adPlaybackBlocked?: boolean;
 };
 export function novelChapters(snapshot: StudioSnapshot) {
   return (snapshot.story.archive ?? snapshot.story.committed).filter(message => message.role === "assistant" && message.content.trim())

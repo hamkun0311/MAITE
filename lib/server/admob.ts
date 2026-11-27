@@ -1,6 +1,27 @@
 import { verify } from "node:crypto";
-import { AccountError, rpc } from "./account.ts";
+import { AccountError, rpc, serviceDb } from "./account.ts";
+import { koreaDay } from "../account/policy.ts";
 let keys: { until: number; values: { keyId: number; pem: string }[] } | undefined;
+
+export function canTestAdReward(userId: string) {
+  return process.env.NEXT_PUBLIC_ADMOB_MODE === "test" &&
+    process.env.ADMOB_TEST_REWARDS_ENABLED === "true" &&
+    (process.env.ADMOB_TEST_REWARD_USER_IDS ?? "").split(",").some(id => id.trim().toLowerCase() === userId.toLowerCase());
+}
+
+export async function testAdRewardStatus(userId: string) {
+  if (!canTestAdReward(userId)) return { enabled: false as const };
+  const { count, error } = await serviceDb().from("ad_reward_claims")
+    .select("day", { count: "exact", head: true }).eq("user_id", userId).eq("day", koreaDay());
+  if (error || count === null) throw new AccountError("오늘의 광고 보상 횟수를 확인하지 못했습니다.", 503);
+  return { enabled: true as const, remaining: Math.max(0, 5 - count) };
+}
+
+export async function grantTestAdReward(userId: string, attemptId: string) {
+  if (!canTestAdReward(userId)) throw new AccountError("테스트 광고 보상을 사용할 수 없는 계정입니다.", 403);
+  return rpc<boolean>("grant_ad_reward", { p_user: userId, p_transaction: `test-ad:${userId}:${attemptId.toLowerCase()}` });
+}
+
 export async function verifyAdmob(url: URL) {
   if (process.env.ADMOB_REWARDS_ENABLED !== "true") throw new AccountError("광고 보상을 아직 사용할 수 없습니다.", 503);
   const raw = url.search.slice(1);
